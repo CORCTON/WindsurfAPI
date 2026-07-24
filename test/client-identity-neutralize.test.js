@@ -209,6 +209,38 @@ describe('neutralizeClientIdentity', () => {
     process.env.WINDSURFAPI_NEUTRALIZE_CLINE_OBJECTIVE = '1';
     assert.equal(neutralizeClientIdentity(OBJECTIVE_BLOCK), OBJECTIVE_BLOCK, 'main off-switch wins; a6 does not run');
   });
+
+  // 2026-07-20 (a7): codex apply_patch tool-DESCRIPTION content-policy trigger,
+  // live-bisected 7/7 by @forrinzhao (PR #219). apply_patch's description carries
+  // "FREEFORM tool, so do not wrap the patch in JSON." which trips Devin's content
+  // policy once the tool-description preamble is injected into the system prompt on
+  // the native path. Live A/B: BOTH fragments must change. Live-confirmed → runs
+  // unconditionally on the main WINDSURFAPI_NEUTRALIZE_CLIENT_ID switch.
+  const APPLY_PATCH_DESC = 'This is a FREEFORM tool, so do not wrap the patch in JSON. Provide the diff directly.';
+
+  it('(a7) rewrites both codex apply_patch content-policy trigger fragments', () => {
+    const out = neutralizeClientIdentity(APPLY_PATCH_DESC);
+    assert.ok(!/FREEFORM/.test(out), 'FREEFORM token gone');
+    assert.ok(!/do not wrap the patch in JSON\./.test(out), 'JSON-wrap fragment gone');
+    assert.match(out, /free-form/, 'reworded to free-form');
+    assert.match(out, /provide the patch as plain text\./, 'reworded JSON-wrap fragment');
+    assert.match(out, /Provide the diff directly\./, 'surrounding description preserved');
+  });
+
+  it('(a7) is idempotent — a second pass is a no-op', () => {
+    const once = neutralizeClientIdentity(APPLY_PATCH_DESC);
+    assert.equal(neutralizeClientIdentity(once), once, 'already-neutralized text unchanged');
+  });
+
+  it('(a7) leaves a normal tool description without the trigger untouched', () => {
+    const src = 'Apply a unified-diff patch to a file. Provide the diff as an argument.';
+    assert.equal(neutralizeClientIdentity(src), src, 'unrelated description untouched');
+  });
+
+  it('(a7) respects the main off-switch', () => {
+    process.env.WINDSURFAPI_NEUTRALIZE_CLIENT_ID = '0';
+    assert.equal(neutralizeClientIdentity(APPLY_PATCH_DESC), APPLY_PATCH_DESC, 'opt-out leaves it verbatim');
+  });
 });
 
 // P2 — Claude Code compat layer: the ccActive gate on the opt-in (cc) block.

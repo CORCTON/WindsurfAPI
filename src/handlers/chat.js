@@ -2376,22 +2376,6 @@ async function _handleChatCompletionsInner(body, context = {}) {
     let connectMessages = emulateTools
       ? normalizeMessagesForCascade(messages, connectTools, { modelKey: reqModelName, provider: null, route: 'devin_connect', toolChoice: tool_choice, injectUserPreamble: !suppressPreamble, stripOrphans: nativeDefsOn, nativeStructured })
       : messages;
-    // DEVIN_CONNECT public egress: neutralize competitor client-identity in the
-    // system prompt BODY. This path (incl. Codex /v1/responses and direct
-    // /v1/chat/completions) previously had NO neutralization — only the
-    // /v1/messages→anthropicToOpenAI path did — so a Claude Code / Agent-SDK
-    // system prompt reached Devin verbatim. Live A/B (2026-07-10) proved the
-    // "You are a Claude agent, built on Anthropic's Claude Agent SDK" line trips
-    // Devin's content policy → permission_denied; neutralizing it lets the exact
-    // same heavy request through. Only rewrites system messages; user/assistant
-    // content is untouched. Off-switch: WINDSURFAPI_NEUTRALIZE_CLIENT_ID=0.
-    if (Array.isArray(connectMessages)) {
-      connectMessages = connectMessages.map((m) => {
-        if (m?.role !== 'system' || typeof m.content !== 'string') return m;
-        const neut = neutralizeClientIdentity(m.content);
-        return neut === m.content ? m : { ...m, content: neut };
-      });
-    }
     // HYBRID native path: DEVIN_CONNECT has no proto tool_calling_section
     // slot, so the description-only preamble (buildToolPreambleForProto with
     // nativeStructured:true) is never built by normalizeMessagesForCascade —
@@ -2433,6 +2417,27 @@ async function _handleChatCompletionsInner(body, context = {}) {
         connectMessages = injectPreambleIntoSystemPrompt(connectMessages, descBudget.preamble);
         log.info(`Chat[${reqId}]: DEVIN_CONNECT native desc preamble injected into system prompt (${descBudget.tier} tier, ${Math.round(descBudget.finalBytes / 1024)}KB, ${connectTools.length} tools)`);
       }
+    }
+    // DEVIN_CONNECT public egress: neutralize competitor client-identity in the
+    // system prompt BODY (529 fingerprint + content-policy triggers). This path
+    // (incl. Codex /v1/responses and direct /v1/chat/completions) previously had
+    // NO neutralization — only /v1/messages→anthropicToOpenAI did — so a Claude
+    // Code / Agent-SDK system prompt reached Devin verbatim. Live A/B (2026-07-10)
+    // proved the "You are a Claude agent, built on Anthropic's Claude Agent SDK"
+    // line trips the content policy; neutralizing it serves the same request.
+    // RUNS AFTER preamble injection (above): the native-path tool-description
+    // preamble is injected into the system prompt at that step, so a trigger phrase
+    // carried by a TOOL description (e.g. codex apply_patch's "FREEFORM …", rule a7
+    // in identity-neutralize.js) is only reachable once the preamble is in place.
+    // Running here covers the original system prompt AND both injected preambles
+    // (emulation + native). Only rewrites system messages; user/assistant content
+    // is untouched. Off-switch: WINDSURFAPI_NEUTRALIZE_CLIENT_ID=0.
+    if (Array.isArray(connectMessages)) {
+      connectMessages = connectMessages.map((m) => {
+        if (m?.role !== 'system' || typeof m.content !== 'string') return m;
+        const neut = neutralizeClientIdentity(m.content);
+        return neut === m.content ? m : { ...m, content: neut };
+      });
     }
     log.info(`Chat[${reqId}]: DEVIN_CONNECT ${reqModelName} -> selector=${selector}${mapped ? '' : ' [unmapped→free-tier]'} stream=${!!stream}${emulateTools ? ` tools=${connectTools.length}` : ''}`);
     const ccId = genId();
