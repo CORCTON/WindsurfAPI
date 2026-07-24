@@ -288,6 +288,25 @@ describe('responsesToChat', () => {
     ]);
   });
 
+  it('treats a bare {role, content} input item (no explicit type) as a message (Codex, #219)', () => {
+    // OpenAI Responses input items may omit `type: "message"` — Codex sends bare
+    // {role, content}. They must NOT be dropped (that produced an empty messages
+    // array upstream → UPSTREAM_INTERNAL). Tool-oriented items (no `role`) still
+    // route to their own handlers, so this only rescues real messages.
+    const out = responsesToChat({
+      input: [
+        { role: 'user', content: 'first' },
+        { role: 'assistant', content: 'ok' },
+        { role: 'user', content: 'second' },
+      ],
+    });
+    assert.deepEqual(out.messages, [
+      { role: 'user', content: 'first' },
+      { role: 'assistant', content: 'ok' },
+      { role: 'user', content: 'second' },
+    ]);
+  });
+
   it('maps function_call and function_call_output items to chat tool turns', () => {
     const out = responsesToChat({
       input: [
