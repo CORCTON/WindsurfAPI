@@ -105,6 +105,41 @@ describe('DEVIN_CONNECT stream — client disconnect stops account-hopping', () 
     assert.ok(!frames.some(f => f !== '[DONE]' && f.error), 'no error frame emitted to the gone client');
   });
 
+  it('aborts cleanly during same-token transient replay when client disconnects', async () => {
+    const a = seed('replay-abort');
+    const b = seed('replay-abort-2');
+    let res;
+    const seen = [];
+    let call = 0;
+    __setConnectDeps({
+      streamChatCompletion: async (params) => {
+        seen.push(params.token);
+        if (call++ === 0) {
+          // First upstream call fails with a retryable ECONNRESET, triggering
+          // the same-token replay in attemptStream.
+          throw Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' });
+        }
+        // Replay is in flight when the client disconnects, causing an abort.
+        res.disconnect();
+        throw Object.assign(new Error('The operation was aborted'), { name: 'AbortError' });
+      },
+    });
+
+    const result = await handleChatCompletions(
+      { model: 'swe-1-6-slow', stream: true, messages: [{ role: 'user', content: 'hi' }] },
+      { callerKey: '' },
+    );
+    res = fakeRes();
+    await result.handler(res);
+
+    assert.equal(seen.length, 2, 'replayed once on the same token, then stopped');
+    assert.equal(seen[0], seen[1], 'same-token replay used identical token');
+    assert.ok(!seen.includes(b.apiKey), 'never hopped to second account');
+    const frames = parseFrames(res.body);
+    assert.ok(!frames.some(f => f !== '[DONE]' && f.error), 'no error frame emitted to the gone client');
+    assert.ok(!frames.includes('[DONE]'), 'no [DONE] written to a disconnected socket');
+  });
+
   it('aborts on a server-level context.signal and does NOT fail over', async () => {
     const a = seed('sig-1');
     const b = seed('sig-2');
