@@ -749,19 +749,21 @@ export function openAIToAnthropic(result, model, msgId, cachePolicy = null, stop
   const usage = result.usage || {};
   const content = [];
   if (choice?.message?.reasoning_content) {
-    // Anthropic thinking blocks carry an opaque encrypted `signature` that the
-    // *real* Anthropic server decrypts on multi-turn replay. Our upstream
-    // (Devin #9 / Cascade) never emits one, so this is a proxy-synthesized
-    // placeholder — the empty string is the Foxfishc-verified safe fallback
-    // (client SDK accepts it; nothing on our path decrypts/verifies it because
-    // the client only round-trips it and we discard thinking history inbound).
-    // It is NOT a genuine Anthropic signature. If upstream ever supplies a real
-    // signature we forward it (forward-compat for a future thinking/paid model).
-    content.push({
+    // Anthropic thinking blocks may carry an opaque encrypted `signature` that
+    // the *real* Anthropic server decrypts on multi-turn replay. Our upstream
+    // (Devin #9 / Cascade) never emits one, so when it is missing we omit the
+    // field entirely rather than emitting an empty-string placeholder — some
+    // strict clients (e.g. Grok Build's messages backend) reject `signature: ""`
+    // as a missing/invalid value. If upstream ever supplies a real signature we
+    // forward it (forward-compat for a future thinking/paid model).
+    const thinkingBlock = {
       type: 'thinking',
       thinking: choice.message.reasoning_content,
-      signature: choice.message.reasoning_signature || '',
-    });
+    };
+    if (choice.message.reasoning_signature) {
+      thinkingBlock.signature = choice.message.reasoning_signature;
+    }
+    content.push(thinkingBlock);
   }
   if (choice?.message?.tool_calls?.length) {
     if (choice.message.content) content.push({ type: 'text', text: choice.message.content });
@@ -965,11 +967,12 @@ class AnthropicStreamTranslator {
     // abnormal cutoff (network drop / upstream abort / deadline) — see BUG1.
     this.sawTerminalSignal = false;
     this.pendingSseBuf = '';
-    // Anthropic requires a thinking block to close with a `signature_delta`
-    // (before content_block_stop) carrying the encrypted-thinking signature.
-    // Our upstream never produces one, so we emit the empty-string fallback
-    // (proxy-synthesized, NOT a real Anthropic signature). If a future upstream
-    // delta supplies delta.reasoning_signature we round-trip the real value.
+    // Anthropic streams close a thinking block with a `signature_delta` carrying
+    // the encrypted-thinking signature. Our upstream never produces one, so we
+    // keep the pending signature empty and only emit the delta if a real
+    // `delta.reasoning_signature` arrives. An empty-string fallback is omitted
+    // because strict clients (e.g. Grok Build's messages backend) reject
+    // `signature: ""` as an invalid value.
     this.pendingThinkingSignature = '';
   }
 
@@ -1043,15 +1046,17 @@ class AnthropicStreamTranslator {
     if (this.current.type === 'tool_use') {
       this.flushToolArgs(this.toolBufForBlockIndex(this.current.index));
     }
-    // A thinking block must close with a signature_delta BEFORE content_block_stop
+    // A thinking block should close with a signature_delta BEFORE content_block_stop
     // (Anthropic sequence: start → thinking_delta* → signature_delta → stop). Only
-    // thinking blocks get it — never text/tool_use. Empty-string fallback when the
-    // upstream supplied no real signature (see constructor note).
-    if (this.current.type === 'thinking') {
+    // thinking blocks get it — never text/tool_use. We only emit the delta when
+    // the upstream actually provided a real signature; an empty-string fallback
+    // is omitted because strict clients (e.g. Grok Build's messages backend)
+    // reject `signature: ""` as invalid (see constructor note).
+    if (this.current.type === 'thinking' && this.pendingThinkingSignature) {
       this.send('content_block_delta', {
         type: 'content_block_delta',
         index: this.current.index,
-        delta: { type: 'signature_delta', signature: this.pendingThinkingSignature || '' },
+        delta: { type: 'signature_delta', signature: this.pendingThinkingSignature },
       });
       this.pendingThinkingSignature = '';
     }
