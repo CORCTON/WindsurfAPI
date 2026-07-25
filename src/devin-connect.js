@@ -992,8 +992,19 @@ const FIELD = Object.freeze({ CONTENT: 3, FINISH: 5, META: 7, REASONING: 9 });
 // the dashboard couldn't SEE the cache split, not that credits were over-spent.
 // credit_cost / committed_* remain declaration-order-only and still need their own
 // paid calibration run.
+// cache_read_tokens=5 is calibration-confirmed (see above), so it ships ON by
+// default — otherwise prompt_tokens_details.cached_tokens is always 0 and the
+// dashboard silently over-attributes cached input as fresh (#220). Safe on free
+// accounts too: the counter is zero there, and protobuf omits zero-valued
+// scalars, so the tag is simply absent and nothing is decoded. Operators can
+// override the whole map (or drop the default) via DEVIN_CONNECT_BILLING_TAGS;
+// set it to `off` to decode nothing at all.
+const DEFAULT_BILLING_TAGS = 'cache_read_tokens=5';
+
 function parseBillingTagMap(env = process.env) {
-  const raw = String(env.DEVIN_CONNECT_BILLING_TAGS || '').trim();
+  const configured = String(env.DEVIN_CONNECT_BILLING_TAGS ?? '').trim();
+  if (configured.toLowerCase() === 'off') return null;
+  const raw = configured || DEFAULT_BILLING_TAGS;
   if (!raw) return null;
   const map = {};
   for (const pair of raw.split(',')) {

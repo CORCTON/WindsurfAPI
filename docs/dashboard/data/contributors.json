@@ -409,6 +409,15 @@
       "weight": "A",
       "weightLabel": "Responses usage token details · 补齐 OpenAI 规范字段",
       "summary": "Responses API 的 usage 此前只有 input_tokens/output_tokens/total_tokens 三个数,缺 OpenAI 规范里的 input_tokens_details / output_tokens_details。修法在 mapUsage 补齐两个明细对象:cached_tokens 与 reasoning_tokens 从 chat 层的 prompt_tokens_details / completion_tokens_details 透传,text_tokens 优先用上游显式值、没有才用减法推导(输入减 cached、输出减 reasoning),audio/image 槽位补零保持结构完整。与同期 DEVIN_CONNECT cache_read_tokens 的 wire tag 校准正好是一条链的两半 —— 校准让缓存命中数进得了 usage,这个 PR 让它以 OpenAI 标准形态出得了 Responses API,合起来 Codex 一类客户端才真正看得见缓存拆分。+3 测试覆盖透传/推导/显式值优先。"
+    },
+    {
+      "login": "forrinzhao",
+      "pr": 219,
+      "weight": "B+",
+      "weightLabel": "codex apply_patch FREEFORM 触发词 · content-policy 家族第四个客户端",
+      "mergedAt": "2026-07-24",
+      "title": "fix: neutralize codex apply_patch tool description to avoid content-policy block",
+      "summary": "发现 codex 的 apply_patch 工具描述里 \"FREEFORM tool, so do not wrap the patch in JSON.\" 这句会触发 Devin content policy,飞书 codex bot 全量请求被拦。live-bisect 7/7 确定性复现,并做了关键的双片段 A/B:只改 FREEFORM 一处仍然被拦,两处都改才通过 —— 面对 Devin 这个非确定性 content policy(同 prompt 先拦后过),这种重复验证是唯一靠谱的定位方法,项目里 a6 规则当初正是因为拿不到可靠 A/B 才 ship 成默认关。这个发现顺带暴露出一个更深的结构缺陷:工具描述 preamble 在 chat.js 里是注入在 neutralizeClientIdentity 之后的,导致 native 路径上任何经由工具描述进来的触发词都完整绕过 a1-a6 整条防线 —— 也就是说漏的不只是 FREEFORM。最终落地版把中和调整到 preamble 注入之后,并把这两条改写做成 (a7) 规则进既有序列(复用主开关与测试体系,而非新加 env),因此覆盖的是所有客户端、所有触发词。另采纳其 responses.js 修复:Codex 发的 input item 是裸 {role, content} 不带 type:'message',此前被静默丢弃导致上游收到空 messages → UPSTREAM_INTERNAL。PR 中另外附带的 __route 改动因会回退 gpt_native dialect(源码部署默认路径)未采纳。"
     }
   ]
 }

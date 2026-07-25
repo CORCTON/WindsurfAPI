@@ -535,10 +535,20 @@ describe('decodeFrame', () => {
     assert.deepEqual(decodeFrame(payload, { billingTags }).billing, { committed_credit_cost: 1400 });
   });
 
-  it('parseBillingTagMap: off when unset, parses pairs, rejects garbage and unknown keys', () => {
+  it('parseBillingTagMap: defaults to cache_read_tokens=5, parses pairs, rejects garbage and unknown keys', () => {
     const { parseBillingTagMap } = __testing;
-    assert.equal(parseBillingTagMap({}), null);
-    assert.equal(parseBillingTagMap({ DEVIN_CONNECT_BILLING_TAGS: '   ' }), null);
+    // Unset → the calibrated default (#220): cached input must surface as
+    // prompt_tokens_details.cached_tokens instead of being billed as fresh.
+    assert.deepEqual(parseBillingTagMap({}), { cache_read_tokens: 5 });
+    assert.deepEqual(parseBillingTagMap({ DEVIN_CONNECT_BILLING_TAGS: '   ' }), { cache_read_tokens: 5 });
+    // Explicit opt-out decodes nothing at all.
+    assert.equal(parseBillingTagMap({ DEVIN_CONNECT_BILLING_TAGS: 'off' }), null);
+    assert.equal(parseBillingTagMap({ DEVIN_CONNECT_BILLING_TAGS: 'OFF' }), null);
+    // An explicit map REPLACES the default (no implicit merge).
+    assert.deepEqual(
+      parseBillingTagMap({ DEVIN_CONNECT_BILLING_TAGS: 'credit_cost=10' }),
+      { credit_cost: 10 },
+    );
     assert.deepEqual(
       parseBillingTagMap({ DEVIN_CONNECT_BILLING_TAGS: 'credit_cost=10, committed_acu_cost=12' }),
       { credit_cost: 10, committed_acu_cost: 12 },
