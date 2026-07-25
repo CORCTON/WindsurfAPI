@@ -214,7 +214,7 @@ async function main() {
           } else if (process.platform === 'darwin') {
             execFile('open', [url], () => {});
           } else {
-            execFile('xdg-open', [url], () => {}).on?.('error', () => {});
+            execFile('xdg-open', [url], () => {});
           }
         }).catch(() => {});
         log.info(`First run — opening dashboard in your browser: ${url}`);

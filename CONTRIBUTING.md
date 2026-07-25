@@ -35,15 +35,17 @@
 
 ### 测试
 
-项目暂无自动测试 手动验证即可 最好在 PR 描述里贴上：
+项目有完整的自动测试套件，`npm test` 跑全部用例（目前 2800+）。PR 合并前 CI 会自动跑。
 
-- 跑了什么 curl 命令
+提 PR 时建议在描述里补充：
+
+- 跑了什么 curl 命令 / smoke 场景
 - dashboard 哪个面板点了
 - 复测了哪些模型（gpt-4o-mini 这类免费模型最方便）
 
 ### CI
 
-GitHub Actions 跑 `node --check` 做语法校验 过了就可以 review。
+GitHub Actions 跑 `npm run test:release`（语法校验 + 核心回归）。本地 `npm test` 跑全量。
 
 ---
 
@@ -81,12 +83,12 @@ GitHub Actions 跑 `node --check` 做语法校验 过了就可以 review。
 
 ### Testing
 
-No automated test suite yet. Manual verification is fine. In the PR description, include:
+The project has a full automated test suite — `npm test` runs all cases (2800+ and growing). CI runs automatically on every PR. In your PR description, also include:
 
-- What curl commands you ran
+- What curl commands or smoke scenarios you ran
 - Which dashboard panels you clicked through
 - Which models you tested (free ones like `gpt-4o-mini` are easiest)
 
 ### CI
 
-GitHub Actions runs `node --check` for syntax. Green CI is enough to ship to review.
+GitHub Actions runs `npm run test:release` (syntax + core regression). Run `npm test` locally for the full suite.

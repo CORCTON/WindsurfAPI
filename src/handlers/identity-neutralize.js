@@ -15,7 +15,7 @@
  *
  * Off-switch: WINDSURFAPI_NEUTRALIZE_CLIENT_ID=0 (default on).
  * Opt-in (speculative): WINDSURFAPI_NEUTRALIZE_CLINE_OBJECTIVE=1 (default off) —
- * enables the (a6) OBJECTIVE-boast rule; see comment at the a6 rule.
+ * enables the (a6-cline-obj) OBJECTIVE-boast rule; see comment at the a6-cline-obj rule.
  * Opt-in (speculative): WINDSURFAPI_NEUTRALIZE_CC_AGGRESSIVE=1 or opts.ccActive
  *   (default off) — reserved hook for Claude-Code-specific aggressive rules; see
  *   the (cc) block at the end. Currently EMPTY on purpose (a1-a4 already cover
@@ -26,8 +26,9 @@
  * @param {object} env   environment (injectable for tests)
  * @param {object} opts  { ccActive?: boolean } — Claude Code compat layer active
  *   for this request (via /v1/cc/* or detected + master toggle). Gates ONLY the
- *   opt-in (cc) block; a1-a5 stay unconditional (they are the default 529 /
- *   content-policy defense line for ALL clients and must never be gated).
+ *   opt-in (cc) block; the confirmed rules (a1-a5, a6-grok, a7) stay unconditional
+ *   (they are the default 529 / content-policy defense line for ALL clients and
+ *   must never be gated).
  */
 export function neutralizeClientIdentity(text, env = process.env, opts = {}) {
   if (!text || String(env.WINDSURFAPI_NEUTRALIZE_CLIENT_ID || '1') === '0') return text;
@@ -130,7 +131,7 @@ export function neutralizeClientIdentity(text, env = process.env, opts = {}) {
   // and has been observed in the same blocked request. Strip the whole
   // <executing_actions_with_care>...</executing_actions_with_care> block.
   out = out.replace(/<executing_actions_with_care>[\s\S]*?<\/executing_actions_with_care>/gi, '');
-  // (a6) SPECULATIVE / HYPOTHESIS-ONLY (2026-07-15), DEFAULT-OFF. Unlike a1-a5
+  // (a6-cline-obj) SPECULATIVE / HYPOTHESIS-ONLY (2026-07-15), DEFAULT-OFF. Unlike a1-a5
   // which are live-bisected confirmed triggers, this OBJECTIVE boast sentence is
   // only SUSPECTED to be in the same content-policy trigger family — NOT verified,
   // because Devin's content policy is non-deterministic (the same prompt blocked
@@ -163,7 +164,7 @@ export function neutralizeClientIdentity(text, env = process.env, opts = {}) {
   // ("You are Claude Code", the Agent-SDK line, the billing header, the brand
   // block), and adding UNVERIFIED rewrites would risk mangling prompt semantics
   // against Devin's NON-DETERMINISTIC content policy (same prompt blocked then
-  // passed hours later — no reliable A/B, the exact reason a6 ships off). This
+  // passed hours later — no reliable A/B, the exact reason a6-cline-obj ships off). This
   // hook exists so the moment the policy re-fires and a repetition A/B isolates a
   // NEW CC-only trigger, the rule drops in here and flips on via ccActive with no
   // re-plumbing. Do NOT add a rule here without live-bisected proof.
