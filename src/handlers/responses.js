@@ -445,10 +445,28 @@ export function responsesToChat(body) {
 }
 
 function mapUsage(usage = {}) {
+  const inputTokens = usage.prompt_tokens || usage.input_tokens || 0;
+  const outputTokens = usage.completion_tokens || usage.output_tokens || 0;
+  const totalTokens = usage.total_tokens || inputTokens + outputTokens;
+  const promptDetails = usage.prompt_tokens_details || {};
+  const completionDetails = usage.completion_tokens_details || {};
+  const cachedTokens = promptDetails.cached_tokens || 0;
+  const reasoningTokens = completionDetails.reasoning_tokens || 0;
   return {
-    input_tokens: usage.prompt_tokens || usage.input_tokens || 0,
-    output_tokens: usage.completion_tokens || usage.output_tokens || 0,
-    total_tokens: usage.total_tokens || (usage.prompt_tokens || usage.input_tokens || 0) + (usage.completion_tokens || usage.output_tokens || 0),
+    input_tokens: inputTokens,
+    output_tokens: outputTokens,
+    total_tokens: totalTokens,
+    input_tokens_details: {
+      text_tokens: promptDetails.text_tokens ?? Math.max(0, inputTokens - cachedTokens),
+      audio_tokens: promptDetails.audio_tokens || 0,
+      image_tokens: promptDetails.image_tokens || 0,
+      cached_tokens: cachedTokens,
+    },
+    output_tokens_details: {
+      text_tokens: completionDetails.text_tokens ?? Math.max(0, outputTokens - reasoningTokens),
+      audio_tokens: completionDetails.audio_tokens || 0,
+      reasoning_tokens: reasoningTokens,
+    },
   };
 }
 
