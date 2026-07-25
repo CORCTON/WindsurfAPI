@@ -71,7 +71,7 @@ describe('finalizeConnectAccount', () => {
   // F2: a BARE 429 (no upstream reset window) applies an account-wide cooldown of
   // `rlBurstMs`. Default is 15000 (15s) as of 2026-07-12 (429 mitigation on) — the
   // historical value was 300000 (5min). An operator can revert via the tunable. A
-  // 429 WITH a reset window is unaffected (stays model-scoped).
+  // 429 WITH a reset window also cools account-wide, for the real window duration.
   it('F2: bare 429 default cools the account ~15s account-wide', () => {
     const acct = seed('rl-bare-default');
     const t0 = Date.now();
@@ -99,7 +99,7 @@ describe('finalizeConnectAccount', () => {
     }
   });
 
-  it('F2: a 429 WITH a reset window stays model-scoped, ignores rlBurstMs', () => {
+  it('F2: a 429 WITH a reset window cools account-wide for the real window, ignoring rlBurstMs', () => {
     setBreakerTunables({ rlBurstMs: 15000 });
     try {
       const acct = seed('rl-window');
@@ -108,9 +108,13 @@ describe('finalizeConnectAccount', () => {
         { id: acct.id, apiKey: acct.apiKey },
         { model: 'swe-1-6-slow', startTime: t0, err: Object.assign(new Error('resets in 3h'), { code: 'RATE_LIMITED', resetMs: 3 * 60 * 60 * 1000 }) },
       );
-      // reset-window path is model-scoped: no account-wide rateLimitedUntil.
-      assert.ok(!(acct.rateLimitedUntil > t0), 'account-wide cooldown NOT set for a windowed 429');
-      assert.ok((acct._modelRateLimits?.['swe-1-6-slow'] || 0) > t0 + 2 * 60 * 60 * 1000, 'model-scoped cooldown honours the 3h window');
+      // The DEVIN_CONNECT pool selects with modelKey=null (acquireConnectAccount →
+      // getApiKey(triedKeys, null, ...)), and isRateLimitedForModel only consults
+      // _modelRateLimits when modelKey is truthy — so the reset window MUST land on
+      // the account-wide rateLimitedUntil to be visible to selection, not on a
+      // model-scoped cooldown the pool never reads for this path.
+      assert.ok(acct.rateLimitedUntil > t0 + 2 * 60 * 60 * 1000, 'account-wide cooldown honours the 3h window');
+      assert.ok(!(acct._modelRateLimits?.['swe-1-6-slow'] > t0), 'no dead model-scoped cooldown for a path selected with modelKey=null');
     } finally {
       setBreakerTunables({ rlBurstMs: null });
     }

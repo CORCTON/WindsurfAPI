@@ -1831,8 +1831,17 @@ export async function* streamChat({
         // as transient. Best-effort JSON parse; falls back to body+status.
         let upstreamCode = null;
         try { upstreamCode = JSON.parse(body)?.error?.code || null; } catch { /* text body */ }
-        const { code, message } = classifyUpstreamError(body, upstreamCode, res.statusCode);
-        streamError = Object.assign(new Error(message), { code, status: res.statusCode });
+        // Preserve resetMs (audit F3): classifyUpstreamError parses an explicit
+        // reset window (e.g. "Resets in: 3h0m0s" → resetMs) but this path used to
+        // destructure only { code, message }, dropping it — so the handler cooled
+        // the account for a generic burst window instead of the real 3h. Forward
+        // it when present so finalizeConnectAccount can honor the true duration.
+        const classified = classifyUpstreamError(body, upstreamCode, res.statusCode);
+        streamError = Object.assign(new Error(classified.message), {
+          code: classified.code,
+          status: res.statusCode,
+          ...(classified.resetMs != null ? { resetMs: classified.resetMs } : {}),
+        });
         done = true;
         pump();
       });
@@ -1863,9 +1872,13 @@ export async function* streamChat({
             try {
               const parsed = JSON.parse(text);
               if (parsed?.error) {
-                const { code, message } = classifyUpstreamError(
+                const classified = classifyUpstreamError(
                   parsed.error.message || text, parsed.error.code || null, null);
-                streamError = Object.assign(new Error(message), { code, upstream: parsed.error });
+                streamError = Object.assign(new Error(classified.message), {
+                  code: classified.code,
+                  upstream: parsed.error,
+                  ...(classified.resetMs != null ? { resetMs: classified.resetMs } : {}),
+                });
               }
             } catch { /* non-JSON trailer — leave as success */ }
           }

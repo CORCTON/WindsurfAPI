@@ -1854,3 +1854,77 @@ describe('normalizeToolSchema', () => {
     });
   });
 });
+
+describe('streamChat transport resetMs propagation', () => {
+  afterEach(() => __setRequestImpl(null));
+
+  it('attaches resetMs to streamError on a non-200 rate-limit response with a reset window', async () => {
+    __setRequestImpl((_opts, cb) => {
+      const req = { on() { return req; }, setTimeout() { return req; }, write() {}, end() {}, destroy() {} };
+      const res = new EventEmitter();
+      res.statusCode = 429;
+      if (cb) cb(res);
+      queueMicrotask(() => {
+        res.emit('data', Buffer.from('Reached message rate limit for this model. Please try again later. Resets in: 2h30m0s'));
+        res.emit('end');
+      });
+      return req;
+    });
+
+    await assert.rejects(
+      (async () => {
+        for await (const _ of streamChat({
+          messages: [{ role: 'user', content: 'hi' }],
+          model: 'swe-1-7',
+          token: TOKEN,
+        })) { /* drain */ }
+      })(),
+      (err) => {
+        assert.equal(err.code, 'RATE_LIMITED');
+        assert.equal(err.resetMs, (2 * 3600 + 30 * 60) * 1000);
+        return true;
+      },
+    );
+  });
+
+  it('attaches resetMs to streamError on a JSON trailer rate-limit response with a reset window', async () => {
+    __setRequestImpl((_opts, cb) => {
+      const req = { on() { return req; }, setTimeout() { return req; }, write() {}, end() {}, destroy() {} };
+      const res = new EventEmitter();
+      res.statusCode = 200;
+      if (cb) cb(res);
+      queueMicrotask(() => {
+        const trailerJson = JSON.stringify({
+          error: {
+            message: 'Reached message rate limit for this model. Please try again later. Resets in: 1h15m0s',
+            code: 'resource_exhausted',
+          },
+        });
+        const payload = Buffer.from(trailerJson);
+        const trailerFrame = Buffer.alloc(5 + payload.length);
+        trailerFrame[0] = 0x02; // end-of-stream flag
+        trailerFrame.writeUInt32BE(payload.length, 1);
+        payload.copy(trailerFrame, 5);
+
+        res.emit('data', trailerFrame);
+        res.emit('end');
+      });
+      return req;
+    });
+
+    await assert.rejects(
+      (async () => {
+        for await (const _ of streamChat({
+          messages: [{ role: 'user', content: 'hi' }],
+          model: 'swe-1-7',
+          token: TOKEN,
+        })) { /* drain */ }
+      })(),
+      (err) => {
+        assert.equal(err.code, 'RATE_LIMITED');
+        assert.equal(err.resetMs, (1 * 3600 + 15 * 60) * 1000);
+        return true;
+      },
+    );
+  });
+});

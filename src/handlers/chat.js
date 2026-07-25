@@ -1871,16 +1871,19 @@ export function finalizeConnectAccount(acct, { model, startTime, err }) {
     }
     else if (err.code === 'RATE_LIMITED') {
       // Honor an explicit upstream reset window when the classifier parsed one
-      // (e.g. "message rate limit ... Resets in: 3h0m0s" → err.resetMs). A hard
-      // per-model limit is model-scoped, so cool THIS model only and let the pool
-      // prefer another account/model for it, rather than benching the account for
-      // every model. Falls back to an account-wide burst cooldown when no window
-      // was given (generic 429 with no retry-after). F2: that burst duration is
-      // now the `rlBurstMs` tunable (default 300000 = the historical 5min, so
-      // this is byte-identical unless an operator shortens it — see the tunable's
-      // note re: KiroStudio's "bare bursts self-heal in seconds" finding).
+      // (e.g. "message rate limit ... Resets in: 3h0m0s" → err.resetMs). Apply it
+      // ACCOUNT-WIDE (modelKey=null), not model-scoped: acquireConnectAccount
+      // selects the pool via getApiKey(triedKeys, null, ...) with modelKey=null,
+      // and isRateLimitedForModel only consults _modelRateLimits when modelKey is
+      // truthy — so a model-scoped cooldown is structurally invisible to
+      // DEVIN_CONNECT selection and the pool immediately re-picks the account that
+      // just 429'd, ignoring the reset window entirely. rateLimitedUntil is the
+      // only cooldown dimension getApiKey honors with modelKey=null. Falls back to
+      // a burst cooldown when no window was given (generic 429 with no retry-after);
+      // F2: that burst duration is the `rlBurstMs` tunable (default 300000 = the
+      // historical 5min).
       if (Number.isFinite(err.resetMs) && err.resetMs > 0) {
-        markRateLimited(apiKey, err.resetMs, model, 'r');
+        markRateLimited(apiKey, err.resetMs, null, 'r');
       } else {
         markRateLimited(apiKey, getBreakerTunable('rlBurstMs'), null);
       }
