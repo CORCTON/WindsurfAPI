@@ -107,6 +107,70 @@ jobs:
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "**Platform:** \`linux/amd64\`" >> "$GITHUB_STEP_SUMMARY"
 
+  macos-exe:
+    name: macOS single-binary (${{ matrix.arch }})
+    needs: test
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-latest
+            pkg_target: node22-macos-arm64
+            output: dist-macos/windsurfapi-macos-arm64
+          - arch: x64
+            runner: macos-13
+            pkg_target: node22-macos-x64
+            output: dist-macos/windsurfapi-macos-x64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Build windsurfapi-macos-${{ matrix.arch }}
+        run: |
+          npm i -g @yao-pkg/pkg@6.21.0 esbuild
+          npm run build:bundle
+          mkdir -p dist-macos
+          pkg src/_bundle.cjs --config package.json --targets ${{ matrix.pkg_target }} --output ${{ matrix.output }}
+
+      - name: Smoke-check the binary boots
+        run: |
+          chmod +x ${{ matrix.output }}
+          xattr -d com.apple.quarantine ${{ matrix.output }} 2>/dev/null || true
+          DEVIN_CONNECT=1 HOST=127.0.0.1 PORT=3999 API_KEY=ci-smoke \
+            DATA_DIR="$RUNNER_TEMP/wa-smoke" WINDSURFAPI_NO_OPEN=1 \
+            ${{ matrix.output }} &
+          EXE_PID=$!
+          ok=0
+          for i in $(seq 1 40); do
+            sleep 0.5
+            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 http://127.0.0.1:3999/health 2>/dev/null) || true
+            [ "$code" = "200" ] && ok=1 && break
+          done
+          kill $EXE_PID 2>/dev/null || true
+          dash=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 http://127.0.0.1:3999/dashboard 2>/dev/null) || true
+          kill $EXE_PID 2>/dev/null || true
+          [ "$ok" = "1" ] || { echo "Binary did not answer /health"; exit 1; }
+          [ "$dash" = "200" ] || { echo "Binary did not serve /dashboard (asset bundling broken?)"; exit 1; }
+          echo "Smoke OK: /health 200 + /dashboard served"
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windsurfapi-macos-${{ matrix.arch }}
+          path: ${{ matrix.output }}
+          if-no-files-found: error
+
   windows-exe:
     name: Windows single-exe
     needs: test
@@ -227,7 +291,7 @@ jobs:
 
   release:
     name: GitHub Release
-    needs: [docker, windows-exe]
+    needs: [docker, windows-exe, macos-exe]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -244,9 +308,6 @@ jobs:
       - name: Check for release notes
         id: notes
         run: |
-          # New layout (docs/releases/) preferred; fall back to repo root
-          # so historical tags still find their notes if anyone re-cuts an
-          # old release.
           NEW_PATH="docs/releases/RELEASE_NOTES_${{ steps.version.outputs.VERSION }}.md"
           OLD_PATH="RELEASE_NOTES_${{ steps.version.outputs.VERSION }}.md"
           if [[ -f "$NEW_PATH" ]]; then
@@ -265,6 +326,31 @@ jobs:
           name: windsurfapi-windows-exe
           path: dist-windows
 
+      - name: Download macOS arm64 binary
+        uses: actions/download-artifact@v4
+        with:
+          name: windsurfapi-macos-arm64
+          path: dist-macos
+
+      - name: Download macOS x64 binary
+        uses: actions/download-artifact@v4
+        with:
+          name: windsurfapi-macos-x64
+          path: dist-macos
+
+      - name: Package macOS zip (arm64 + x64 + scripts)
+        run: |
+          chmod +x dist-macos/windsurfapi-macos-arm64 dist-macos/windsurfapi-macos-x64
+          cp deploy/macos/run.sh dist-macos/
+          cp deploy/macos/run-background.sh dist-macos/
+          cp deploy/macos/stop.sh dist-macos/
+          cp deploy/macos/install-launchd.sh dist-macos/
+          cp deploy/macos/uninstall-launchd.sh dist-macos/
+          cp deploy/macos/README.md dist-macos/
+          chmod +x dist-macos/*.sh
+          cd dist-macos && zip -r ../windsurfapi-macos.zip . && cd ..
+          echo "macOS zip contents:"; unzip -l windsurfapi-macos.zip
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -276,3 +362,6 @@ jobs:
           files: |
             dist-windows/windsurfapi.exe
             dist-windows/windsurfapi-windows.zip
+            dist-macos/windsurfapi-macos-arm64
+            dist-macos/windsurfapi-macos-x64
+            windsurfapi-macos.zip

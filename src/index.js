@@ -209,7 +209,13 @@ async function main() {
         // Windows: `cmd /c start "" <url>` opens the default browser without a
         // shell window lingering. execFile avoids spawning a persistent shell.
         import('child_process').then(({ execFile }) => {
-          execFile('cmd', ['/c', 'start', '', url], { windowsHide: true }, () => {});
+          if (process.platform === 'win32') {
+            execFile('cmd', ['/c', 'start', '', url], { windowsHide: true }, () => {});
+          } else if (process.platform === 'darwin') {
+            execFile('open', [url], () => {});
+          } else {
+            execFile('xdg-open', [url], () => {}).on?.('error', () => {});
+          }
         }).catch(() => {});
         log.info(`First run — opening dashboard in your browser: ${url}`);
       } catch { /* opener unavailable — user can open the URL manually */ }

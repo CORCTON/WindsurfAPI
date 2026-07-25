@@ -22,9 +22,9 @@ describe('release workflow', () => {
     assert.match(test, /\btimeout-minutes:\s*10\b/);
     assert.match(docker, /\bneeds:\s*test\b/);
     assert.match(docker, /\btimeout-minutes:\s*30\b/);
-    // Release waits for BOTH the docker image and the Windows single-exe build
-    // so the .exe is available to attach as a release asset.
-    assert.match(release, /\bneeds:\s*\[docker,\s*windows-exe\]/);
+    // Release waits for docker image, Windows single-exe, AND macOS binaries
+    // so all assets are available to attach to the release.
+    assert.match(release, /\bneeds:\s*\[docker,\s*windows-exe,\s*macos-exe\]/);
   });
 
   it('builds a Windows single-exe and attaches it to the release', () => {
