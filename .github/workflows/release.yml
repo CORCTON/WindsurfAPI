@@ -157,7 +157,8 @@ jobs:
             code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 http://127.0.0.1:3999/health 2>/dev/null) || true
             [ "$code" = "200" ] && ok=1 && break
           done
-          kill $EXE_PID 2>/dev/null || true
+          # Check /dashboard BEFORE killing — mirrors Windows smoke which stops the
+          # process only after both checks. Killing first leaves the port closed.
           dash=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 http://127.0.0.1:3999/dashboard 2>/dev/null) || true
           kill $EXE_PID 2>/dev/null || true
           [ "$ok" = "1" ] || { echo "Binary did not answer /health"; exit 1; }
