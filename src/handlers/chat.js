@@ -2274,6 +2274,46 @@ async function _handleChatCompletionsInner(body, context = {}) {
   let routingModelKey = effectiveModelKey;
   let modelInfo = getModelInfo(effectiveModelKey) || getModelInfo(modelKey);
 
+  // Global model access control (allowlist / blocklist from dashboard).
+  // MUST run before EVERY backend branch — special-agent, DEVIN_CONNECT, and
+  // Cascade alike — or operator policy is silently bypassed. It used to sit
+  // further down, after the DEVIN_CONNECT short-circuit below, which meant a
+  // blocked model still served normally whenever DEVIN_CONNECT=1 (the default
+  // for the packaged exe and the recommended binary-less config) — the gate
+  // only ever fired on the Cascade path it happened to precede.
+  // Set when the access policy retargets a blocked model to the operator's
+  // configured default. The DEVIN_CONNECT branch resolves its selector from the
+  // RAW request name (its own namespace), not routingModelKey, so it has to be
+  // told about the retarget explicitly or the fallback would silently serve the
+  // originally-blocked model on that path.
+  let accessFallbackModel = null;
+  let access = isModelAllowed(routingModelKey);
+  if (!access.allowed) {
+    // Optional fallback: if the operator configured a default model, retarget
+    // a blocked/unlisted request to it instead of rejecting outright (#198).
+    // The fallback target is re-validated against the catalog AND the access
+    // policy, so it can neither resolve to an unknown model nor smuggle a
+    // model the operator hasn't themselves allowed.
+    const fallbackRaw = access.defaultModel;
+    if (fallbackRaw) {
+      const fallbackKey = resolveEffectiveModelKey(resolveModel(fallbackRaw), wantThinking);
+      const fallbackInfo = getModelInfo(fallbackKey);
+      const fallbackAccess = fallbackInfo ? isModelAllowed(fallbackKey) : { allowed: false };
+      if (fallbackInfo && fallbackAccess.allowed) {
+        log.info(`Chat[${reqId}]: ${routingModelKey} blocked (${access.reason}); falling back to default model ${fallbackKey}`);
+        routingModelKey = fallbackKey;
+        modelInfo = fallbackInfo;
+        access = fallbackAccess;
+        accessFallbackModel = fallbackRaw;
+      } else {
+        log.warn(`Chat[${reqId}]: ${routingModelKey} blocked and default model "${fallbackRaw}" is unusable (info=${!!fallbackInfo}, allowed=${fallbackAccess.allowed}); rejecting`);
+        return { status: 403, body: { error: { message: access.reason, type: 'model_blocked' } } };
+      }
+    } else {
+      return { status: 403, body: { error: { message: access.reason, type: 'model_blocked' } } };
+    }
+  }
+
   // DEVIN_CONNECT short-circuit: the pure-HTTP egress owns its own model
   // dictionary (devin-connect-models.js → proto #21 selectors), which is a
   // different namespace from the Cascade catalog. An operator who flips
@@ -2282,7 +2322,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
   // `swe-1-6-slow` (no Cascade catalog entry) would 400 before ever reaching
   // the backend. Unmapped names degrade to the free-tier selector downstream.
   if (selectBackend({ modelInfo }).flow === 'devin_connect') {
-    const reqModelName = reqModel || config.defaultModel;
+    const reqModelName = accessFallbackModel || reqModel || config.defaultModel;
     // VISION reroute: the DEVIN_CONNECT synthetic-image path is a dead end for
     // extended-thinking models (un-forgeable #12 server signature). When the
     // request carries images AND ACP vision is enabled, hand it to the ACP path
@@ -3057,35 +3097,6 @@ async function _handleChatCompletionsInner(body, context = {}) {
   // `claude-opus-4-7-medium`. Fall back to the canonical name if the request
   // omitted model.
   const displayModel = reqModel || modelInfo?.name || config.defaultModel;
-
-  // Global model access control (allowlist / blocklist from dashboard).
-  // This must run before special-agent routing as well as Cascade routing;
-  // otherwise SWE/adaptive models would bypass operator policy.
-  let access = isModelAllowed(routingModelKey);
-  if (!access.allowed) {
-    // Optional fallback: if the operator configured a default model, retarget
-    // a blocked/unlisted request to it instead of rejecting outright (#198).
-    // The fallback target is re-validated against the catalog AND the access
-    // policy, so it can neither resolve to an unknown model nor smuggle a
-    // model the operator hasn't themselves allowed.
-    const fallbackRaw = access.defaultModel;
-    if (fallbackRaw) {
-      const fallbackKey = resolveEffectiveModelKey(resolveModel(fallbackRaw), wantThinking);
-      const fallbackInfo = getModelInfo(fallbackKey);
-      const fallbackAccess = fallbackInfo ? isModelAllowed(fallbackKey) : { allowed: false };
-      if (fallbackInfo && fallbackAccess.allowed) {
-        log.info(`Chat[${reqId}]: ${routingModelKey} blocked (${access.reason}); falling back to default model ${fallbackKey}`);
-        routingModelKey = fallbackKey;
-        modelInfo = fallbackInfo;
-        access = fallbackAccess;
-      } else {
-        log.warn(`Chat[${reqId}]: ${routingModelKey} blocked and default model "${fallbackRaw}" is unusable (info=${!!fallbackInfo}, allowed=${fallbackAccess.allowed}); rejecting`);
-        return { status: 403, body: { error: { message: access.reason, type: 'model_blocked' } } };
-      }
-    } else {
-      return { status: 403, body: { error: { message: access.reason, type: 'model_blocked' } } };
-    }
-  }
 
   // Backend selection is centralized in backend-router.selectBackend(). This
   // is behaviour-preserving: special_agent → special-agent handler; otherwise
