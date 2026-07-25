@@ -992,14 +992,26 @@ const FIELD = Object.freeze({ CONTENT: 3, FINISH: 5, META: 7, REASONING: 9 });
 // the dashboard couldn't SEE the cache split, not that credits were over-spent.
 // credit_cost / committed_* remain declaration-order-only and still need their own
 // paid calibration run.
-// cache_read_tokens=5 is calibration-confirmed (see above), so it ships ON by
-// default — otherwise prompt_tokens_details.cached_tokens is always 0 and the
-// dashboard silently over-attributes cached input as fresh (#220). Safe on free
-// accounts too: the counter is zero there, and protobuf omits zero-valued
-// scalars, so the tag is simply absent and nothing is decoded. Operators can
-// override the whole map (or drop the default) via DEVIN_CONNECT_BILLING_TAGS;
-// set it to `off` to decode nothing at all.
-const DEFAULT_BILLING_TAGS = 'cache_read_tokens=5';
+// CONFIRMED 2026-07-25 (same paid account): the cache-WRITE counter is tag 4.
+// Claude-family selectors split prompt input the way Anthropic's own API does —
+// fresh input in tag 2, cache-creation in tag 4 — so a cache-writing turn reported
+// prompt_tokens=3 for a 13.4K-token system prompt (99.98% under-reported) because
+// tag 4 was never decoded. Live A/B on claude-sonnet-4.6:
+//   round-1 (cache write): {2:3, 3:4, 4:14361, 6:4}
+//   round-2 (cache read):  {2:3, 3:4, 4:5, 5:14356, 6:4}
+// and 14356 (read back) + 5 (the new user turn written) == 14361 (round-1 write),
+// which pins tag 4 exactly. GPT-family selectors carry no tag 4 at all (their full
+// input rides tag 2, matching OpenAI's no-charge-for-cache-write model), so the
+// default is a no-op there rather than a mis-read.
+//
+// Both tags are calibration-confirmed, so they ship ON by default — otherwise
+// prompt_tokens_details.cached_tokens / cache_creation_input_tokens are always 0
+// and the dashboard silently mis-attributes cached and cache-written input (#220).
+// Safe on free accounts too: the counters are zero there, and protobuf omits
+// zero-valued scalars, so the tags are simply absent and nothing is decoded.
+// Operators can override the whole map (or drop the defaults) via
+// DEVIN_CONNECT_BILLING_TAGS; set it to `off` to decode nothing at all.
+const DEFAULT_BILLING_TAGS = 'cache_read_tokens=5,cache_write_tokens=4';
 
 function parseBillingTagMap(env = process.env) {
   const configured = String(env.DEVIN_CONNECT_BILLING_TAGS ?? '').trim();

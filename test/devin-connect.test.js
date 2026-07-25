@@ -535,12 +535,13 @@ describe('decodeFrame', () => {
     assert.deepEqual(decodeFrame(payload, { billingTags }).billing, { committed_credit_cost: 1400 });
   });
 
-  it('parseBillingTagMap: defaults to cache_read_tokens=5, parses pairs, rejects garbage and unknown keys', () => {
+  it('parseBillingTagMap: defaults to cache_read_tokens=5 + cache_write_tokens=4, parses pairs, rejects garbage', () => {
     const { parseBillingTagMap } = __testing;
-    // Unset → the calibrated default (#220): cached input must surface as
-    // prompt_tokens_details.cached_tokens instead of being billed as fresh.
-    assert.deepEqual(parseBillingTagMap({}), { cache_read_tokens: 5 });
-    assert.deepEqual(parseBillingTagMap({ DEVIN_CONNECT_BILLING_TAGS: '   ' }), { cache_read_tokens: 5 });
+    // Unset → the calibrated defaults (#220 + 2026-07-25):
+    // tag 5 = cache_read (confirmed on GPT+Claude paid accounts)
+    // tag 4 = cache_write (confirmed on Claude paid account — GPT carries no tag 4)
+    assert.deepEqual(parseBillingTagMap({}), { cache_read_tokens: 5, cache_write_tokens: 4 });
+    assert.deepEqual(parseBillingTagMap({ DEVIN_CONNECT_BILLING_TAGS: '   ' }), { cache_read_tokens: 5, cache_write_tokens: 4 });
     // Explicit opt-out decodes nothing at all.
     assert.equal(parseBillingTagMap({ DEVIN_CONNECT_BILLING_TAGS: 'off' }), null);
     assert.equal(parseBillingTagMap({ DEVIN_CONNECT_BILLING_TAGS: 'OFF' }), null);
