@@ -58,6 +58,7 @@ import { resolveConnectSelector } from '../devin-connect-models.js';
 import { isRetryable as isConnectRetryable, getToolDefTags, parseToolCallTagMap } from '../devin-connect.js';
 import { isRouterModel, assignModel } from '../devin-connect-catalog.js';
 import { bumpConnect } from '../devin-connect-metrics.js';
+import { resolveSessionId as resolveConnectSessionId, commitAfterResponse as commitConnectSession } from '../session-continuity.js';
 import { newTraceId, traceClientRequest, traceRouting, traceClientResponse, traceEnabled } from '../trace.js';
 import { sanitizeText, sanitizeToolCall, PathSanitizeStream } from '../sanitize.js';
 import { systemFingerprint } from '../system-fingerprint.js';
@@ -1815,6 +1816,14 @@ function connectFailoverMax(env = process.env) {
   return Number.isFinite(raw) && raw >= 0 ? raw : 2;
 }
 
+// True when an error is an AbortError (client disconnect / server shutdown).
+// Tests look at both name and code because Node's AbortController sets `name`
+// on errors it throws, while fetch/undici sometimes only sets `code: 'ABORT_ERR'`.
+function isAbortError(err) {
+  if (!err) return false;
+  return err.name === 'AbortError' || err.code === 'ABORT_ERR' || /aborted/i.test(err.message);
+}
+
 // Pair with acquireConnectAccount on every exit path. Records billing/stats and
 // returns the account to the pool. `err` null ⇒ success.
 export function finalizeConnectAccount(acct, { model, startTime, err }) {
@@ -1834,7 +1843,7 @@ export function finalizeConnectAccount(acct, { model, startTime, err }) {
   if (err) {
     // A client-side abort (caller disconnected) is not an account fault — just
     // release without penalizing the account's error budget.
-    const aborted = err.name === 'AbortError' || err.code === 'ABORT_ERR';
+    const aborted = isAbortError(err);
     if (aborted) { /* no penalty */ }
     // MODEL_BLOCKED is a tier/entitlement wall (free account asked for a paid
     // selector → upstream "/upgrade"), NOT an account-health problem. Penalizing
@@ -1871,16 +1880,19 @@ export function finalizeConnectAccount(acct, { model, startTime, err }) {
     }
     else if (err.code === 'RATE_LIMITED') {
       // Honor an explicit upstream reset window when the classifier parsed one
-      // (e.g. "message rate limit ... Resets in: 3h0m0s" → err.resetMs). A hard
-      // per-model limit is model-scoped, so cool THIS model only and let the pool
-      // prefer another account/model for it, rather than benching the account for
-      // every model. Falls back to an account-wide burst cooldown when no window
-      // was given (generic 429 with no retry-after). F2: that burst duration is
-      // now the `rlBurstMs` tunable (default 300000 = the historical 5min, so
-      // this is byte-identical unless an operator shortens it — see the tunable's
-      // note re: KiroStudio's "bare bursts self-heal in seconds" finding).
+      // (e.g. "message rate limit ... Resets in: 3h0m0s" → err.resetMs). Apply it
+      // ACCOUNT-WIDE (modelKey=null), not model-scoped: acquireConnectAccount
+      // selects the pool via getApiKey(triedKeys, null, ...) with modelKey=null,
+      // and isRateLimitedForModel only consults _modelRateLimits when modelKey is
+      // truthy — so a model-scoped cooldown is structurally invisible to
+      // DEVIN_CONNECT selection and the pool immediately re-picks the account that
+      // just 429'd, ignoring the reset window entirely. rateLimitedUntil is the
+      // only cooldown dimension getApiKey honors with modelKey=null. Falls back to
+      // a burst cooldown when no window was given (generic 429 with no retry-after);
+      // F2: that burst duration is the `rlBurstMs` tunable (default 300000 = the
+      // historical 5min).
       if (Number.isFinite(err.resetMs) && err.resetMs > 0) {
-        markRateLimited(apiKey, err.resetMs, model, 'r');
+        markRateLimited(apiKey, err.resetMs, null, 'r');
       } else {
         markRateLimited(apiKey, getBreakerTunable('rlBurstMs'), null);
       }
@@ -2376,22 +2388,6 @@ async function _handleChatCompletionsInner(body, context = {}) {
     let connectMessages = emulateTools
       ? normalizeMessagesForCascade(messages, connectTools, { modelKey: reqModelName, provider: null, route: 'devin_connect', toolChoice: tool_choice, injectUserPreamble: !suppressPreamble, stripOrphans: nativeDefsOn, nativeStructured })
       : messages;
-    // DEVIN_CONNECT public egress: neutralize competitor client-identity in the
-    // system prompt BODY. This path (incl. Codex /v1/responses and direct
-    // /v1/chat/completions) previously had NO neutralization — only the
-    // /v1/messages→anthropicToOpenAI path did — so a Claude Code / Agent-SDK
-    // system prompt reached Devin verbatim. Live A/B (2026-07-10) proved the
-    // "You are a Claude agent, built on Anthropic's Claude Agent SDK" line trips
-    // Devin's content policy → permission_denied; neutralizing it lets the exact
-    // same heavy request through. Only rewrites system messages; user/assistant
-    // content is untouched. Off-switch: WINDSURFAPI_NEUTRALIZE_CLIENT_ID=0.
-    if (Array.isArray(connectMessages)) {
-      connectMessages = connectMessages.map((m) => {
-        if (m?.role !== 'system' || typeof m.content !== 'string') return m;
-        const neut = neutralizeClientIdentity(m.content);
-        return neut === m.content ? m : { ...m, content: neut };
-      });
-    }
     // HYBRID native path: DEVIN_CONNECT has no proto tool_calling_section
     // slot, so the description-only preamble (buildToolPreambleForProto with
     // nativeStructured:true) is never built by normalizeMessagesForCascade —
@@ -2433,6 +2429,27 @@ async function _handleChatCompletionsInner(body, context = {}) {
         connectMessages = injectPreambleIntoSystemPrompt(connectMessages, descBudget.preamble);
         log.info(`Chat[${reqId}]: DEVIN_CONNECT native desc preamble injected into system prompt (${descBudget.tier} tier, ${Math.round(descBudget.finalBytes / 1024)}KB, ${connectTools.length} tools)`);
       }
+    }
+    // DEVIN_CONNECT public egress: neutralize competitor client-identity in the
+    // system prompt BODY (529 fingerprint + content-policy triggers). This path
+    // (incl. Codex /v1/responses and direct /v1/chat/completions) previously had
+    // NO neutralization — only /v1/messages→anthropicToOpenAI did — so a Claude
+    // Code / Agent-SDK system prompt reached Devin verbatim. Live A/B (2026-07-10)
+    // proved the "You are a Claude agent, built on Anthropic's Claude Agent SDK"
+    // line trips the content policy; neutralizing it serves the same request.
+    // RUNS AFTER preamble injection (above): the native-path tool-description
+    // preamble is injected into the system prompt at that step, so a trigger phrase
+    // carried by a TOOL description (e.g. codex apply_patch's "FREEFORM …", rule a7
+    // in identity-neutralize.js) is only reachable once the preamble is in place.
+    // Running here covers the original system prompt AND both injected preambles
+    // (emulation + native). Only rewrites system messages; user/assistant content
+    // is untouched. Off-switch: WINDSURFAPI_NEUTRALIZE_CLIENT_ID=0.
+    if (Array.isArray(connectMessages)) {
+      connectMessages = connectMessages.map((m) => {
+        if (m?.role !== 'system' || typeof m.content !== 'string') return m;
+        const neut = neutralizeClientIdentity(m.content);
+        return neut === m.content ? m : { ...m, content: neut };
+      });
     }
     log.info(`Chat[${reqId}]: DEVIN_CONNECT ${reqModelName} -> selector=${selector}${mapped ? '' : ' [unmapped→free-tier]'} stream=${!!stream}${emulateTools ? ` tools=${connectTools.length}` : ''}`);
     const ccId = genId();
@@ -2500,6 +2517,19 @@ async function _handleChatCompletionsInner(body, context = {}) {
     }
     const ccAcct = await acquireConnectAccount(context.signal, callerKey, selector);
     const connectParams = { messages: connectMessages, model: selector };
+    // Session continuity (opt-in, DEVIN_CONNECT_SESSION_REUSE, default OFF). Derive
+    // a stable protobuf session_id (#16) from the conversation's completed request/
+    // response pair chain so a multi-turn dialog reuses ONE session_id instead of
+    // minting a fresh randomUUID per call — which the upstream velocity limiter
+    // reads as N brand-new sessions. Resolves BEFORE dispatch on the client's own
+    // history; returns null (⇒ fresh per-request uuid, byte-identical to today) when
+    // the gate is off. Uses connectMessages so the fingerprint reflects exactly what
+    // rides the wire.
+    const connectSessionId = resolveConnectSessionId(callerKey || '', connectMessages);
+    if (connectSessionId) {
+      connectParams.sessionId = connectSessionId;
+      log.info(`Chat[${reqId}]: DEVIN_CONNECT session reuse active → session_id=${connectSessionId}`);
+    }
     if (ccAcct) {
       connectParams.token = ccAcct.apiKey;
       // Stable per-account device fingerprint (opt-in, WINDSURFAPI_STABLE_DEVICE).
@@ -2679,8 +2709,15 @@ async function _handleChatCompletionsInner(body, context = {}) {
               // K8: attribute the spend to THIS account (per-account lifetime total).
               try { recordAccountSpend(a?.apiKey, _sr?.usage); } catch {}
               finalizeConnectAccount(a, { model: reqModelName, startTime: ccStart, err: null });
-              return { kind: 'ok' };
+              return { kind: 'ok', sr: _sr };
             } catch (err) {
+              // Client or server-level abort: the caller is gone (or the process
+              // is shutting down). Don't penalize the account, don't log a scary
+              // ERROR, and don't burn quota on more retries/failover.
+              if (abortController.signal.aborted || isAbortError(err)) {
+                finalizeConnectAccount(a, { model: reqModelName, startTime: ccStart, err: isAbortError(err) ? err : Object.assign(new Error('client disconnected'), { name: 'AbortError' }) });
+                return { kind: 'abort' };
+              }
               // Transient blip (5xx / ECONNRESET / server "unavailable") BEFORE
               // any byte hit the wire: the non-stream path already retries these
               // (devin-connect-openai.js maxRetries), but the stream path didn't,
@@ -2688,6 +2725,13 @@ async function _handleChatCompletionsInner(body, context = {}) {
               // client. Replay once on the SAME token while !emitted — replaying
               // after bytes are out would duplicate content, so it's gated.
               if (isConnectRetryable(err) && a && !emitted) {
+                // Don't start a replay if the client disconnected while we were
+                // catching the first error — writing to a dead socket is pointless
+                // and can leave the handler stuck.
+                if (abortController.signal.aborted) {
+                  finalizeConnectAccount(a, { model: reqModelName, startTime: ccStart, err: Object.assign(new Error('client disconnected'), { name: 'AbortError' }) });
+                  return { kind: 'abort' };
+                }
                 log.info(`Chat[${reqId}]: DEVIN_CONNECT stream transient error (${err.code || err.status}); replaying once on same token`);
                 bumpConnect('transient_replays');
                 try {
@@ -2695,8 +2739,15 @@ async function _handleChatCompletionsInner(body, context = {}) {
                   try { recordTokenUsage(_sr2?.usage); } catch {}
                   try { recordAccountSpend(a?.apiKey, _sr2?.usage); } catch {}
                   finalizeConnectAccount(a, { model: reqModelName, startTime: ccStart, err: null });
-                  return { kind: 'ok' };
+                  return { kind: 'ok', sr: _sr2 };
                 } catch (retryErr) {
+                  // If the client hung up during the replay, stop immediately rather
+                  // than falling through to the generic error handling which would
+                  // log an ERROR and possibly try to write to a dead socket.
+                  if (abortController.signal.aborted || isAbortError(retryErr)) {
+                    finalizeConnectAccount(a, { model: reqModelName, startTime: ccStart, err: isAbortError(retryErr) ? retryErr : Object.assign(new Error('client disconnected'), { name: 'AbortError' }) });
+                    return { kind: 'abort' };
+                  }
                   // Retry failed too — fall through to the normal handling below
                   // (which may still recover an UNAUTHORIZED via re-login, or
                   // surface the error). Reassign so the branches below see it.
@@ -2718,8 +2769,13 @@ async function _handleChatCompletionsInner(body, context = {}) {
                     try { recordTokenUsage(_sr3?.usage); } catch {}
                     try { recordAccountSpend(currentApiKeyForId(a.id, a.apiKey), _sr3?.usage); } catch {}
                     finalizeConnectAccount(a, { model: reqModelName, startTime: ccStart, err: null });
-                    return { kind: 'ok' };
+                    return { kind: 'ok', sr: _sr3 };
                   } catch (retryErr) {
+                    // Client disconnected while re-login was in flight — stop cleanly.
+                    if (abortController.signal.aborted || isAbortError(retryErr)) {
+                      finalizeConnectAccount(a, { model: reqModelName, startTime: ccStart, err: isAbortError(retryErr) ? retryErr : Object.assign(new Error('client disconnected'), { name: 'AbortError' }) });
+                      return { kind: 'abort' };
+                    }
                     // Fresh token still UNAUTHORIZED ⇒ entitlement wall, not a dead
                     // session (see non-stream path). Reclassify as MODEL_BLOCKED so
                     // we surface a clean error instead of storming re-login +
@@ -2769,7 +2825,32 @@ async function _handleChatCompletionsInner(body, context = {}) {
               }
               if (acct) triedKeys.push(acct.apiKey);
               const r = await attemptStream(acct);
-              if (r.kind === 'ok') break;
+              if (r.kind === 'ok') {
+                // Session continuity: commit the completed request→response pair
+                // from the streamed result so the next turn resolves to this same
+                // session_id via pair-chain overlap. Gate-checked + best-effort
+                // (no-op when reuse is off). r.sr is threaded from every success
+                // path (initial, transient replay, re-login retry) so the commit
+                // fires even after an upstream wobble — exactly when reuse helps.
+                try {
+                  const tc = r.sr?.toolCalls;
+                  const commitMsgs = [...connectMessages, {
+                    role: 'assistant',
+                    content: r.sr?.content || '',
+                    ...(tc?.length ? { tool_calls: tc.map((t, idx) => ({ id: t.id || `tc_${idx}`, function: { name: t.name, arguments: t.argumentsJson || t.arguments || '' } })) } : {}),
+                  }];
+                  commitConnectSession(callerKey || '', commitMsgs);
+                } catch { /* session commit is best-effort */ }
+                break;
+              }
+              // #225: a client-gone abort is not an account fault — stop the
+              // failover loop without penalty. No session commit here: the pair
+              // never completed, so committing would poison the chain with a
+              // half-turn that the next request could never match.
+              if (r.kind === 'abort') {
+                log.info(`Chat[${reqId}]: DEVIN_CONNECT stream aborted (client gone) — not failing over`);
+                break;
+              }
               // Re-check after the (awaited) attempt: the client may have hung up
               // while the upstream call was in flight. Bail before failing over.
               if (abortController.signal.aborted) {
@@ -2803,7 +2884,9 @@ async function _handleChatCompletionsInner(body, context = {}) {
               bumpConnect('failover_hops');
               acct = next;
             }
-            if (!res.writableEnded) { res.write('data: [DONE]\n\n'); res.end(); }
+            // If the client already disconnected, don't try to write to a dead
+            // socket — that can leave the handler stuck on a closed connection.
+            if (!abortController.signal.aborted && !res.writableEnded) { res.write('data: [DONE]\n\n'); res.end(); }
           } finally {
             unregisterSse();
             stopHeartbeat();
@@ -2821,6 +2904,11 @@ async function _handleChatCompletionsInner(body, context = {}) {
         finalizeConnectAccount(a, { model: reqModelName, startTime: ccStart, err: null });
         return { kind: 'ok', out };
       } catch (err) {
+        // Client or server-level abort: don't penalize the account or log ERROR.
+        if ((context.signal?.aborted) || isAbortError(err)) {
+          finalizeConnectAccount(a, { model: reqModelName, startTime: ccStart, err: isAbortError(err) ? err : Object.assign(new Error('client disconnected'), { name: 'AbortError' }) });
+          return { kind: 'abort' };
+        }
         if (err.code === 'UNAUTHORIZED' && a) {
           // No force — see the streaming path: honor the 60s cooldown so a
           // mass token-death event recovers each account once instead of
@@ -2833,6 +2921,11 @@ async function _handleChatCompletionsInner(body, context = {}) {
               finalizeConnectAccount(a, { model: reqModelName, startTime: ccStart, err: null });
               return { kind: 'ok', out };
             } catch (retryErr) {
+              // Client aborted during the re-login retry.
+              if ((context.signal?.aborted) || isAbortError(retryErr)) {
+                finalizeConnectAccount(a, { model: reqModelName, startTime: ccStart, err: isAbortError(retryErr) ? retryErr : Object.assign(new Error('client disconnected'), { name: 'AbortError' }) });
+                return { kind: 'abort' };
+              }
               // The re-login above minted a verifiably-fresh token (windsurfLogin
               // succeeded), so a SECOND UNAUTHORIZED on that brand-new token cannot
               // be a dead session — the account simply lacks entitlement for this
@@ -2860,6 +2953,11 @@ async function _handleChatCompletionsInner(body, context = {}) {
     };
     let acct = ccAcct;
     for (let hops = 0; ; hops++) {
+      if (context.signal?.aborted) {
+        if (acct) releaseAccountById(acct.id);
+        log.info(`Chat[${reqId}]: DEVIN_CONNECT non-stream aborted (client gone) — not failing over`);
+        return { status: 499, body: { error: { message: 'Client closed request', type: 'client_disconnect', code: 'client_disconnect' } } };
+      }
       if (acct) triedKeys.push(acct.apiKey);
       const r = await attempt(acct);
       if (r.kind === 'ok') {
@@ -2871,7 +2969,26 @@ async function _handleChatCompletionsInner(body, context = {}) {
         try { recordTokenUsage(r.out?.body?.usage); } catch {}
         // K8: per-account lifetime spend (non-stream connect path).
         try { recordAccountSpend(acct ? currentApiKeyForId(acct.id, acct.apiKey) : null, r.out?.body?.usage); } catch {}
+        // Session continuity: commit the completed request→response pair so the
+        // next turn resolves to this session_id via pair-chain overlap. The
+        // response tool_calls already ride the OpenAI function shape here.
+        // Gate-checked + best-effort (no-op when reuse is off).
+        try {
+          const msg = r.out?.body?.choices?.[0]?.message;
+          const commitMsgs = [...connectMessages, {
+            role: 'assistant',
+            content: msg?.content || '',
+            ...(msg?.tool_calls ? { tool_calls: msg.tool_calls } : {}),
+          }];
+          commitConnectSession(callerKey || '', commitMsgs);
+        } catch { /* session commit is best-effort */ }
         return r.out;
+      }
+      if (r.kind === 'abort') {
+        log.info(`Chat[${reqId}]: DEVIN_CONNECT non-stream aborted (client gone) — not failing over`);
+        // Return a 499 Client Closed Request; if the response socket is already
+        // gone the route handler will drop it harmlessly.
+        return { status: 499, body: { error: { message: 'Client closed request', type: 'client_disconnect', code: 'client_disconnect' } } };
       }
       if (r.kind === 'error') {
         // R1: QUOTA_EXHAUSTED / RATE_LIMITED are ACCOUNT dry-wells — the offending

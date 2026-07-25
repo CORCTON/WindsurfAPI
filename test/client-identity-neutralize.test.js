@@ -209,6 +209,105 @@ describe('neutralizeClientIdentity', () => {
     process.env.WINDSURFAPI_NEUTRALIZE_CLINE_OBJECTIVE = '1';
     assert.equal(neutralizeClientIdentity(OBJECTIVE_BLOCK), OBJECTIVE_BLOCK, 'main off-switch wins; a6 does not run');
   });
+
+  // 2026-07-20 (a7): codex apply_patch tool-DESCRIPTION content-policy trigger,
+  // live-bisected 7/7 by @forrinzhao (PR #219). apply_patch's description carries
+  // "FREEFORM tool, so do not wrap the patch in JSON." which trips Devin's content
+  // policy once the tool-description preamble is injected into the system prompt on
+  // the native path. Live A/B: BOTH fragments must change. Live-confirmed → runs
+  // unconditionally on the main WINDSURFAPI_NEUTRALIZE_CLIENT_ID switch.
+  const APPLY_PATCH_DESC = 'This is a FREEFORM tool, so do not wrap the patch in JSON. Provide the diff directly.';
+
+  it('(a7) rewrites both codex apply_patch content-policy trigger fragments', () => {
+    const out = neutralizeClientIdentity(APPLY_PATCH_DESC);
+    assert.ok(!/FREEFORM/.test(out), 'FREEFORM token gone');
+    assert.ok(!/do not wrap the patch in JSON\./.test(out), 'JSON-wrap fragment gone');
+    assert.match(out, /free-form/, 'reworded to free-form');
+    assert.match(out, /provide the patch as plain text\./, 'reworded JSON-wrap fragment');
+    assert.match(out, /Provide the diff directly\./, 'surrounding description preserved');
+  });
+
+  it('(a7) is idempotent — a second pass is a no-op', () => {
+    const once = neutralizeClientIdentity(APPLY_PATCH_DESC);
+    assert.equal(neutralizeClientIdentity(once), once, 'already-neutralized text unchanged');
+  });
+
+  it('(a7) leaves a normal tool description without the trigger untouched', () => {
+    const src = 'Apply a unified-diff patch to a file. Provide the diff as an argument.';
+    assert.equal(neutralizeClientIdentity(src), src, 'unrelated description untouched');
+  });
+
+  it('(a7) respects the main off-switch', () => {
+    process.env.WINDSURFAPI_NEUTRALIZE_CLIENT_ID = '0';
+    assert.equal(neutralizeClientIdentity(APPLY_PATCH_DESC), APPLY_PATCH_DESC, 'opt-out leaves it verbatim');
+  });
+});
+
+// 2026-07-16 (a6-grok/a6-grok2): Grok CLI's system prompt opens with "You are
+// Grok 4.5 released by xAI. You are an interactive CLI tool that helps users
+// with software engineering tasks." Live A/B on the Devin upstream proved that
+// exact self-ID line trips the content policy (permission_denied); the same
+// request with a generic assistant line passes. The competitor-specific
+// <executing_actions_with_care> safety paragraph rides in the same blocked
+// prompt body and is stripped whole. Both rules are unconditional like a1-a5,
+// gated only by the main WINDSURFAPI_NEUTRALIZE_CLIENT_ID switch (default on).
+describe('neutralizeClientIdentity — Grok / xAI rules (a6-grok)', () => {
+  const GROK_ID = 'You are Grok 4.5 released by xAI.';
+
+  it('rewrites the exact Grok self-identification', () => {
+    const out = neutralizeClientIdentity(GROK_ID + ' You are an interactive CLI tool that helps users with software engineering tasks.');
+    assert.ok(!/Grok/.test(out), 'no Grok');
+    assert.ok(!/xAI/.test(out), 'no xAI');
+    assert.match(out, /^You are an AI coding assistant\./, 'opens with the generic identity line');
+    assert.match(out, /You are an interactive CLI tool that helps users with software engineering tasks\./, 'rest of prompt preserved');
+  });
+
+  it('neutralizes the bare noun phrase without the leading "You are"', () => {
+    const out = neutralizeClientIdentity('Note: Grok 4 released by xAI is running.');
+    assert.ok(!/Grok/.test(out), 'no Grok');
+    assert.ok(!/released by xAI/i.test(out), 'no xAI attribution');
+    assert.match(out, /an AI coding assistant\./, 'generic noun phrase substituted');
+  });
+
+  it('matches any Grok version variant (4.5.1, 3 mini, ...)', () => {
+    assert.equal(
+      neutralizeClientIdentity('You are Grok 4.5.1 released by xAI.'),
+      'You are an AI coding assistant.',
+    );
+    assert.equal(
+      neutralizeClientIdentity('You are Grok 3 mini released by xAI.'),
+      'You are an AI coding assistant.',
+    );
+  });
+
+  it('strips the <executing_actions_with_care> block entirely', () => {
+    const out = neutralizeClientIdentity('<executing_actions_with_care>foo bar</executing_actions_with_care>');
+    assert.equal(out, '', 'inline block fully removed');
+  });
+
+  it('strips a multiline <executing_actions_with_care> block and keeps surrounding text', () => {
+    const src = 'Before.\n<executing_actions_with_care>\nfoo bar\nDouble-check destructive commands before running them.\n</executing_actions_with_care>\nAfter.';
+    const out = neutralizeClientIdentity(src);
+    assert.ok(!/executing_actions_with_care/i.test(out), 'tags removed');
+    assert.ok(!/foo bar/.test(out), 'block content removed');
+    assert.ok(!/destructive commands/.test(out), 'multiline content removed');
+    assert.match(out, /Before\./, 'content before kept');
+    assert.match(out, /After\./, 'content after kept');
+  });
+
+  it('leaves unrelated mentions of "Grok" alone (no "released by xAI" attribution)', () => {
+    // Bare mentions are safe — only the xAI-attributed self-ID phrasing is rewritten.
+    const src = 'Use the Logstash grok filter. Grok patterns parse logs.';
+    assert.equal(neutralizeClientIdentity(src), src, 'unrelated text untouched');
+    const plainId = 'You are Grok, a helpful assistant.';
+    assert.equal(neutralizeClientIdentity(plainId), plainId, 'un-attributed identity line untouched');
+  });
+
+  it('the Grok neutralization respects the opt-out flag', () => {
+    process.env.WINDSURFAPI_NEUTRALIZE_CLIENT_ID = '0';
+    const src = GROK_ID + '\n<executing_actions_with_care>Take care.</executing_actions_with_care>';
+    assert.equal(neutralizeClientIdentity(src), src, 'opt-out leaves it verbatim');
+  });
 });
 
 // P2 — Claude Code compat layer: the ccActive gate on the opt-in (cc) block.

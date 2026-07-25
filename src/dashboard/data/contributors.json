@@ -361,6 +361,63 @@
       "mergedAt": "2026-07-15",
       "title": "fix: disable Happy Eyeballs + use 127.0.0.1 for local HTTP/2",
       "summary": "网络层根因修复。DNS 把 server.codeium.com 解析到一个不可路由的 IPv6 ULA、排在可用的 IPv4 前面;Node 20+ 默认开 Happy Eyeballs(autoSelectFamily),但它的实现在 IPv6 connect 挂起时不回退 IPv4 —— 整个请求约 270ms 后 ETIMEDOUT 死掉(curl 靠 Happy Eyeballs 能活,Node 的实现不行)。修法:config.js 里 net.setDefaultAutoSelectFamily(false) 让 DNS 按默认顺序 IPv4 优先。这连带必须把所有本地 HTTP/2 连接从 localhost 换成 127.0.0.1(grpc.js/langserver.js):macOS 上 localhost 先解析成 ::1,而 autoSelectFamily=false 时 Node 只试第一个结果(::1)→ ECONNREFUSED(LS 只听 127.0.0.1 IPv4),不换会有 9 个测试回归。3 源文件精准改动,耦合关系在注释里讲清,零新依赖。"
+    },
+    {
+      "login": "warelik",
+      "githubId": 54947489,
+      "pr": 224,
+      "weight": "S",
+      "weightLabel": "429 reset window 双链根因 · 账号池不再自伤",
+      "summary": "两个必须同时修才有效果的链路缺陷。① resetMs 在传输层被丢:classifyUpstreamError 已正确解析出上游给的重置窗口(\"Resets in: 3h0m0s\"→resetMs),但 streamChat 的两条错误路径都只解构 { code, message },resetMs 从来没到达 handler,冷却退回到 burst 默认值(秒级)而不是真实的 3 小时。② model-scoped 冷却对池选择不可见:finalizeConnectAccount 走 markRateLimited(apiKey, resetMs, model) 写 _modelRateLimits,但 DEVIN_CONNECT 的 acquireConnectAccount 用 getApiKey(triedKeys, null, ...) 选池、modelKey=null,而 isRateLimitedForModel 只在 modelKey 为真时才查 _modelRateLimits —— 也就是说 model 维度的冷却结构上永远关不住这条路径。结果:刚被 429 的账号几秒内被重新选中,持续撞上游 velocity limiter 直到硬封(实测约 3h)。修法把窗口落到 account-wide rateLimitedUntil(getApiKey(modelKey=null) 唯一认的维度),并在传输层透传 resetMs。只修一条毫无可观测效果,warelik 把两条都定位到了。+2 传输层回归测试(非 200 响应 / JSON trailer 两条 429 路径都断言 resetMs 正确解析)。"
+    },
+    {
+      "login": "warelik",
+      "githubId": 54947489,
+      "pr": 225,
+      "weight": "A+",
+      "weightLabel": "客户端断连不再惩罚账号 · 配额与日志双重止血",
+      "summary": "客户端断连(用户 Ctrl-C / 网关超时 / 进程关停)此前会被当成账号故障:计入 error budget、触发跨账号 failover、刷 ERROR 日志,还可能往已关闭的 socket 继续写。修法在 DEVIN_CONNECT 的全部退出路径统一识别 abort —— isAbortError 同时认 err.name==='AbortError'、err.code==='ABORT_ERR' 和 /aborted/i(undici 与 Node AbortController 行为不一致,只认一种会漏),流式的首次尝试 / transient replay / re-login retry 三条 catch 分支、非流式的主路径与 re-login retry 全部覆盖,新增 kind:'abort' 结果类型让 failover 循环干净退出而不是继续烧配额,非流式返回 499 Client Closed Request。还堵了两个细节:replay 启动前重查 aborted(不对死 socket 发起重放)、[DONE] 写入前检查 aborted(避免卡在已关连接)。+35 行生命周期测试。对多用户/网关前置部署是实打实的配额止血。"
+    },
+    {
+      "login": "warelik",
+      "githubId": 54947489,
+      "pr": 226,
+      "weight": "S",
+      "weightLabel": "pair-chain 会话连续性 · 600 行自洽新模块(opt-in 默认关)",
+      "summary": "DEVIN_CONNECT 每次调用都用 randomUUID() 造新的 protobuf session_id(#16),上游 velocity limiter 眼里一段多轮对话 = N 个全新会话,平白放大账号级限流压力。warelik 写了 src/session-continuity.js(600 行,零 npm 依赖,只用 node crypto)从对话自身已完成的 request/response pair chain 推导稳定 session_id —— 显式不用 requestId/IP/时间戳/上游 session 这些外部标识:canonicalize 消息成事件(system/developer 排除出身份)、按语义槽位归一工具关联(能扛住 tool_call_id 重新生成)、切成完成对后逐对 HMAC(进程内 secret + callerKey 作用域)、用 overlap 打分解析并容忍输出漂移、响应后幂等提交,TTL + LRU 双重有界。root anchor 让 id 从第 1 轮就稳定,provisional-claim 规则让同开场白的不同对话在第 2 轮分叉。实测(2026-07-24, glm-5.2 真实上游)两段独立 3 轮对话各自 3 轮同 id、6 轮全 200、回复连贯,证明上游接受重复 session_id。DEVIN_CONNECT_SESSION_REUSE 默认 OFF,关闭时与现状字节等价 —— 对\"能否降低 429 频率\"这个无法用短 smoke 证明的问题保持了正确的保守姿态,先把\"重复 session_id 会不会被拒\"这个关键风险证伪。+381 行测试。"
+    },
+    {
+      "login": "warelik",
+      "githubId": 54947489,
+      "pr": 227,
+      "weight": "A",
+      "weightLabel": "Grok/xAI self-ID content-policy 中和 · a1-a5 家族第四个客户端",
+      "summary": "Grok CLI 的系统提示以 \"You are Grok 4.5 released by xAI.\" 开场,live A/B 确认这一行直接触发 Devin content policy(permission_denied),换成通用助手身份即通过 —— 与 a1(Claude Code)/a2(Agent-SDK)/a5(Cline)完全同族的指纹拦截。修法在 neutralizeClientIdentity 加 (a6-grok):正则捕获任意 Grok 版本号(4.5 / 4.5.1 / 3 mini 都命中)的 \"released by xAI\" 归一化式,同时匹配完整 \"You are ...\" 句式与裸名词短语;另加 (a6-grok2) 整块剥离 Grok 专有的 <executing_actions_with_care> 安全段落(同一个被拦请求里一起出现)。边界处理到位:未带 xAI 归属的 \"You are Grok, a helpful assistant.\" 和 Logstash grok filter 这类无关提及都不动。+6 测试含 off-switch。"
+    },
+    {
+      "login": "warelik",
+      "githubId": 54947489,
+      "pr": 228,
+      "weight": "B+",
+      "weightLabel": "thinking signature 空串改省略 · 严格客户端兼容",
+      "summary": "Anthropic thinking 块的 signature 是上游加密串,Devin/Cascade 从不产出,此前代理填空字符串占位。但严格客户端(Grok Build 的 messages 后端)会把 signature:\"\" 判为无效值直接拒掉。修法改成缺失时整个字段省略而不是填空串:非流式 openAIToAnthropic 里条件构造 thinking 块,流式 AnthropicStreamTranslator 只在真有 reasoning_signature 时才发 signature_delta。上游若将来真给 signature 仍原样透传(前向兼容不变)。测试相应从\"必有一个空串 signature_delta\"改为\"无真实签名时不发\",并保留 thinking_delta 与 content_block_stop 的顺序断言。"
+    },
+    {
+      "login": "warelik",
+      "githubId": 54947489,
+      "pr": 229,
+      "weight": "A",
+      "weightLabel": "Responses usage token details · 补齐 OpenAI 规范字段",
+      "summary": "Responses API 的 usage 此前只有 input_tokens/output_tokens/total_tokens 三个数,缺 OpenAI 规范里的 input_tokens_details / output_tokens_details。修法在 mapUsage 补齐两个明细对象:cached_tokens 与 reasoning_tokens 从 chat 层的 prompt_tokens_details / completion_tokens_details 透传,text_tokens 优先用上游显式值、没有才用减法推导(输入减 cached、输出减 reasoning),audio/image 槽位补零保持结构完整。与同期 DEVIN_CONNECT cache_read_tokens 的 wire tag 校准正好是一条链的两半 —— 校准让缓存命中数进得了 usage,这个 PR 让它以 OpenAI 标准形态出得了 Responses API,合起来 Codex 一类客户端才真正看得见缓存拆分。+3 测试覆盖透传/推导/显式值优先。"
+    },
+    {
+      "login": "forrinzhao",
+      "pr": 219,
+      "weight": "B+",
+      "weightLabel": "codex apply_patch FREEFORM 触发词 · content-policy 家族第四个客户端",
+      "mergedAt": "2026-07-24",
+      "title": "fix: neutralize codex apply_patch tool description to avoid content-policy block",
+      "summary": "发现 codex 的 apply_patch 工具描述里 \"FREEFORM tool, so do not wrap the patch in JSON.\" 这句会触发 Devin content policy,飞书 codex bot 全量请求被拦。live-bisect 7/7 确定性复现,并做了关键的双片段 A/B:只改 FREEFORM 一处仍然被拦,两处都改才通过 —— 面对 Devin 这个非确定性 content policy(同 prompt 先拦后过),这种重复验证是唯一靠谱的定位方法,项目里 a6 规则当初正是因为拿不到可靠 A/B 才 ship 成默认关。这个发现顺带暴露出一个更深的结构缺陷:工具描述 preamble 在 chat.js 里是注入在 neutralizeClientIdentity 之后的,导致 native 路径上任何经由工具描述进来的触发词都完整绕过 a1-a6 整条防线 —— 也就是说漏的不只是 FREEFORM。最终落地版把中和调整到 preamble 注入之后,并把这两条改写做成 (a7) 规则进既有序列(复用主开关与测试体系,而非新加 env),因此覆盖的是所有客户端、所有触发词。另采纳其 responses.js 修复:Codex 发的 input item 是裸 {role, content} 不带 type:'message',此前被静默丢弃导致上游收到空 messages → UPSTREAM_INTERNAL。PR 中另外附带的 __route 改动因会回退 gpt_native dialect(源码部署默认路径)未采纳。"
     }
   ]
 }

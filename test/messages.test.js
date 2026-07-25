@@ -80,10 +80,10 @@ describe('Anthropic messages request translation', () => {
     assert.equal(result.status, 200);
     assert.equal(result.body.content[0].type, 'thinking');
     assert.equal(result.body.content[0].thinking, 'plan');
-    // Anthropic thinking blocks must carry a `signature` field (empty-string
-    // proxy placeholder since upstream supplies none) so the block schema is
-    // spec-complete for the client SDK.
-    assert.equal(result.body.content[0].signature, '');
+    // When the upstream supplies no real reasoning_signature, the `signature` key
+    // is omitted entirely. Strict clients (e.g. Grok Build's messages backend)
+    // reject an empty-string placeholder as invalid.
+    assert.equal(result.body.content[0].signature, undefined);
     assert.equal(result.body.content[1].type, 'text');
     assert.equal(result.body.content[1].text, 'done');
   });
@@ -817,10 +817,11 @@ describe('Anthropic messages request translation', () => {
   });
 
   // Anthropic thinking-block sequence: content_block_start(thinking) →
-  // thinking_delta* → signature_delta → content_block_stop. The proxy emits an
-  // empty-string signature (upstream supplies none) but the event must exist and
-  // land before the block's stop.
-  it('emits exactly one signature_delta before content_block_stop for a streamed thinking block', async () => {
+  // thinking_delta* → [signature_delta] → content_block_stop. The proxy only
+  // emits a signature_delta when the upstream supplied a real reasoning_signature;
+  // otherwise the signature key is omitted so strict clients (e.g. Grok Build's
+  // messages backend) don't fail on an empty-string placeholder.
+  it('does not emit a signature_delta for a streamed thinking block without a real signature', async () => {
     const result = await handleMessages({
       model: 'claude-sonnet-4.6',
       stream: true,
@@ -852,20 +853,16 @@ describe('Anthropic messages request translation', () => {
     const thinkingIdx = thinkingStart.data.index;
 
     const sigDeltas = events.filter(e => e.event === 'content_block_delta' && e.data.delta?.type === 'signature_delta');
-    assert.equal(sigDeltas.length, 1, 'exactly one signature_delta emitted');
-    assert.equal(sigDeltas[0].data.index, thinkingIdx, 'signature_delta targets the thinking block');
-    assert.equal(sigDeltas[0].data.delta.signature, '', 'empty-string placeholder signature');
+    assert.equal(sigDeltas.length, 0, 'no signature_delta emitted without a real signature');
 
-    // Ordering: signature_delta must come AFTER all thinking_delta and BEFORE the
-    // thinking block's content_block_stop.
+    // Ordering: the thinking block's content_block_stop must come after the last
+    // thinking_delta.
     const order = events.map((e, i) => ({ i, e }));
-    const sigPos = order.find(o => o.e.event === 'content_block_delta' && o.e.data.delta?.type === 'signature_delta').i;
     const stopPos = order.find(o => o.e.event === 'content_block_stop' && o.e.data.index === thinkingIdx).i;
     const lastThinkingDeltaPos = Math.max(...order
       .filter(o => o.e.event === 'content_block_delta' && o.e.data.delta?.type === 'thinking_delta' && o.e.data.index === thinkingIdx)
       .map(o => o.i));
-    assert.ok(lastThinkingDeltaPos < sigPos, 'signature_delta comes after all thinking_delta');
-    assert.ok(sigPos < stopPos, 'signature_delta comes before content_block_stop');
+    assert.ok(lastThinkingDeltaPos < stopPos, 'content_block_stop comes after all thinking_delta');
   });
 
   it('does not emit signature_delta for text or tool_use blocks', async () => {

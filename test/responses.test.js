@@ -288,6 +288,25 @@ describe('responsesToChat', () => {
     ]);
   });
 
+  it('treats a bare {role, content} input item (no explicit type) as a message (Codex, #219)', () => {
+    // OpenAI Responses input items may omit `type: "message"` — Codex sends bare
+    // {role, content}. They must NOT be dropped (that produced an empty messages
+    // array upstream → UPSTREAM_INTERNAL). Tool-oriented items (no `role`) still
+    // route to their own handlers, so this only rescues real messages.
+    const out = responsesToChat({
+      input: [
+        { role: 'user', content: 'first' },
+        { role: 'assistant', content: 'ok' },
+        { role: 'user', content: 'second' },
+      ],
+    });
+    assert.deepEqual(out.messages, [
+      { role: 'user', content: 'first' },
+      { role: 'assistant', content: 'ok' },
+      { role: 'user', content: 'second' },
+    ]);
+  });
+
   it('maps function_call and function_call_output items to chat tool turns', () => {
     const out = responsesToChat({
       input: [
@@ -343,7 +362,54 @@ describe('chatToResponse', () => {
       role: 'assistant',
       content: [{ type: 'output_text', text: 'Hi', annotations: [] }],
     });
-    assert.deepEqual(response.usage, { input_tokens: 10, output_tokens: 2, total_tokens: 12 });
+    assert.deepEqual(response.usage, {
+      input_tokens: 10,
+      output_tokens: 2,
+      total_tokens: 12,
+      input_tokens_details: { text_tokens: 10, audio_tokens: 0, image_tokens: 0, cached_tokens: 0 },
+      output_tokens_details: { text_tokens: 2, audio_tokens: 0, reasoning_tokens: 0 },
+    });
+  });
+
+  it('derives text_tokens by subtracting cached/reasoning from the totals', () => {
+    const response = chatToResponse({
+      id: 'chatcmpl_2',
+      created: 123,
+      model: 'claude-sonnet-4.6',
+      choices: [{ index: 0, message: { role: 'assistant', content: 'Hi' }, finish_reason: 'stop' }],
+      usage: {
+        prompt_tokens: 100,
+        completion_tokens: 40,
+        total_tokens: 140,
+        prompt_tokens_details: { cached_tokens: 30, image_tokens: 5 },
+        completion_tokens_details: { reasoning_tokens: 12 },
+      },
+    }, 'claude-sonnet-4.6', 'resp_test', 'msg_test');
+    // input text_tokens = 100 - 30 cached; output text_tokens = 40 - 12 reasoning.
+    assert.deepEqual(response.usage, {
+      input_tokens: 100,
+      output_tokens: 40,
+      total_tokens: 140,
+      input_tokens_details: { text_tokens: 70, audio_tokens: 0, image_tokens: 5, cached_tokens: 30 },
+      output_tokens_details: { text_tokens: 28, audio_tokens: 0, reasoning_tokens: 12 },
+    });
+  });
+
+  it('prefers an explicit upstream text_tokens over the derived subtraction', () => {
+    const response = chatToResponse({
+      id: 'chatcmpl_3',
+      created: 123,
+      model: 'claude-sonnet-4.6',
+      choices: [{ index: 0, message: { role: 'assistant', content: 'Hi' }, finish_reason: 'stop' }],
+      usage: {
+        prompt_tokens: 100,
+        completion_tokens: 40,
+        prompt_tokens_details: { cached_tokens: 30, text_tokens: 65 },
+        completion_tokens_details: { reasoning_tokens: 12, text_tokens: 25 },
+      },
+    }, 'claude-sonnet-4.6', 'resp_test', 'msg_test');
+    assert.equal(response.usage.input_tokens_details.text_tokens, 65, 'explicit input text_tokens wins over 100-30');
+    assert.equal(response.usage.output_tokens_details.text_tokens, 25, 'explicit output text_tokens wins over 40-12');
   });
 
   it('maps chat tool_calls to function_call output items', () => {
@@ -659,7 +725,13 @@ describe('handleResponses streaming', () => {
     assert.equal(events[5].data.delta, 'lo');
     assert.equal(events[6].data.text, 'Hello');
     assert.equal(events.at(-1).data.response.status, 'completed');
-    assert.deepEqual(events.at(-1).data.response.usage, { input_tokens: 3, output_tokens: 2, total_tokens: 5 });
+    assert.deepEqual(events.at(-1).data.response.usage, {
+      input_tokens: 3,
+      output_tokens: 2,
+      total_tokens: 5,
+      input_tokens_details: { text_tokens: 3, audio_tokens: 0, image_tokens: 0, cached_tokens: 0 },
+      output_tokens_details: { text_tokens: 2, audio_tokens: 0, reasoning_tokens: 0 },
+    });
   });
 
   it('emits function_call events before the message and still completes on tool_calls finish', async () => {

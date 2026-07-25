@@ -21,21 +21,52 @@ mkdir -p "$(dirname "$LS_PATH")"
 mkdir -p "$LS_DATA_DIR/db"
 mkdir -p /tmp/windsurf-workspace
 
-# Check LS binary
+# Check LS binary. Its presence decides the default backend below: without a
+# language server the ONLY working backend is DEVIN_CONNECT (pure HTTP), so we
+# enable it in the generated .env instead of leaving the user on the Cascade
+# path with a missing binary. Matters most on macOS, where the binary has to be
+# extracted from Windsurf.app by hand.
 if [ -f "$LS_PATH" ]; then
   chmod +x "$LS_PATH"
+  LS_FOUND=1
   echo "[2/4] Language Server found at $LS_PATH"
 else
-  echo "[2/4] WARNING: Language Server not found at $LS_PATH"
-  echo "       Download it and place it there before starting the server"
-  echo "       chmod +x $LS_PATH"
+  LS_FOUND=0
+  echo "[2/4] Language Server not found at $LS_PATH"
+  if [ "$OS" = "Darwin" ]; then
+    echo "       That's fine on macOS — defaulting to DEVIN_CONNECT (pure HTTP, no binary)."
+    echo "       Only needed for the legacy Cascade backend; copy it out of Windsurf.app if you want that:"
+    echo "       \"\$HOME/Library/Application Support/Windsurf/resources/app/extensions/windsurf/bin/$(basename "$LS_PATH")\""
+  else
+    echo "       Defaulting to DEVIN_CONNECT (pure HTTP, no binary needed)."
+    echo "       For the legacy Cascade backend, place the binary there and chmod +x it."
+  fi
 fi
 
 # Generate .env if not exists
 if [ ! -f .env ]; then
   echo "[3/4] Generating .env..."
+  # Backend default follows what the machine can actually run (see [2/4]).
+  # NOTE: config.js only force-enables DEVIN_CONNECT for the packaged .exe
+  # (IS_PACKAGED), so a source install MUST set it here or it falls through to
+  # Cascade and demands the language_server binary.
+  if [ "$LS_FOUND" = "1" ]; then
+    DEVIN_CONNECT_LINE="# DEVIN_CONNECT=1"
+    RELOGIN_LINE="# DEVIN_CONNECT_AUTO_RELOGIN=1"
+  else
+    DEVIN_CONNECT_LINE="DEVIN_CONNECT=1"
+    RELOGIN_LINE="DEVIN_CONNECT_AUTO_RELOGIN=1"
+  fi
+  # Loopback bind for local dev boxes. A non-local bind FAILS CLOSED unless
+  # API_KEY + DASHBOARD_PASSWORD are set, which trips people running from source.
+  if [ "$OS" = "Darwin" ]; then
+    HOST_LINE="HOST=127.0.0.1"
+  else
+    HOST_LINE="# HOST=127.0.0.1"
+  fi
   cat > .env << ENVEOF
 PORT=3003
+$HOST_LINE
 API_KEY=
 DATA_DIR=
 DEFAULT_MODEL=claude-4.5-sonnet-thinking
@@ -45,12 +76,13 @@ DASHBOARD_PASSWORD=
 ALLOW_PRIVATE_PROXY_HOSTS=
 
 # ===== Backend: DEVIN_CONNECT (recommended, binary-less) =====
-# Pure HTTP to Devin cloud — no language_server binary needed. Set to 1 and add
-# a Devin account (dashboard "登录取号" page, or scripts/devin-connect-login.mjs).
+# Pure HTTP to Devin cloud — no language_server binary needed. Add a Devin
+# account via the dashboard "登录取号" page, or scripts/devin-connect-login.mjs.
 # The LS_* lines below are only for the legacy Cascade backend; leave as-is if
 # you use DEVIN_CONNECT.
-# DEVIN_CONNECT=1
-# DEVIN_CONNECT_AUTO_RELOGIN=1
+$DEVIN_CONNECT_LINE
+$RELOGIN_LINE
+# Required for auto-relogin to actually persist credentials (32+ chars):
 # DEVIN_CONNECT_CRED_KEY=
 
 # ===== Legacy Cascade backend (language server) =====
@@ -59,7 +91,11 @@ LS_DATA_DIR=$LS_DATA_DIR
 LS_PORT=42100
 ENVEOF
   echo "       Edit .env to set your API_KEY and DASHBOARD_PASSWORD"
-  echo "       For the Devin backend: uncomment DEVIN_CONNECT=1 and add an account"
+  if [ "$LS_FOUND" = "1" ]; then
+    echo "       For the Devin backend: uncomment DEVIN_CONNECT=1 and add an account"
+  else
+    echo "       DEVIN_CONNECT=1 enabled (no language server present)"
+  fi
 else
   echo "[3/4] .env already exists, skipping"
 fi
@@ -71,7 +107,7 @@ if [ -z "$NODE_VER" ]; then
 elif [ "$NODE_VER" -lt 20 ]; then
   echo "[4/4] WARNING: Node.js v$NODE_VER detected, need >= 20"
 else
-  echo "[4/4] Node.js v$(node -v) OK"
+  echo "[4/4] Node.js $(node -v) OK"
 fi
 
 echo ""
@@ -79,3 +115,10 @@ echo "=== Done ==="
 echo "Start:     node src/index.js"
 echo "Dev:       node --watch src/index.js"
 echo "Dashboard: http://localhost:3003/dashboard"
+if [ "$LS_FOUND" != "1" ]; then
+  echo ""
+  echo "Backend:   DEVIN_CONNECT (no language server needed)"
+  echo "Next:      add an account, or every request will 401 —"
+  echo "             dashboard \"登录取号\" page, or:"
+  echo "             LOGIN_REAL=1 node scripts/devin-connect-login.mjs <email> <password>"
+fi

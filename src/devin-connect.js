@@ -980,8 +980,31 @@ const FIELD = Object.freeze({ CONTENT: 3, FINISH: 5, META: 7, REASONING: 9 });
 //
 // All tags are read from the #7 metadata sub-message as varints. A future paid
 // calibration run (scripts/devin-connect-paid-verify.mjs style) discovers them.
+//
+// CONFIRMED 2026-07-23 (paid teams account, live A/B — issue #220): the cache-read
+// counter is tag 5. Two requests sharing a long system prefix: round-1 (miss) meta
+// dump = {2,3,6}, round-2 (hit) meta dump = {2,3,5,6} with tag5=3840 and tag2(fresh
+// input)=436, and 436+3840 == 4276 == round-1's total prompt_tokens. Cross-checked
+// against the response's labeled "Cached input tokens" fixed32 (== 3840.0). So
+// `DEVIN_CONNECT_BILLING_TAGS=cache_read_tokens=5` is safe on any paid account and
+// surfaces prompt_tokens_details.cached_tokens. This also settles #220: caching is
+// billed correctly (hit cost measured at 17.8% of miss); the gap was purely that
+// the dashboard couldn't SEE the cache split, not that credits were over-spent.
+// credit_cost / committed_* remain declaration-order-only and still need their own
+// paid calibration run.
+// cache_read_tokens=5 is calibration-confirmed (see above), so it ships ON by
+// default — otherwise prompt_tokens_details.cached_tokens is always 0 and the
+// dashboard silently over-attributes cached input as fresh (#220). Safe on free
+// accounts too: the counter is zero there, and protobuf omits zero-valued
+// scalars, so the tag is simply absent and nothing is decoded. Operators can
+// override the whole map (or drop the default) via DEVIN_CONNECT_BILLING_TAGS;
+// set it to `off` to decode nothing at all.
+const DEFAULT_BILLING_TAGS = 'cache_read_tokens=5';
+
 function parseBillingTagMap(env = process.env) {
-  const raw = String(env.DEVIN_CONNECT_BILLING_TAGS || '').trim();
+  const configured = String(env.DEVIN_CONNECT_BILLING_TAGS ?? '').trim();
+  if (configured.toLowerCase() === 'off') return null;
+  const raw = configured || DEFAULT_BILLING_TAGS;
   if (!raw) return null;
   const map = {};
   for (const pair of raw.split(',')) {
@@ -1831,8 +1854,17 @@ export async function* streamChat({
         // as transient. Best-effort JSON parse; falls back to body+status.
         let upstreamCode = null;
         try { upstreamCode = JSON.parse(body)?.error?.code || null; } catch { /* text body */ }
-        const { code, message } = classifyUpstreamError(body, upstreamCode, res.statusCode);
-        streamError = Object.assign(new Error(message), { code, status: res.statusCode });
+        // Preserve resetMs (audit F3): classifyUpstreamError parses an explicit
+        // reset window (e.g. "Resets in: 3h0m0s" → resetMs) but this path used to
+        // destructure only { code, message }, dropping it — so the handler cooled
+        // the account for a generic burst window instead of the real 3h. Forward
+        // it when present so finalizeConnectAccount can honor the true duration.
+        const classified = classifyUpstreamError(body, upstreamCode, res.statusCode);
+        streamError = Object.assign(new Error(classified.message), {
+          code: classified.code,
+          status: res.statusCode,
+          ...(classified.resetMs != null ? { resetMs: classified.resetMs } : {}),
+        });
         done = true;
         pump();
       });
@@ -1863,9 +1895,13 @@ export async function* streamChat({
             try {
               const parsed = JSON.parse(text);
               if (parsed?.error) {
-                const { code, message } = classifyUpstreamError(
+                const classified = classifyUpstreamError(
                   parsed.error.message || text, parsed.error.code || null, null);
-                streamError = Object.assign(new Error(message), { code, upstream: parsed.error });
+                streamError = Object.assign(new Error(classified.message), {
+                  code: classified.code,
+                  upstream: parsed.error,
+                  ...(classified.resetMs != null ? { resetMs: classified.resetMs } : {}),
+                });
               }
             } catch { /* non-JSON trailer — leave as success */ }
           }
