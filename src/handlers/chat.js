@@ -1815,6 +1815,14 @@ function connectFailoverMax(env = process.env) {
   return Number.isFinite(raw) && raw >= 0 ? raw : 2;
 }
 
+// True when an error is an AbortError (client disconnect / server shutdown).
+// Tests look at both name and code because Node's AbortController sets `name`
+// on errors it throws, while fetch/undici sometimes only sets `code: 'ABORT_ERR'`.
+function isAbortError(err) {
+  if (!err) return false;
+  return err.name === 'AbortError' || err.code === 'ABORT_ERR' || /aborted/i.test(err.message);
+}
+
 // Pair with acquireConnectAccount on every exit path. Records billing/stats and
 // returns the account to the pool. `err` null ⇒ success.
 export function finalizeConnectAccount(acct, { model, startTime, err }) {
@@ -1834,7 +1842,7 @@ export function finalizeConnectAccount(acct, { model, startTime, err }) {
   if (err) {
     // A client-side abort (caller disconnected) is not an account fault — just
     // release without penalizing the account's error budget.
-    const aborted = err.name === 'AbortError' || err.code === 'ABORT_ERR';
+    const aborted = isAbortError(err);
     if (aborted) { /* no penalty */ }
     // MODEL_BLOCKED is a tier/entitlement wall (free account asked for a paid
     // selector → upstream "/upgrade"), NOT an account-health problem. Penalizing
@@ -2684,6 +2692,13 @@ async function _handleChatCompletionsInner(body, context = {}) {
               finalizeConnectAccount(a, { model: reqModelName, startTime: ccStart, err: null });
               return { kind: 'ok' };
             } catch (err) {
+              // Client or server-level abort: the caller is gone (or the process
+              // is shutting down). Don't penalize the account, don't log a scary
+              // ERROR, and don't burn quota on more retries/failover.
+              if (abortController.signal.aborted || isAbortError(err)) {
+                finalizeConnectAccount(a, { model: reqModelName, startTime: ccStart, err: isAbortError(err) ? err : Object.assign(new Error('client disconnected'), { name: 'AbortError' }) });
+                return { kind: 'abort' };
+              }
               // Transient blip (5xx / ECONNRESET / server "unavailable") BEFORE
               // any byte hit the wire: the non-stream path already retries these
               // (devin-connect-openai.js maxRetries), but the stream path didn't,
@@ -2691,6 +2706,13 @@ async function _handleChatCompletionsInner(body, context = {}) {
               // client. Replay once on the SAME token while !emitted — replaying
               // after bytes are out would duplicate content, so it's gated.
               if (isConnectRetryable(err) && a && !emitted) {
+                // Don't start a replay if the client disconnected while we were
+                // catching the first error — writing to a dead socket is pointless
+                // and can leave the handler stuck.
+                if (abortController.signal.aborted) {
+                  finalizeConnectAccount(a, { model: reqModelName, startTime: ccStart, err: Object.assign(new Error('client disconnected'), { name: 'AbortError' }) });
+                  return { kind: 'abort' };
+                }
                 log.info(`Chat[${reqId}]: DEVIN_CONNECT stream transient error (${err.code || err.status}); replaying once on same token`);
                 bumpConnect('transient_replays');
                 try {
@@ -2700,6 +2722,13 @@ async function _handleChatCompletionsInner(body, context = {}) {
                   finalizeConnectAccount(a, { model: reqModelName, startTime: ccStart, err: null });
                   return { kind: 'ok' };
                 } catch (retryErr) {
+                  // If the client hung up during the replay, stop immediately rather
+                  // than falling through to the generic error handling which would
+                  // log an ERROR and possibly try to write to a dead socket.
+                  if (abortController.signal.aborted || isAbortError(retryErr)) {
+                    finalizeConnectAccount(a, { model: reqModelName, startTime: ccStart, err: isAbortError(retryErr) ? retryErr : Object.assign(new Error('client disconnected'), { name: 'AbortError' }) });
+                    return { kind: 'abort' };
+                  }
                   // Retry failed too — fall through to the normal handling below
                   // (which may still recover an UNAUTHORIZED via re-login, or
                   // surface the error). Reassign so the branches below see it.
@@ -2723,6 +2752,11 @@ async function _handleChatCompletionsInner(body, context = {}) {
                     finalizeConnectAccount(a, { model: reqModelName, startTime: ccStart, err: null });
                     return { kind: 'ok' };
                   } catch (retryErr) {
+                    // Client disconnected while re-login was in flight — stop cleanly.
+                    if (abortController.signal.aborted || isAbortError(retryErr)) {
+                      finalizeConnectAccount(a, { model: reqModelName, startTime: ccStart, err: isAbortError(retryErr) ? retryErr : Object.assign(new Error('client disconnected'), { name: 'AbortError' }) });
+                      return { kind: 'abort' };
+                    }
                     // Fresh token still UNAUTHORIZED ⇒ entitlement wall, not a dead
                     // session (see non-stream path). Reclassify as MODEL_BLOCKED so
                     // we surface a clean error instead of storming re-login +
@@ -2773,6 +2807,10 @@ async function _handleChatCompletionsInner(body, context = {}) {
               if (acct) triedKeys.push(acct.apiKey);
               const r = await attemptStream(acct);
               if (r.kind === 'ok') break;
+              if (r.kind === 'abort') {
+                log.info(`Chat[${reqId}]: DEVIN_CONNECT stream aborted (client gone) — not failing over`);
+                break;
+              }
               // Re-check after the (awaited) attempt: the client may have hung up
               // while the upstream call was in flight. Bail before failing over.
               if (abortController.signal.aborted) {
@@ -2806,7 +2844,9 @@ async function _handleChatCompletionsInner(body, context = {}) {
               bumpConnect('failover_hops');
               acct = next;
             }
-            if (!res.writableEnded) { res.write('data: [DONE]\n\n'); res.end(); }
+            // If the client already disconnected, don't try to write to a dead
+            // socket — that can leave the handler stuck on a closed connection.
+            if (!abortController.signal.aborted && !res.writableEnded) { res.write('data: [DONE]\n\n'); res.end(); }
           } finally {
             unregisterSse();
             stopHeartbeat();
@@ -2824,6 +2864,11 @@ async function _handleChatCompletionsInner(body, context = {}) {
         finalizeConnectAccount(a, { model: reqModelName, startTime: ccStart, err: null });
         return { kind: 'ok', out };
       } catch (err) {
+        // Client or server-level abort: don't penalize the account or log ERROR.
+        if ((context.signal?.aborted) || isAbortError(err)) {
+          finalizeConnectAccount(a, { model: reqModelName, startTime: ccStart, err: isAbortError(err) ? err : Object.assign(new Error('client disconnected'), { name: 'AbortError' }) });
+          return { kind: 'abort' };
+        }
         if (err.code === 'UNAUTHORIZED' && a) {
           // No force — see the streaming path: honor the 60s cooldown so a
           // mass token-death event recovers each account once instead of
@@ -2836,6 +2881,11 @@ async function _handleChatCompletionsInner(body, context = {}) {
               finalizeConnectAccount(a, { model: reqModelName, startTime: ccStart, err: null });
               return { kind: 'ok', out };
             } catch (retryErr) {
+              // Client aborted during the re-login retry.
+              if ((context.signal?.aborted) || isAbortError(retryErr)) {
+                finalizeConnectAccount(a, { model: reqModelName, startTime: ccStart, err: isAbortError(retryErr) ? retryErr : Object.assign(new Error('client disconnected'), { name: 'AbortError' }) });
+                return { kind: 'abort' };
+              }
               // The re-login above minted a verifiably-fresh token (windsurfLogin
               // succeeded), so a SECOND UNAUTHORIZED on that brand-new token cannot
               // be a dead session — the account simply lacks entitlement for this
@@ -2863,6 +2913,11 @@ async function _handleChatCompletionsInner(body, context = {}) {
     };
     let acct = ccAcct;
     for (let hops = 0; ; hops++) {
+      if (context.signal?.aborted) {
+        if (acct) releaseAccountById(acct.id);
+        log.info(`Chat[${reqId}]: DEVIN_CONNECT non-stream aborted (client gone) — not failing over`);
+        return { status: 499, body: { error: { message: 'Client closed request', type: 'client_disconnect', code: 'client_disconnect' } } };
+      }
       if (acct) triedKeys.push(acct.apiKey);
       const r = await attempt(acct);
       if (r.kind === 'ok') {
@@ -2875,6 +2930,12 @@ async function _handleChatCompletionsInner(body, context = {}) {
         // K8: per-account lifetime spend (non-stream connect path).
         try { recordAccountSpend(acct ? currentApiKeyForId(acct.id, acct.apiKey) : null, r.out?.body?.usage); } catch {}
         return r.out;
+      }
+      if (r.kind === 'abort') {
+        log.info(`Chat[${reqId}]: DEVIN_CONNECT non-stream aborted (client gone) — not failing over`);
+        // Return a 499 Client Closed Request; if the response socket is already
+        // gone the route handler will drop it harmlessly.
+        return { status: 499, body: { error: { message: 'Client closed request', type: 'client_disconnect', code: 'client_disconnect' } } };
       }
       if (r.kind === 'error') {
         // R1: QUOTA_EXHAUSTED / RATE_LIMITED are ACCOUNT dry-wells — the offending
