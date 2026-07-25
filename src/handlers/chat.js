@@ -58,6 +58,7 @@ import { resolveConnectSelector } from '../devin-connect-models.js';
 import { isRetryable as isConnectRetryable, getToolDefTags, parseToolCallTagMap } from '../devin-connect.js';
 import { isRouterModel, assignModel } from '../devin-connect-catalog.js';
 import { bumpConnect } from '../devin-connect-metrics.js';
+import { resolveSessionId as resolveConnectSessionId, commitAfterResponse as commitConnectSession } from '../session-continuity.js';
 import { newTraceId, traceClientRequest, traceRouting, traceClientResponse, traceEnabled } from '../trace.js';
 import { sanitizeText, sanitizeToolCall, PathSanitizeStream } from '../sanitize.js';
 import { systemFingerprint } from '../system-fingerprint.js';
@@ -2511,6 +2512,19 @@ async function _handleChatCompletionsInner(body, context = {}) {
     }
     const ccAcct = await acquireConnectAccount(context.signal, callerKey, selector);
     const connectParams = { messages: connectMessages, model: selector };
+    // Session continuity (opt-in, DEVIN_CONNECT_SESSION_REUSE, default OFF). Derive
+    // a stable protobuf session_id (#16) from the conversation's completed request/
+    // response pair chain so a multi-turn dialog reuses ONE session_id instead of
+    // minting a fresh randomUUID per call — which the upstream velocity limiter
+    // reads as N brand-new sessions. Resolves BEFORE dispatch on the client's own
+    // history; returns null (⇒ fresh per-request uuid, byte-identical to today) when
+    // the gate is off. Uses connectMessages so the fingerprint reflects exactly what
+    // rides the wire.
+    const connectSessionId = resolveConnectSessionId(callerKey || '', connectMessages);
+    if (connectSessionId) {
+      connectParams.sessionId = connectSessionId;
+      log.info(`Chat[${reqId}]: DEVIN_CONNECT session reuse active → session_id=${connectSessionId}`);
+    }
     if (ccAcct) {
       connectParams.token = ccAcct.apiKey;
       // Stable per-account device fingerprint (opt-in, WINDSURFAPI_STABLE_DEVICE).
@@ -2690,7 +2704,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
               // K8: attribute the spend to THIS account (per-account lifetime total).
               try { recordAccountSpend(a?.apiKey, _sr?.usage); } catch {}
               finalizeConnectAccount(a, { model: reqModelName, startTime: ccStart, err: null });
-              return { kind: 'ok' };
+              return { kind: 'ok', sr: _sr };
             } catch (err) {
               // Client or server-level abort: the caller is gone (or the process
               // is shutting down). Don't penalize the account, don't log a scary
@@ -2720,7 +2734,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
                   try { recordTokenUsage(_sr2?.usage); } catch {}
                   try { recordAccountSpend(a?.apiKey, _sr2?.usage); } catch {}
                   finalizeConnectAccount(a, { model: reqModelName, startTime: ccStart, err: null });
-                  return { kind: 'ok' };
+                  return { kind: 'ok', sr: _sr2 };
                 } catch (retryErr) {
                   // If the client hung up during the replay, stop immediately rather
                   // than falling through to the generic error handling which would
@@ -2750,7 +2764,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
                     try { recordTokenUsage(_sr3?.usage); } catch {}
                     try { recordAccountSpend(currentApiKeyForId(a.id, a.apiKey), _sr3?.usage); } catch {}
                     finalizeConnectAccount(a, { model: reqModelName, startTime: ccStart, err: null });
-                    return { kind: 'ok' };
+                    return { kind: 'ok', sr: _sr3 };
                   } catch (retryErr) {
                     // Client disconnected while re-login was in flight — stop cleanly.
                     if (abortController.signal.aborted || isAbortError(retryErr)) {
@@ -2806,7 +2820,28 @@ async function _handleChatCompletionsInner(body, context = {}) {
               }
               if (acct) triedKeys.push(acct.apiKey);
               const r = await attemptStream(acct);
-              if (r.kind === 'ok') break;
+              if (r.kind === 'ok') {
+                // Session continuity: commit the completed request→response pair
+                // from the streamed result so the next turn resolves to this same
+                // session_id via pair-chain overlap. Gate-checked + best-effort
+                // (no-op when reuse is off). r.sr is threaded from every success
+                // path (initial, transient replay, re-login retry) so the commit
+                // fires even after an upstream wobble — exactly when reuse helps.
+                try {
+                  const tc = r.sr?.toolCalls;
+                  const commitMsgs = [...connectMessages, {
+                    role: 'assistant',
+                    content: r.sr?.content || '',
+                    ...(tc?.length ? { tool_calls: tc.map((t, idx) => ({ id: t.id || `tc_${idx}`, function: { name: t.name, arguments: t.argumentsJson || t.arguments || '' } })) } : {}),
+                  }];
+                  commitConnectSession(callerKey || '', commitMsgs);
+                } catch { /* session commit is best-effort */ }
+                break;
+              }
+              // #225: a client-gone abort is not an account fault — stop the
+              // failover loop without penalty. No session commit here: the pair
+              // never completed, so committing would poison the chain with a
+              // half-turn that the next request could never match.
               if (r.kind === 'abort') {
                 log.info(`Chat[${reqId}]: DEVIN_CONNECT stream aborted (client gone) — not failing over`);
                 break;
@@ -2929,6 +2964,19 @@ async function _handleChatCompletionsInner(body, context = {}) {
         try { recordTokenUsage(r.out?.body?.usage); } catch {}
         // K8: per-account lifetime spend (non-stream connect path).
         try { recordAccountSpend(acct ? currentApiKeyForId(acct.id, acct.apiKey) : null, r.out?.body?.usage); } catch {}
+        // Session continuity: commit the completed request→response pair so the
+        // next turn resolves to this session_id via pair-chain overlap. The
+        // response tool_calls already ride the OpenAI function shape here.
+        // Gate-checked + best-effort (no-op when reuse is off).
+        try {
+          const msg = r.out?.body?.choices?.[0]?.message;
+          const commitMsgs = [...connectMessages, {
+            role: 'assistant',
+            content: msg?.content || '',
+            ...(msg?.tool_calls ? { tool_calls: msg.tool_calls } : {}),
+          }];
+          commitConnectSession(callerKey || '', commitMsgs);
+        } catch { /* session commit is best-effort */ }
         return r.out;
       }
       if (r.kind === 'abort') {
