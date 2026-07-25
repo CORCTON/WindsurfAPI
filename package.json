@@ -1,6 +1,6 @@
 {
   "name": "windsurf-api",
-  "version": "3.6.0",
+  "version": "3.7.0",
   "description": "Windsurf/Devin to OpenAI + Anthropic + Gemini compatible API proxy. Turns Devin's 100+ AI models (Claude, GPT, Gemini, DeepSeek, Grok, Qwen, Kimi, GLM, SWE) into multi-protocol API endpoints. Zero npm runtime dependencies (image codecs vendored under src/vendor).",
   "type": "module",
   "main": "src/index.js",
@@ -36,7 +36,11 @@
       "src/data/*.json",
       "package.json"
     ],
-    "targets": ["node22-win-x64", "node22-macos-arm64", "node22-macos-x64"],
+    "targets": [
+      "node22-win-x64",
+      "node22-macos-arm64",
+      "node22-macos-x64"
+    ],
     "outputPath": "dist-windows"
   },
   "engines": {
