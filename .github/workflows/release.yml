@@ -107,25 +107,13 @@ jobs:
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "**Platform:** \`linux/amd64\`" >> "$GITHUB_STEP_SUMMARY"
 
-  macos-exe:
-    name: macOS single-binary (${{ matrix.arch }})
+  macos-exe-arm64:
+    name: macOS single-binary (arm64)
     needs: test
-    runs-on: ${{ matrix.runner }}
+    runs-on: macos-latest
     timeout-minutes: 30
     permissions:
       contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: arm64
-            runner: macos-latest
-            pkg_target: node22-macos-arm64
-            output: dist-macos/windsurfapi-macos-arm64
-          - arch: x64
-            runner: macos-13
-            pkg_target: node22-macos-x64
-            output: dist-macos/windsurfapi-macos-x64
 
     steps:
       - name: Checkout
@@ -136,20 +124,20 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Build windsurfapi-macos-${{ matrix.arch }}
+      - name: Build windsurfapi-macos-arm64
         run: |
           npm i -g @yao-pkg/pkg@6.21.0 esbuild
           npm run build:bundle
           mkdir -p dist-macos
-          pkg src/_bundle.cjs --config package.json --targets ${{ matrix.pkg_target }} --output ${{ matrix.output }}
+          pkg src/_bundle.cjs --config package.json --targets node22-macos-arm64 --output dist-macos/windsurfapi-macos-arm64
 
       - name: Smoke-check the binary boots
         run: |
-          chmod +x ${{ matrix.output }}
-          xattr -d com.apple.quarantine ${{ matrix.output }} 2>/dev/null || true
+          chmod +x dist-macos/windsurfapi-macos-arm64
+          xattr -d com.apple.quarantine dist-macos/windsurfapi-macos-arm64 2>/dev/null || true
           DEVIN_CONNECT=1 HOST=127.0.0.1 PORT=3999 API_KEY=ci-smoke \
             DATA_DIR="$RUNNER_TEMP/wa-smoke" WINDSURFAPI_NO_OPEN=1 \
-            ${{ matrix.output }} &
+            dist-macos/windsurfapi-macos-arm64 &
           EXE_PID=$!
           ok=0
           for i in $(seq 1 40); do
@@ -157,8 +145,6 @@ jobs:
             code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 http://127.0.0.1:3999/health 2>/dev/null) || true
             [ "$code" = "200" ] && ok=1 && break
           done
-          # Check /dashboard BEFORE killing — mirrors Windows smoke which stops the
-          # process only after both checks. Killing first leaves the port closed.
           dash=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 http://127.0.0.1:3999/dashboard 2>/dev/null) || true
           kill $EXE_PID 2>/dev/null || true
           [ "$ok" = "1" ] || { echo "Binary did not answer /health"; exit 1; }
@@ -168,8 +154,64 @@ jobs:
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
         with:
-          name: windsurfapi-macos-${{ matrix.arch }}
-          path: ${{ matrix.output }}
+          name: windsurfapi-macos-arm64
+          path: dist-macos/windsurfapi-macos-arm64
+          if-no-files-found: error
+
+  # macos-13 (Intel) runner pool is shrinking as GitHub migrates to ARM.
+  # x64 can queue for hours — it is NOT in the release `needs` so it never
+  # blocks the release. If it finishes in time its artifact is picked up;
+  # otherwise the release ships without the x64 binary.
+  macos-exe-x64:
+    name: macOS single-binary (x64 — non-blocking)
+    needs: test
+    runs-on: macos-13
+    continue-on-error: true
+    timeout-minutes: 45
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Build windsurfapi-macos-x64
+        run: |
+          npm i -g @yao-pkg/pkg@6.21.0 esbuild
+          npm run build:bundle
+          mkdir -p dist-macos
+          pkg src/_bundle.cjs --config package.json --targets node22-macos-x64 --output dist-macos/windsurfapi-macos-x64
+
+      - name: Smoke-check the binary boots
+        run: |
+          chmod +x dist-macos/windsurfapi-macos-x64
+          xattr -d com.apple.quarantine dist-macos/windsurfapi-macos-x64 2>/dev/null || true
+          DEVIN_CONNECT=1 HOST=127.0.0.1 PORT=3999 API_KEY=ci-smoke \
+            DATA_DIR="$RUNNER_TEMP/wa-smoke" WINDSURFAPI_NO_OPEN=1 \
+            dist-macos/windsurfapi-macos-x64 &
+          EXE_PID=$!
+          ok=0
+          for i in $(seq 1 40); do
+            sleep 0.5
+            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 http://127.0.0.1:3999/health 2>/dev/null) || true
+            [ "$code" = "200" ] && ok=1 && break
+          done
+          dash=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 http://127.0.0.1:3999/dashboard 2>/dev/null) || true
+          kill $EXE_PID 2>/dev/null || true
+          [ "$ok" = "1" ] || { echo "Binary did not answer /health"; exit 1; }
+          [ "$dash" = "200" ] || { echo "Binary did not serve /dashboard (asset bundling broken?)"; exit 1; }
+          echo "Smoke OK: /health 200 + /dashboard served"
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windsurfapi-macos-x64
+          path: dist-macos/windsurfapi-macos-x64
           if-no-files-found: error
 
   windows-exe:
@@ -292,7 +334,7 @@ jobs:
 
   release:
     name: GitHub Release
-    needs: [docker, windows-exe, macos-exe]
+    needs: [docker, windows-exe, macos-exe-arm64]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -333,15 +375,17 @@ jobs:
           name: windsurfapi-macos-arm64
           path: dist-macos
 
-      - name: Download macOS x64 binary
+      - name: Download macOS x64 binary (optional — macos-13 runner may be slow)
         uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           name: windsurfapi-macos-x64
           path: dist-macos
 
-      - name: Package macOS zip (arm64 + x64 + scripts)
+      - name: Package macOS zip (arm64 + scripts; x64 included if available)
         run: |
-          chmod +x dist-macos/windsurfapi-macos-arm64 dist-macos/windsurfapi-macos-x64
+          chmod +x dist-macos/windsurfapi-macos-arm64
+          [ -f dist-macos/windsurfapi-macos-x64 ] && chmod +x dist-macos/windsurfapi-macos-x64 || true
           cp deploy/macos/run.sh dist-macos/
           cp deploy/macos/run-background.sh dist-macos/
           cp deploy/macos/stop.sh dist-macos/
@@ -364,5 +408,4 @@ jobs:
             dist-windows/windsurfapi.exe
             dist-windows/windsurfapi-windows.zip
             dist-macos/windsurfapi-macos-arm64
-            dist-macos/windsurfapi-macos-x64
             windsurfapi-macos.zip
