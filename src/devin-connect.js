@@ -980,6 +980,18 @@ const FIELD = Object.freeze({ CONTENT: 3, FINISH: 5, META: 7, REASONING: 9 });
 //
 // All tags are read from the #7 metadata sub-message as varints. A future paid
 // calibration run (scripts/devin-connect-paid-verify.mjs style) discovers them.
+//
+// CONFIRMED 2026-07-23 (paid teams account, live A/B — issue #220): the cache-read
+// counter is tag 5. Two requests sharing a long system prefix: round-1 (miss) meta
+// dump = {2,3,6}, round-2 (hit) meta dump = {2,3,5,6} with tag5=3840 and tag2(fresh
+// input)=436, and 436+3840 == 4276 == round-1's total prompt_tokens. Cross-checked
+// against the response's labeled "Cached input tokens" fixed32 (== 3840.0). So
+// `DEVIN_CONNECT_BILLING_TAGS=cache_read_tokens=5` is safe on any paid account and
+// surfaces prompt_tokens_details.cached_tokens. This also settles #220: caching is
+// billed correctly (hit cost measured at 17.8% of miss); the gap was purely that
+// the dashboard couldn't SEE the cache split, not that credits were over-spent.
+// credit_cost / committed_* remain declaration-order-only and still need their own
+// paid calibration run.
 function parseBillingTagMap(env = process.env) {
   const raw = String(env.DEVIN_CONNECT_BILLING_TAGS || '').trim();
   if (!raw) return null;

@@ -383,7 +383,12 @@ export function responsesToChat(body) {
   } else if (Array.isArray(body.input)) {
     for (const item of body.input) {
       if (!item || typeof item !== 'object') continue;
-      if (item.type === 'message') {
+      // OpenAI Responses API input items may be bare {role, content} objects (no
+      // explicit `type: "message"`) — Codex sends them this way. Treat any item
+      // carrying a `role` (and no tool-oriented `type`) as a message so it isn't
+      // silently dropped (which produced an empty messages array upstream →
+      // UPSTREAM_INTERNAL). (PR #219, @forrinzhao)
+      if (item.type === 'message' || (item.role && !item.type)) {
         flushToolCalls.flush();
         // `developer` is the OpenAI o-series / Codex system channel (its primary
         // instruction role, e.g. AGENTS.md / environment context). Map it to
