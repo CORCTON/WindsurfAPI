@@ -92,3 +92,47 @@ describe('sticky fast path honors excludeKeys', () => {
     auth.releaseAccountById(next.id);
   });
 });
+
+describe('sticky binding survives a background re-login (affinity vs. token churn)', () => {
+  beforeEach(() => sticky.resetAllBindings());
+
+  it('a re-keyed account still honors its binding — cache lives on the account, not the token', () => {
+    const A = seed('rekeyed');
+    seed('other-peer');
+
+    sticky.setStickyBinding(CALLER, null, A.id, A.apiKey);
+
+    // Background re-login: pool object's apiKey is swapped IN PLACE, id unchanged,
+    // status forced back to 'active' (auth.js reLoginAccount). The binding still
+    // holds the OLD key snapshot.
+    const staleKey = A.apiKey;
+    A.apiKey = `devin-session-token$fresh-${Math.random().toString(36).slice(2)}`;
+    A.status = 'active';
+    assert.notEqual(A.apiKey, staleKey, 'precondition: the account was re-keyed');
+
+    const picked = auth.getApiKey([], null, CALLER, null);
+    assert.ok(picked, 'a re-keyed bound account must still be selectable');
+    assert.equal(picked.id, A.id, 'affinity must survive the key swap');
+    assert.equal(picked._sticky, true, 'and it must be a sticky hit, not a sort coincidence');
+    assert.equal(picked.apiKey, A.apiKey, 'the CURRENT key is handed out, never the stale snapshot');
+    auth.releaseAccountById(picked.id);
+
+    assert.ok(sticky.getStickyBinding(CALLER, null), 'binding must not have been cleared');
+  });
+
+  it('a re-keyed account that is also in triedKeys still falls through (excludeKeys wins)', () => {
+    const A = seed('rekeyed-burned');
+    seed('healthy-peer');
+
+    sticky.setStickyBinding(CALLER, null, A.id, A.apiKey);
+    A.apiKey = `devin-session-token$fresh2-${Math.random().toString(36).slice(2)}`;
+
+    // The failover hop excludes the CURRENT key (that is what triedKeys carries).
+    // Surviving a re-login must not make a binding immune to exclusion.
+    const hop = auth.getApiKey([A.apiKey], null, CALLER, null);
+    assert.ok(hop, 'some healthy pool member must serve the hop');
+    assert.notEqual(hop.id, A.id, 'exclusion must still beat the binding');
+    auth.releaseAccountById(hop.id);
+    assert.equal(sticky.getStickyBinding(CALLER, null), null, 'excluded binding is cleared');
+  });
+});

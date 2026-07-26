@@ -1282,9 +1282,20 @@ export function getApiKey(excludeKeys = [], modelKey = null, callerKey = null, c
   if (callerKey && isStickyEnabled()) {
     const bound = getStickyBinding(callerKey, modelKey);
     if (bound) {
-      const acct = accounts.find(a => a.id === bound.accountId && a.status === 'active' && a.apiKey === bound.apiKey);
+      // Match by account id ONLY — never by the apiKey snapshot taken at bind time.
+      // A background re-login swaps account.apiKey in place (keeping the id and
+      // forcing status='active'), and the connect path fires re-login on every
+      // UNAUTHORIZED, possibly triggered by a DIFFERENT caller sharing the account.
+      // Requiring key equality therefore broke affinity precisely in the
+      // dead-token→re-login scenario connect deployments hit constantly: the
+      // binding missed, got cleared, and the conversation migrated to another
+      // account with a full prompt-cache rewrite even though the bound account was
+      // healthy under its fresh token. The upstream prompt cache lives on the
+      // ACCOUNT, not on the session token, so a re-keyed account still owns it.
+      // The key handed back below is always the pool object's CURRENT one.
+      const acct = accounts.find(a => a.id === bound.accountId && a.status === 'active');
       if (!acct) {
-        log.debug(`[sticky] bound account ${bound.accountId} not selectable (removed, disabled, or re-keyed) — falling through`);
+        log.debug(`[sticky] bound account ${bound.accountId} not selectable (removed or disabled) — falling through`);
       }
       // A bound account listed in excludeKeys was already burned by THIS request
       // (dead token / failover hop passes triedKeys here). Honoring the binding
@@ -1295,7 +1306,7 @@ export function getApiKey(excludeKeys = [], modelKey = null, callerKey = null, c
       if (acct && !excludeKeys.includes(acct.apiKey)) {
         const limit = rpmLimitFor(acct);
         const used = pruneRpmHistory(acct, now);
-        if (limit > 0 && used < limit && !isRateLimitedForModel(acct, modelKey, now) && !isAccountInMaintenance(acct)) {
+        if (limit > 0 && used < limit && !isCooledForRequest(acct, modelKey, connectSelector, now) && !isAccountInMaintenance(acct)) {
           if ((!modelKey || isModelAllowedForAccount(acct, modelKey))
               && (!connectSelector || isConnectSelectorAllowedForAccount(acct, connectSelector))) {
             const reservationTimestamp = nextReservationToken(now);
@@ -1330,7 +1341,7 @@ export function getApiKey(excludeKeys = [], modelKey = null, callerKey = null, c
     if (a.status !== 'active') continue;
     if (excludeKeys.includes(a.apiKey)) continue;
     if (isAccountInMaintenance(a)) continue;
-    if (isRateLimitedForModel(a, modelKey, now)) continue;
+    if (isCooledForRequest(a, modelKey, connectSelector, now)) continue;
     const limit = rpmLimitFor(a);
     if (limit <= 0) continue; // expired tier
     const used = pruneRpmHistory(a, now);
@@ -2091,6 +2102,22 @@ function maybeRecoverErrorAccount(account, now) {
 /**
  * Check if an account is rate-limited for a specific model.
  */
+/**
+ * Cooldown check across BOTH model dimensions a request can carry.
+ *
+ * The connect path selects with modelKey=null and a `connectSelector` instead, so
+ * a model-scoped cooldown written under the selector (CAPACITY, chat.js) is
+ * invisible to isRateLimitedForModel(account, null) — the structural trap #224 hit
+ * for RATE_LIMITED. Checking both keys makes a selector-scoped cooldown actually
+ * gate connect selection while keeping the account healthy for every other model.
+ */
+function isCooledForRequest(account, modelKey, connectSelector, now) {
+  if (isRateLimitedForModel(account, modelKey, now)) return true;
+  if (connectSelector && connectSelector !== modelKey
+      && isRateLimitedForModel(account, connectSelector, now)) return true;
+  return false;
+}
+
 function isRateLimitedForModel(account, modelKey, now) {
   // Global rate limit (transient dimension — short cooldowns)
   if (account.rateLimitedUntil && account.rateLimitedUntil > now) return true;
