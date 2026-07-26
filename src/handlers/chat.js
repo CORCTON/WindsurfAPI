@@ -1829,6 +1829,16 @@ function acquireConnectFailover(triedKeys, signal, callerKey, selector = null) {
 // would silently never resolve on lookup.
 export function bindConnectSticky(callerKey, acct) {
   if (!callerKey || !acct?.id || !isStickyEnabled()) return;
+  // Same per-user-scope gate every Cascade sticky write sits behind (via
+  // reuseEnabled → !sharedApiKeyNoScope, chat.js hasPerUserScope / SEC-W2):
+  // a bare `api:<hash>` or guessed `:client:` callerKey is N end users behind
+  // one key, not one conversation. Binding that collapses ALL of a shared-key
+  // deployment's traffic into one slot — every request funnels onto a single
+  // account until it saturates, then the whole herd migrates and mass
+  // re-writes every conversation's prompt cache at once. Single-tenant
+  // self-hosts opt in via WINDSURFAPI_SINGLE_TENANT_CACHE=1, exactly like
+  // cascade reuse.
+  if (!hasPerUserScope(callerKey)) return;
   try {
     setStickyBinding(callerKey, null, acct.id, currentApiKeyForId(acct.id, acct.apiKey));
   } catch { /* affinity is best-effort — never fail a served request over it */ }
