@@ -1863,7 +1863,7 @@ function isAbortError(err) {
 
 // Pair with acquireConnectAccount on every exit path. Records billing/stats and
 // returns the account to the pool. `err` null ⇒ success.
-export function finalizeConnectAccount(acct, { model, startTime, err }) {
+export function finalizeConnectAccount(acct, { model, selector = null, startTime, err }) {
   if (!acct) {
     // env-token path: still record the request for dashboard totals.
     recordRequest(model, !err, Date.now() - startTime, null);
@@ -1941,7 +1941,19 @@ export function finalizeConnectAccount(acct, { model, startTime, err }) {
       // cooldown (60s, auto-recovering via _modelRateLimits) so the pool briefly
       // prefers another account for THIS model, while the account stays fully
       // healthy for every other model. No error-budget penalty, no re-login.
-      markRateLimited(apiKey, 60 * 1000, model, 'c');
+      //
+      // Key it on the CONNECT SELECTOR, not the client-facing model name. This is
+      // the same structural trap #224 fixed for RATE_LIMITED, third occurrence:
+      // connect selection calls getApiKey(triedKeys, null, callerKey, selector)
+      // with modelKey=null, so a cooldown written under `model` (reqModelName, e.g.
+      // "gpt-5.5") is invisible to a lookup that asks about the resolved selector
+      // (e.g. "gpt-5-5-sol") — the pool re-picks the throttled account for the
+      // throttled model immediately and the 60s window never applies. Unlike #224
+      // the answer is NOT to go account-wide (that would bench a healthy account
+      // for every other model, which this branch explicitly avoids); it is to write
+      // the cooldown in the dimension the connect path actually queries. Falls back
+      // to `model` for the Cascade path, which passes a real catalog modelKey.
+      markRateLimited(apiKey, 60 * 1000, selector || model, 'c');
       bumpConnect('capacity_throttled');
     }
     else if (err.code === 'UPSTREAM_INTERNAL') {
@@ -2792,14 +2804,14 @@ async function _handleChatCompletionsInner(body, context = {}) {
               try { recordTokenUsage(_sr?.usage); } catch {}
               // K8: attribute the spend to THIS account (per-account lifetime total).
               try { recordAccountSpend(a?.apiKey, _sr?.usage); } catch {}
-              finalizeConnectAccount(a, { model: reqModelName, startTime: ccStart, err: null });
+              finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: null });
               return { kind: 'ok', sr: _sr };
             } catch (err) {
               // Client or server-level abort: the caller is gone (or the process
               // is shutting down). Don't penalize the account, don't log a scary
               // ERROR, and don't burn quota on more retries/failover.
               if (abortController.signal.aborted || isAbortError(err)) {
-                finalizeConnectAccount(a, { model: reqModelName, startTime: ccStart, err: isAbortError(err) ? err : Object.assign(new Error('client disconnected'), { name: 'AbortError' }) });
+                finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: isAbortError(err) ? err : Object.assign(new Error('client disconnected'), { name: 'AbortError' }) });
                 return { kind: 'abort' };
               }
               // Transient blip (5xx / ECONNRESET / server "unavailable") BEFORE
@@ -2813,7 +2825,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
                 // catching the first error — writing to a dead socket is pointless
                 // and can leave the handler stuck.
                 if (abortController.signal.aborted) {
-                  finalizeConnectAccount(a, { model: reqModelName, startTime: ccStart, err: Object.assign(new Error('client disconnected'), { name: 'AbortError' }) });
+                  finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: Object.assign(new Error('client disconnected'), { name: 'AbortError' }) });
                   return { kind: 'abort' };
                 }
                 log.info(`Chat[${reqId}]: DEVIN_CONNECT stream transient error (${err.code || err.status}); replaying once on same token`);
@@ -2822,14 +2834,14 @@ async function _handleChatCompletionsInner(body, context = {}) {
                   const _sr2 = await streamChatCompletion(params, send, connectMeta);
                   try { recordTokenUsage(_sr2?.usage); } catch {}
                   try { recordAccountSpend(a?.apiKey, _sr2?.usage); } catch {}
-                  finalizeConnectAccount(a, { model: reqModelName, startTime: ccStart, err: null });
+                  finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: null });
                   return { kind: 'ok', sr: _sr2 };
                 } catch (retryErr) {
                   // If the client hung up during the replay, stop immediately rather
                   // than falling through to the generic error handling which would
                   // log an ERROR and possibly try to write to a dead socket.
                   if (abortController.signal.aborted || isAbortError(retryErr)) {
-                    finalizeConnectAccount(a, { model: reqModelName, startTime: ccStart, err: isAbortError(retryErr) ? retryErr : Object.assign(new Error('client disconnected'), { name: 'AbortError' }) });
+                    finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: isAbortError(retryErr) ? retryErr : Object.assign(new Error('client disconnected'), { name: 'AbortError' }) });
                     return { kind: 'abort' };
                   }
                   // Retry failed too — fall through to the normal handling below
@@ -2852,12 +2864,12 @@ async function _handleChatCompletionsInner(body, context = {}) {
                     const _sr3 = await streamChatCompletion({ ...connectParams, token: freshKey }, send, connectMeta);
                     try { recordTokenUsage(_sr3?.usage); } catch {}
                     try { recordAccountSpend(currentApiKeyForId(a.id, a.apiKey), _sr3?.usage); } catch {}
-                    finalizeConnectAccount(a, { model: reqModelName, startTime: ccStart, err: null });
+                    finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: null });
                     return { kind: 'ok', sr: _sr3 };
                   } catch (retryErr) {
                     // Client disconnected while re-login was in flight — stop cleanly.
                     if (abortController.signal.aborted || isAbortError(retryErr)) {
-                      finalizeConnectAccount(a, { model: reqModelName, startTime: ccStart, err: isAbortError(retryErr) ? retryErr : Object.assign(new Error('client disconnected'), { name: 'AbortError' }) });
+                      finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: isAbortError(retryErr) ? retryErr : Object.assign(new Error('client disconnected'), { name: 'AbortError' }) });
                       return { kind: 'abort' };
                     }
                     // Fresh token still UNAUTHORIZED ⇒ entitlement wall, not a dead
@@ -2867,15 +2879,15 @@ async function _handleChatCompletionsInner(body, context = {}) {
                     const reErr = (retryErr.code === 'UNAUTHORIZED' && !emitted)
                       ? Object.assign(new Error('model requires a paid Devin entitlement (fresh session token still UNAUTHORIZED → not a dead token)'), { code: 'MODEL_BLOCKED' })
                       : retryErr;
-                    finalizeConnectAccount(a, { model: reqModelName, startTime: ccStart, err: reErr });
+                    finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: reErr });
                     log.error(`Chat[${reqId}]: DEVIN_CONNECT stream retry error: ${reErr.message}`);
                     return { kind: 'error', err: reErr };
                   }
                 }
-                finalizeConnectAccount(a, { model: reqModelName, startTime: ccStart, err });
+                finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err });
                 return !emitted ? { kind: 'dead' } : { kind: 'error', err };
               }
-              finalizeConnectAccount(a, { model: reqModelName, startTime: ccStart, err });
+              finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err });
               log.error(`Chat[${reqId}]: DEVIN_CONNECT stream error: ${err.message}`);
               return { kind: 'error', err };
             }
@@ -2992,12 +3004,12 @@ async function _handleChatCompletionsInner(body, context = {}) {
       const params = a ? { ...connectParams, token: a.apiKey, deviceSeed: ensureDeviceSeed(a) } : connectParams;
       try {
         const out = await toChatCompletion(params, connectMeta);
-        finalizeConnectAccount(a, { model: reqModelName, startTime: ccStart, err: null });
+        finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: null });
         return { kind: 'ok', out };
       } catch (err) {
         // Client or server-level abort: don't penalize the account or log ERROR.
         if ((context.signal?.aborted) || isAbortError(err)) {
-          finalizeConnectAccount(a, { model: reqModelName, startTime: ccStart, err: isAbortError(err) ? err : Object.assign(new Error('client disconnected'), { name: 'AbortError' }) });
+          finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: isAbortError(err) ? err : Object.assign(new Error('client disconnected'), { name: 'AbortError' }) });
           return { kind: 'abort' };
         }
         if (err.code === 'UNAUTHORIZED' && a) {
@@ -3009,12 +3021,12 @@ async function _handleChatCompletionsInner(body, context = {}) {
             log.info(`Chat[${reqId}]: DEVIN_CONNECT re-login recovered token, retrying once`);
             try {
               const out = await toChatCompletion({ ...connectParams, token: freshKey }, connectMeta);
-              finalizeConnectAccount(a, { model: reqModelName, startTime: ccStart, err: null });
+              finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: null });
               return { kind: 'ok', out };
             } catch (retryErr) {
               // Client aborted during the re-login retry.
               if ((context.signal?.aborted) || isAbortError(retryErr)) {
-                finalizeConnectAccount(a, { model: reqModelName, startTime: ccStart, err: isAbortError(retryErr) ? retryErr : Object.assign(new Error('client disconnected'), { name: 'AbortError' }) });
+                finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: isAbortError(retryErr) ? retryErr : Object.assign(new Error('client disconnected'), { name: 'AbortError' }) });
                 return { kind: 'abort' };
               }
               // The re-login above minted a verifiably-fresh token (windsurfLogin
@@ -3030,15 +3042,15 @@ async function _handleChatCompletionsInner(body, context = {}) {
               const reErr = retryErr.code === 'UNAUTHORIZED'
                 ? Object.assign(new Error('model requires a paid Devin entitlement (fresh session token still UNAUTHORIZED → not a dead token)'), { code: 'MODEL_BLOCKED' })
                 : retryErr;
-              finalizeConnectAccount(a, { model: reqModelName, startTime: ccStart, err: reErr });
+              finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: reErr });
               log.error(`Chat[${reqId}]: DEVIN_CONNECT retry-after-relogin error (${reErr.code || 'UPSTREAM_ERROR'}): ${reErr.message}`);
               return { kind: 'error', err: reErr };
             }
           }
-          finalizeConnectAccount(a, { model: reqModelName, startTime: ccStart, err });
+          finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err });
           return { kind: 'dead' };
         }
-        finalizeConnectAccount(a, { model: reqModelName, startTime: ccStart, err });
+        finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err });
         return { kind: 'error', err };
       }
     };
