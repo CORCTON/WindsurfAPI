@@ -21,6 +21,7 @@ import { getLsStatus, stopLanguageServerAndWait, startLanguageServer, isLanguage
 import { getStats, resetStats, recordRequest, exportStats, importStats } from './stats.js';
 import { getConnectMetrics, resetConnectMetrics } from '../devin-connect-metrics.js';
 import { getStickyStats, isStickyEnabled } from '../account/sticky-session.js';
+import { getResponseStoreStats } from '../response-store.js';
 import { cacheStats, cacheClear } from '../cache.js';
 import {
   getExperimental, setExperimental, getTunables, setTunables, getPrefs, setPrefs, getSystemPrompts, setSystemPrompts, resetSystemPrompt,
@@ -1234,6 +1235,7 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
       ...getConnectMetrics(),
       poolHealth: getPoolHealthWindow(),
       sticky: { enabled: isStickyEnabled(), ...getStickyStats() },
+      responseStore: getResponseStoreStats(),
     });
   }
   if (subpath === '/connect-metrics' && method === 'DELETE') {

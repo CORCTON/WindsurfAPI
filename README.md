@@ -303,6 +303,9 @@ curl http://localhost:3003/v1/messages \
 | `STICKY_SESSION_ENABLED` | `0` | 设为 `1` 把同一会话固定在同一上游账号。DEVIN_CONNECT 上强烈建议开启：上游 prompt cache 按账号隔离且写入约为读取 10 倍单价，不固定则每轮换号、整段上下文重写。需要 caller 有 per-user 信号（`user` / `safety_identifier` / `prompt_cache_key` / Claude Code `metadata.user_id`）；单用户自部署无这些信号时配 `WINDSURFAPI_SINGLE_TENANT_CACHE=1`。观测：`/dashboard/api/connect-metrics` 的 `sticky` 字段 |
 | `STICKY_SESSION_TTL_MS` | `1800000` | 绑定 TTL（30 分钟）；活跃会话每轮自动续期 |
 | `STICKY_SESSION_MAX` | `10000` | 绑定表上限，LRU 驱逐 |
+| `RESPONSE_STORE_ENABLED` | `1` | Responses API 服务端会话状态。开启时 `previous_response_id` 可续接上下文(客户端只发新一轮);设 `0` 关闭后带该字段的请求返回 400。按 callerKey 隔离,租户间不可互读 |
+| `RESPONSE_STORE_TTL_MS` | `3600000` | 会话保留时长(1 小时),每轮访问自动续期 |
+| `RESPONSE_STORE_MAX` | `2000` | 最多保留多少个会话,LRU 驱逐 + 租户公平配额 |
 
 ## Dashboard 功能面板
 

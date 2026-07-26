@@ -7,6 +7,7 @@
 
 import { randomUUID } from 'crypto';
 import { handleChatCompletions, normalizeOpenAIErrorType, connectErrorToHttp } from './chat.js';
+import { getResponse, putResponse, isResponseStoreEnabled } from '../response-store.js';
 import { log } from '../config.js';
 
 function genResponseId() {
@@ -887,6 +888,21 @@ class ResponsesStreamTranslator {
     this.outputItems[this.messageOutputIndex] = complete;
   }
 
+  /**
+   * Completed tool calls in OpenAI chat shape, for the response store: the next
+   * turn must see the same assistant tool_calls the client did, or the chained
+   * conversation loses the call/result pairing.
+   */
+  get committedToolCalls() {
+    return this.outputItems.filter(Boolean)
+      .filter(i => i.type === 'function_call')
+      .map((i, idx) => ({
+        id: i.call_id || i.id || `call_${idx}`,
+        type: 'function',
+        function: { name: i.name, arguments: i.arguments || '' },
+      }));
+  }
+
   finish() {
     if (this.finished) return;
     this.finished = true;
@@ -905,6 +921,9 @@ class ResponsesStreamTranslator {
   error(err) {
     if (this.finished) return;
     this.finished = true;
+    // Marks the turn as NOT committable to the response store: a failed stream
+    // has no complete assistant reply to chain from.
+    this.failed = true;
     this.start();
     // Resolve the authoritative {status,type} from the DEVIN_CONNECT classification
     // first, exactly like messages.js and gemini.js do. Reading only err.type
@@ -1027,10 +1046,70 @@ export async function handleResponses(body, deps = {}) {
   }
 
   const requestedTools = chatBody.tools || [];
+  const callerKey = context.callerKey || '';
+
+  // Responses API server-side state: when the caller chains with
+  // previous_response_id it sends ONLY the new turn, so the stored conversation
+  // has to be prepended here. A miss must FAIL — proceeding with just the new turn
+  // is what made a chained client answer every turn blind, with no diagnosable
+  // signal (the whole reason response-store.js exists).
+  if (body.previous_response_id) {
+    const prior = getResponse(body.previous_response_id, callerKey);
+    if (prior.ok) {
+      chatBody = { ...chatBody, messages: [...prior.messages, ...(chatBody.messages || [])] };
+    } else if (prior.reason === 'disabled') {
+      return {
+        status: 400,
+        body: {
+          error: {
+            message: 'previous_response_id requires the response store, which is disabled on this server (RESPONSE_STORE_ENABLED=0). Send the full conversation in `input` instead.',
+            type: 'invalid_request_error',
+            param: 'previous_response_id',
+          },
+        },
+      };
+    } else {
+      // Matches OpenAI: an unknown / expired / foreign id is a 404, never a
+      // silent context reset.
+      return {
+        status: 404,
+        body: {
+          error: {
+            message: `Previous response with id '${body.previous_response_id}' not found. It may have expired`
+              + ` (server-side conversations are retained for a limited time) or was created with store:false.`
+              + ' Send the full conversation in `input` to continue without server-side state.',
+            type: 'invalid_request_error',
+            param: 'previous_response_id',
+            code: 'response_not_found',
+          },
+        },
+      };
+    }
+  }
+
+  // The conversation to persist for the NEXT turn: everything the upstream saw.
+  const priorMessages = chatBody.messages || [];
+  const commit = (assistantMessage) => {
+    if (!isResponseStoreEnabled()) return;
+    try {
+      putResponse(
+        responseId,
+        assistantMessage ? [...priorMessages, assistantMessage] : priorMessages,
+        callerKey,
+        { model: requestedModel, store: body.store },
+      );
+    } catch { /* best-effort — never fail a served request over bookkeeping */ }
+  };
 
   if (!body.stream) {
     const result = await chatHandler({ ...chatBody, stream: false, __route: 'responses' }, context);
     if (result.status !== 200) return result;
+    const msg = result.body?.choices?.[0]?.message;
+    commit(msg ? {
+      role: 'assistant',
+      content: msg.content || '',
+      ...(msg.tool_calls ? { tool_calls: msg.tool_calls } : {}),
+    } : null);
     return { status: 200, body: chatToResponse(result.body, requestedModel, responseId, genMessageId(), requestedTools) };
   }
 
@@ -1064,6 +1143,16 @@ export async function handleResponses(body, deps = {}) {
 
       try {
         await streamResult.handler(captureRes);
+        // Persist only a COMPLETED turn. Committing a half-turn (aborted or
+        // errored) would poison the next request's context with a truncated
+        // assistant reply the client never received.
+        if (translator.finished && !translator.failed) {
+          commit({
+            role: 'assistant',
+            content: translator.text || '',
+            ...(translator.committedToolCalls?.length ? { tool_calls: translator.committedToolCalls } : {}),
+          });
+        }
       } catch (e) {
         log.error(`Responses stream error: ${e.message}`);
         translator.error(e);

@@ -310,6 +310,9 @@ In your client's settings for **Custom OpenAI Compatible**:
 | `STICKY_SESSION_ENABLED` | `0` | Set to `1` to pin each conversation to one upstream account. Strongly recommended on DEVIN_CONNECT: upstream prompt caches are per-account and a cache write costs ~10x a read, so without pinning every turn rotates accounts and re-writes the whole context. Requires a per-user signal on the caller (`user` / `safety_identifier` / `prompt_cache_key` / Claude Code `metadata.user_id`); single-user self-hosts without one set `WINDSURFAPI_SINGLE_TENANT_CACHE=1`. Observe via the `sticky` field of `/dashboard/api/connect-metrics`. |
 | `STICKY_SESSION_TTL_MS` | `1800000` | Binding TTL (30 min); active conversations auto-renew each turn. |
 | `STICKY_SESSION_MAX` | `10000` | Binding table cap, LRU-evicted. |
+| `RESPONSE_STORE_ENABLED` | `1` | Responses API server-side conversation state. With it on, `previous_response_id` continues a conversation (the client sends only the new turn); set `0` and such requests get a 400. Scoped by callerKey — tenants cannot read each other's conversations. |
+| `RESPONSE_STORE_TTL_MS` | `3600000` | Conversation retention (1 hour), renewed on each turn. |
+| `RESPONSE_STORE_MAX` | `2000` | Max stored conversations, LRU-evicted with a per-tenant fair share. |
 
 ## Dashboard Features
 
