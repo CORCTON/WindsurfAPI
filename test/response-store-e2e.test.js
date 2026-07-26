@@ -159,3 +159,114 @@ describe('Responses chaining — unchained clients are unaffected', () => {
     assert.equal(res.status, 200, 'storing is best-effort; serving must not depend on it');
   });
 });
+
+describe("Responses chaining — streaming turns", () => {
+  // Streaming is the dominant mode for these clients and the commit point is
+  // different: the translator owns the assembled assistant text, and only a
+  // COMPLETED turn may be stored — a half-turn would poison the next request
+  // with a reply the client never received.
+  const fakeRes = () => ({
+    out: "", writableEnded: false,
+    write(c) { this.out += c; return true; },
+    end(c) { if (c) this.out += c; this.writableEnded = true; },
+    on() { return this; },
+  });
+
+  // Real chat-layer shape: write frames, then end() — end() triggers finish().
+  const streamOk = async () => ({
+    status: 200, stream: true,
+    handler: async (res) => {
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "streamed reply" } }] })}\n\n`);
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 5, completion_tokens: 3 } })}\n\n`);
+      res.write("data: [DONE]\n\n");
+      res.end();
+    },
+  });
+
+  it("a completed streaming turn is chainable, with the streamed text preserved", async () => {
+    const t1 = await handleResponses(
+      { model: "m", input: userTurn("turn 1"), stream: true },
+      { handleChatCompletions: streamOk, context: { callerKey: CALLER } },
+    );
+    const res = fakeRes();
+    await t1.handler(res);
+    const id = (res.out.match(/"id":"(resp_[^"]+)"/) || [])[1];
+    assert.ok(id, "the stream must surface a response id to chain from");
+
+    const rec = recorder("second");
+    const t2 = await handleResponses(
+      { model: "m", previous_response_id: id, input: userTurn("turn 2") },
+      { handleChatCompletions: rec.handler, context: { callerKey: CALLER } },
+    );
+    assert.equal(t2.status, 200);
+    assert.equal(rec.seen[0].length, 3, "the streamed turn must be in the chain");
+    assert.equal(rec.seen[0][1].content, "streamed reply",
+      "the text the translator assembled is what must be stored");
+  });
+
+  it("a stream that errors mid-flight leaves nothing chainable", async () => {
+    const streamErr = async () => ({
+      status: 200, stream: true,
+      handler: async (res) => {
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "partial" } }] })}\n\n`);
+        throw new Error("upstream exploded");
+      },
+    });
+    const t = await handleResponses(
+      { model: "m", input: userTurn("x"), stream: true },
+      { handleChatCompletions: streamErr, context: { callerKey: CALLER } },
+    );
+    const res = fakeRes();
+    await t.handler(res);
+    const id = (res.out.match(/"id":"(resp_[^"]+)"/) || [])[1];
+    if (id) {
+      const rec = recorder();
+      const next = await handleResponses(
+        { model: "m", previous_response_id: id, input: userTurn("after") },
+        { handleChatCompletions: rec.handler, context: { callerKey: CALLER } },
+      );
+      assert.equal(next.status, 404, "a failed turn must not become chainable context");
+    }
+  });
+
+  it("a client disconnect mid-stream stores nothing", async () => {
+    const streamAbort = async () => ({
+      status: 200, stream: true,
+      handler: async (res) => {
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "partial" } }] })}\n\n`);
+        // never end() — the client went away, so finish() never runs
+      },
+    });
+    const t = await handleResponses(
+      { model: "m", input: userTurn("z"), stream: true },
+      { handleChatCompletions: streamAbort, context: { callerKey: CALLER } },
+    );
+    const res = fakeRes();
+    await t.handler(res);
+    const id = (res.out.match(/"id":"(resp_[^"]+)"/) || [])[1];
+    if (id) {
+      const rec = recorder();
+      const next = await handleResponses(
+        { model: "m", previous_response_id: id, input: userTurn("after") },
+        { handleChatCompletions: rec.handler, context: { callerKey: CALLER } },
+      );
+      assert.equal(next.status, 404, "an aborted turn must not become chainable context");
+    }
+  });
+});
+
+describe("Responses chaining — the echoed id is sanitized", () => {
+  it("a client-supplied id cannot forge log lines or be reflected unbounded", async () => {
+    const rec = recorder();
+    const evil = `resp_\n[INFO] forged line\u001b[31m${"A".repeat(500)}`;
+    const res = await handleResponses(
+      { model: "m", previous_response_id: evil, input: userTurn("hi") },
+      { handleChatCompletions: rec.handler, context: { callerKey: CALLER } },
+    );
+    assert.equal(res.status, 404);
+    const msg = res.body.error.message;
+    assert.equal(msg.includes("\n"), false, "no raw newline may be reflected");
+    assert.equal(msg.includes("\u001b"), false, "no ANSI escape may be reflected");
+    assert.ok(msg.length < 400, `the reflected id must be bounded, got ${msg.length}`);
+  });
+});

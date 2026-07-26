@@ -8,6 +8,7 @@
 import { randomUUID } from 'crypto';
 import { handleChatCompletions, normalizeOpenAIErrorType, connectErrorToHttp } from './chat.js';
 import { getResponse, putResponse, isResponseStoreEnabled } from '../response-store.js';
+import { safeLogValue } from '../log-safety.js';
 import { log } from '../config.js';
 
 function genResponseId() {
@@ -1075,7 +1076,11 @@ export async function handleResponses(body, deps = {}) {
         status: 404,
         body: {
           error: {
-            message: `Previous response with id '${body.previous_response_id}' not found. It may have expired`
+            // The id is client-supplied: sanitize before echoing it back. Raw
+            // control characters would let a caller forge lines in any log that
+            // records this error, and an unbounded value would be reflected in
+            // full (safeLogValue strips C0/C1 + DEL and caps the length).
+            message: `Previous response with id '${safeLogValue(body.previous_response_id, 64)}' not found. It may have expired`
               + ` (server-side conversations are retained for a limited time) or was created with store:false.`
               + ' Send the full conversation in `input` to continue without server-side state.',
             type: 'invalid_request_error',
