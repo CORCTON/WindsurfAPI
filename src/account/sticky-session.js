@@ -52,10 +52,56 @@ const MAX_BINDINGS = (() => {
 // Map<bindingKey, { accountId, apiKey, createdAt, lastAccess }>
 // bindingKey = callerKey + '\0' + modelKey
 const _bindings = new Map();
+// Per-TENANT binding counts. The tenant is the callerKey prefix that identifies
+// the API key (`api:<hash>` / `session:<hash>` / `client:<hash>`), NOT the whole
+// callerKey — one API key can mint unlimited distinct callerKeys (a fresh
+// body.user per request), and with a single global LRU that let one tenant evict
+// every other tenant's live binding, silently re-imposing the ~10x cache-write
+// cost on victims. Counts drive the fair-share cap in setStickyBinding.
+const _tenantCounts = new Map();
 const _stats = {
   hits: 0, misses: 0, creates: 0,
   expires: 0, evictions: 0, fallbacks: 0,
 };
+
+/** Tenant identity for quota purposes: the first two `:` segments of callerKey. */
+function tenantOf(callerKey) {
+  const i = callerKey.indexOf(':');
+  if (i < 0) return callerKey;
+  const j = callerKey.indexOf(':', i + 1);
+  return j < 0 ? callerKey : callerKey.slice(0, j);
+}
+
+function tenantOfBindingKey(key) {
+  return tenantOf(key.slice(0, key.indexOf('\0')));
+}
+
+/** Insert/refresh bookkeeping — keeps _tenantCounts in sync with _bindings. */
+function trackInsert(key) {
+  const t = tenantOfBindingKey(key);
+  _tenantCounts.set(t, (_tenantCounts.get(t) || 0) + 1);
+}
+
+function dropBinding(key) {
+  if (!_bindings.delete(key)) return false;
+  const t = tenantOfBindingKey(key);
+  const n = (_tenantCounts.get(t) || 1) - 1;
+  if (n > 0) _tenantCounts.set(t, n); else _tenantCounts.delete(t);
+  return true;
+}
+
+/**
+ * Oldest binding key, optionally restricted to one tenant.
+ * O(1) amortised for the global case: every read/refresh re-inserts the entry, so
+ * Map iteration order IS least-recently-used order and the first entry is the LRU
+ * victim (the old code did a full O(MAX_BINDINGS) scan on the request hot path).
+ */
+function oldestKey(tenant = null) {
+  for (const k of _bindings.keys()) {
+    if (!tenant || tenantOfBindingKey(k) === tenant) return k;
+  }
+  return null;
+}
 
 /**
  * Build the internal map key from caller + model dimensions.
@@ -87,7 +133,7 @@ function ensureCleanupTimer() {
     const now = Date.now();
     for (const [key, binding] of _bindings) {
       if (now - binding.lastAccess > TTL_MS) {
-        _bindings.delete(key);
+        dropBinding(key);
         _stats.expires++;
       }
     }
@@ -125,12 +171,16 @@ export function getStickyBinding(callerKey, modelKey = '') {
 
   const now = Date.now();
   if (now - binding.lastAccess > TTL_MS) {
-    _bindings.delete(key);
+    dropBinding(key);
     _stats.expires++;
     return null;
   }
 
   binding.lastAccess = now;
+  // Re-insert so Map iteration order stays least-recently-used order (see
+  // oldestKey) — this is what makes eviction O(1) instead of a full scan.
+  _bindings.delete(key);
+  _bindings.set(key, binding);
   _stats.hits++;
   log.debug(`[sticky] HIT ${displayKey(key)} → account=${binding.accountId}`);
   return { accountId: binding.accountId, apiKey: binding.apiKey };
@@ -148,18 +198,17 @@ export function setStickyBinding(callerKey, modelKey, accountId, apiKey) {
   if (!ENABLED || !callerKey || !accountId) return;
   ensureCleanupTimer();
 
-  // Evict oldest if at capacity
+  // At capacity: evict. A single global LRU let one tenant flood the table with
+  // fresh callerKeys and evict every other tenant's live binding. So a tenant
+  // already holding at least its fair share pays for its own growth — it evicts
+  // ITS OWN least-recently-used binding instead of a stranger's.
   if (_bindings.size >= MAX_BINDINGS && !_bindings.has(bindingKey(callerKey, modelKey))) {
-    let oldestKey = null;
-    let oldestTime = Infinity;
-    for (const [k, b] of _bindings) {
-      if (b.lastAccess < oldestTime) {
-        oldestTime = b.lastAccess;
-        oldestKey = k;
-      }
-    }
-    if (oldestKey) {
-      _bindings.delete(oldestKey);
+    const tenant = tenantOf(callerKey);
+    const fairShare = Math.max(1, Math.floor(MAX_BINDINGS / Math.max(1, _tenantCounts.size)));
+    const overShare = (_tenantCounts.get(tenant) || 0) >= fairShare;
+    const victim = (overShare && oldestKey(tenant)) || oldestKey();
+    if (victim) {
+      dropBinding(victim);
       _stats.evictions++;
     }
   }
@@ -168,6 +217,7 @@ export function setStickyBinding(callerKey, modelKey, accountId, apiKey) {
   const now = Date.now();
   const existing = _bindings.get(key);
 
+  if (existing) _bindings.delete(key); else trackInsert(key);
   _bindings.set(key, {
     accountId,
     apiKey,
@@ -192,7 +242,7 @@ export function clearStickyBinding(callerKey, modelKey = '') {
   if (!ENABLED || !callerKey) return;
   const key = bindingKey(callerKey, modelKey);
   if (_bindings.has(key)) log.info(`[sticky] CLEAR ${displayKey(key)}`);
-  _bindings.delete(key);
+  dropBinding(key);
 }
 
 /**
@@ -205,7 +255,7 @@ export function clearCallerBindings(callerKey) {
   if (!ENABLED || !callerKey) return;
   const prefix = callerKey + '\0';
   for (const key of _bindings.keys()) {
-    if (key.startsWith(prefix)) _bindings.delete(key);
+    if (key.startsWith(prefix)) dropBinding(key);
   }
 }
 
@@ -224,6 +274,7 @@ export function noteStickyFallback() {
  */
 export function resetAllBindings() {
   _bindings.clear();
+  _tenantCounts.clear();
 }
 
 /**
