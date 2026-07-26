@@ -38,6 +38,34 @@ describe('extractBodyCallerSubKey (v2.0.25 HIGH-3)', () => {
     assert.ok(k && k.length === 16);
   });
 
+  it('honors safety_identifier and prompt_cache_key as turn-stable scopes', () => {
+    // OpenAI's successors to `user`. Unlike previous_response_id (changes
+    // every turn), these are stable by contract — a chained Responses client
+    // sending prompt_cache_key must keep ONE scope across turns so sticky /
+    // cascade affinity can accrue.
+    const a = extractBodyCallerSubKey({ safety_identifier: 'end-user-7' });
+    assert.ok(a && a.length === 16);
+    const b = extractBodyCallerSubKey({ prompt_cache_key: 'conv-42' });
+    assert.ok(b && b.length === 16);
+    assert.notEqual(a, b);
+    // Stable across turns even when previous_response_id churns.
+    const t1 = extractBodyCallerSubKey({ prompt_cache_key: 'conv-42', previous_response_id: 'resp_1' });
+    const t2 = extractBodyCallerSubKey({ prompt_cache_key: 'conv-42', previous_response_id: 'resp_2' });
+    assert.equal(t1, t2, 'prompt_cache_key must pin the scope across turns');
+    // Priority: user > safety_identifier > prompt_cache_key.
+    assert.equal(
+      extractBodyCallerSubKey({ user: 'alice', prompt_cache_key: 'conv-42' }),
+      extractBodyCallerSubKey({ user: 'alice' }),
+    );
+    assert.equal(
+      extractBodyCallerSubKey({ safety_identifier: 'end-user-7', prompt_cache_key: 'conv-42' }),
+      extractBodyCallerSubKey({ safety_identifier: 'end-user-7' }),
+    );
+    // Empty values fall through, never mint a scope (same rule as user:"").
+    assert.equal(extractBodyCallerSubKey({ prompt_cache_key: '  ' }), '');
+    assert.equal(extractBodyCallerSubKey({ safety_identifier: '' }), '');
+  });
+
   it('does NOT inspect metadata.user_id (handled by messages.js parser)', () => {
     // metadata.user_id is the Anthropic Claude Code device id field; the
     // /v1/messages handler has a specialized parser for its JSON-encoded

@@ -36,6 +36,18 @@ export function extractBodyCallerSubKey(body) {
   if (!body || typeof body !== 'object') return '';
   const user = usableSignal(body.user);
   if (user) return sha256Hex(user).slice(0, 16);
+  // OpenAI's designated successors to `user`: safety_identifier is the stable
+  // end-user id, prompt_cache_key is the client's EXPLICIT cache-affinity
+  // routing key (codex sends it per conversation). Both are turn-stable by
+  // contract, unlike previous_response_id below which changes every turn and
+  // re-scopes the caller each time — so a chained Responses client never
+  // accrues sticky/cascade affinity. Honoring these two (each short-circuits,
+  // like `user`) gives such clients a stable scope without weakening
+  // isolation: both are client-supplied per-user/per-conversation signals.
+  const safety = usableSignal(body.safety_identifier);
+  if (safety) return sha256Hex(safety).slice(0, 16);
+  const cacheKey = usableSignal(body.prompt_cache_key);
+  if (cacheKey) return sha256Hex(cacheKey).slice(0, 16);
   const candidates = [
     usableSignal(body?.metadata?.conversation_id),
     usableSignal(body.conversation),
