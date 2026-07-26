@@ -1807,6 +1807,33 @@ function acquireConnectFailover(triedKeys, signal, callerKey, selector = null) {
   return getApiKey(triedKeys, null, callerKey, selector);
 }
 
+// Prompt-cache affinity for the DEVIN_CONNECT path.
+//
+// setStickyBinding is otherwise only reached from the two Cascade success paths,
+// where it exists so a resumed cascade_id keeps its account. The connect path
+// never wrote a binding, so on a DEVIN_CONNECT deployment STICKY_SESSION_ENABLED=1
+// was a no-op: getApiKey's lookup ran on every turn and always missed, and the
+// candidate sort (which ends on `lastUsed` ascending) then handed each turn of a
+// conversation to a DIFFERENT account on purpose.
+//
+// Upstream prompt caches are per-account. Replaying an identical payload on a
+// second account is a fresh cache WRITE, not a read — measured on a paid Teams
+// account, three accounts in a row each reported metadata #7 tag 4 (write) for
+// the same body, while a repeat on the FIRST account reported tag 5 (read).
+// Because a write costs roughly an order of magnitude more than a read, rotating
+// mid-conversation re-pays for the whole accumulated context every turn.
+//
+// The connect path always acquires with modelKey=null (acquireConnectAccount and
+// acquireConnectFailover both pass null), so the binding MUST be written with
+// null too: bindingKey() is `callerKey\0(modelKey || '*')` and a mismatch here
+// would silently never resolve on lookup.
+export function bindConnectSticky(callerKey, acct) {
+  if (!callerKey || !acct?.id || !isStickyEnabled()) return;
+  try {
+    setStickyBinding(callerKey, null, acct.id, currentApiKeyForId(acct.id, acct.apiKey));
+  } catch { /* affinity is best-effort — never fail a served request over it */ }
+}
+
 // How many times a single DEVIN_CONNECT request may hop to a fresh pooled
 // account after a dead-token failure. 0 disables failover (same-account
 // re-login still applies). Default 2 so a request survives a couple of stale
@@ -2866,6 +2893,13 @@ async function _handleChatCompletionsInner(body, context = {}) {
               if (acct) triedKeys.push(acct.apiKey);
               const r = await attemptStream(acct);
               if (r.kind === 'ok') {
+                // Pin this conversation to the account that just served it, so the
+                // next turn reads the prompt cache back instead of re-writing it.
+                // Complementary to the pair-chain commit below: that keeps the
+                // upstream session_id stable, this keeps the ACCOUNT stable — the
+                // prompt cache lives on the account, so without both the next turn
+                // still lands elsewhere and re-writes the whole context.
+                bindConnectSticky(callerKey, acct);
                 // Session continuity: commit the completed request→response pair
                 // from the streamed result so the next turn resolves to this same
                 // session_id via pair-chain overlap. Gate-checked + best-effort
@@ -3001,6 +3035,8 @@ async function _handleChatCompletionsInner(body, context = {}) {
       if (acct) triedKeys.push(acct.apiKey);
       const r = await attempt(acct);
       if (r.kind === 'ok') {
+        // Same cache-affinity pin as the streaming path above.
+        bindConnectSticky(callerKey, acct);
         // Feed the dashboard token-usage breakdown from the DEVIN_CONNECT path
         // too. Without this the non-stream connect responses never reached
         // recordTokenUsage (only the cascade paths did), so the "Token 用量分布"
