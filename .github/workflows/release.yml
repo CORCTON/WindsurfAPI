@@ -132,24 +132,7 @@ jobs:
           pkg src/_bundle.cjs --config package.json --targets node22-macos-arm64 --output dist-macos/windsurfapi-macos-arm64
 
       - name: Smoke-check the binary boots
-        run: |
-          chmod +x dist-macos/windsurfapi-macos-arm64
-          xattr -d com.apple.quarantine dist-macos/windsurfapi-macos-arm64 2>/dev/null || true
-          DEVIN_CONNECT=1 HOST=127.0.0.1 PORT=3999 API_KEY=ci-smoke \
-            DATA_DIR="$RUNNER_TEMP/wa-smoke" WINDSURFAPI_NO_OPEN=1 \
-            dist-macos/windsurfapi-macos-arm64 &
-          EXE_PID=$!
-          ok=0
-          for i in $(seq 1 40); do
-            sleep 0.5
-            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 http://127.0.0.1:3999/health 2>/dev/null) || true
-            [ "$code" = "200" ] && ok=1 && break
-          done
-          dash=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 http://127.0.0.1:3999/dashboard 2>/dev/null) || true
-          kill $EXE_PID 2>/dev/null || true
-          [ "$ok" = "1" ] || { echo "Binary did not answer /health"; exit 1; }
-          [ "$dash" = "200" ] || { echo "Binary did not serve /dashboard (asset bundling broken?)"; exit 1; }
-          echo "Smoke OK: /health 200 + /dashboard served"
+        run: node scripts/exe-boot-smoke.mjs dist-macos/windsurfapi-macos-arm64
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
@@ -188,24 +171,7 @@ jobs:
           pkg src/_bundle.cjs --config package.json --targets node22-macos-x64 --output dist-macos/windsurfapi-macos-x64
 
       - name: Smoke-check the binary boots
-        run: |
-          chmod +x dist-macos/windsurfapi-macos-x64
-          xattr -d com.apple.quarantine dist-macos/windsurfapi-macos-x64 2>/dev/null || true
-          DEVIN_CONNECT=1 HOST=127.0.0.1 PORT=3999 API_KEY=ci-smoke \
-            DATA_DIR="$RUNNER_TEMP/wa-smoke" WINDSURFAPI_NO_OPEN=1 \
-            dist-macos/windsurfapi-macos-x64 &
-          EXE_PID=$!
-          ok=0
-          for i in $(seq 1 40); do
-            sleep 0.5
-            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 http://127.0.0.1:3999/health 2>/dev/null) || true
-            [ "$code" = "200" ] && ok=1 && break
-          done
-          dash=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 http://127.0.0.1:3999/dashboard 2>/dev/null) || true
-          kill $EXE_PID 2>/dev/null || true
-          [ "$ok" = "1" ] || { echo "Binary did not answer /health"; exit 1; }
-          [ "$dash" = "200" ] || { echo "Binary did not serve /dashboard (asset bundling broken?)"; exit 1; }
-          echo "Smoke OK: /health 200 + /dashboard served"
+        run: node scripts/exe-boot-smoke.mjs dist-macos/windsurfapi-macos-x64
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4

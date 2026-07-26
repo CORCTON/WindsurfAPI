@@ -1,5 +1,19 @@
 # WindsurfAPI — macOS 免安装分发包
 
+## 自己构建（可选）
+
+分发包里的二进制由 CI 打好；想在本机构建（Apple Silicon）：
+
+```bash
+npm i --no-save esbuild@0.28.1 @yao-pkg/pkg@6.21.0   # 仅构建期依赖，运行时仍是零依赖
+npm run build:exe:macos          # → dist-macos/windsurfapi-macos-arm64
+npm run smoke:exe                # 启动自检：/health + /dashboard 必须都 200
+```
+
+Intel Mac 用 `npm run build:exe:macos-x64`。`smoke:exe` 与 CI 用的是同一个脚本
+（`scripts/exe-boot-smoke.mjs`）——`pkg` 退出码为 0 也可能产出坏二进制（ESM→CJS
+打包或 `pkg.assets` 漏项只在运行时暴露），所以判据是"能否启动并提供服务"。
+
 ## 文件说明
 
 | 文件 | 说明 |
