@@ -418,6 +418,26 @@
       "mergedAt": "2026-07-24",
       "title": "fix: neutralize codex apply_patch tool description to avoid content-policy block",
       "summary": "发现 codex 的 apply_patch 工具描述里 \"FREEFORM tool, so do not wrap the patch in JSON.\" 这句会触发 Devin content policy,飞书 codex bot 全量请求被拦。live-bisect 7/7 确定性复现,并做了关键的双片段 A/B:只改 FREEFORM 一处仍然被拦,两处都改才通过 —— 面对 Devin 这个非确定性 content policy(同 prompt 先拦后过),这种重复验证是唯一靠谱的定位方法,项目里 a6 规则当初正是因为拿不到可靠 A/B 才 ship 成默认关。这个发现顺带暴露出一个更深的结构缺陷:工具描述 preamble 在 chat.js 里是注入在 neutralizeClientIdentity 之后的,导致 native 路径上任何经由工具描述进来的触发词都完整绕过 a1-a6 整条防线 —— 也就是说漏的不只是 FREEFORM。最终落地版把中和调整到 preamble 注入之后,并把这两条改写做成 (a7) 规则进既有序列(复用主开关与测试体系,而非新加 env),因此覆盖的是所有客户端、所有触发词。另采纳其 responses.js 修复:Codex 发的 input item 是裸 {role, content} 不带 type:'message',此前被静默丢弃导致上游收到空 messages → UPSTREAM_INTERNAL。PR 中另外附带的 __route 改动因会回退 gpt_native dialect(源码部署默认路径)未采纳。"
+    },
+    {
+      "login": "wangergou777",
+      "githubId": 142420084,
+      "pr": 217,
+      "weight": "B+",
+      "weightLabel": "responses-lite additional_tools 兼容 · 首次贡献",
+      "mergedAt": "2026-07-17",
+      "title": "fix(responses): support responses-lite additional_tools",
+      "summary": "首次贡献。codex 的 responses-lite 变体把工具定义放在 additional_tools 而不是标准 tools 字段,此前直接被丢弃 —— 模型收不到任何工具定义,工具调用整体哑火。修法在 Responses 入口把 additional_tools 归并进标准 tools 通道,与既有 tools 去重共存,不影响标准客户端。这条还间接触发了后续 #217 模式排查(b864447 按同一模式修了默认模型/developer 角色/缓存键/schema 数组序 4 处同类缺陷),一个兼容性小修带出了一轮系统性清查。"
+    },
+    {
+      "login": "wangergou777",
+      "githubId": 142420084,
+      "pr": 230,
+      "weight": "S",
+      "weightLabel": "DEVIN_CONNECT sticky 绑定 · 付费实测校准的缓存经济学根因修复",
+      "mergedAt": "2026-07-26",
+      "title": "fix(chat): DEVIN_CONNECT 路径补上 sticky 绑定 — 缓存亲和此前完全失效",
+      "summary": "第二次出手直接到 S 级。setStickyBinding 只在两处 Cascade 成功路径被调用,DEVIN_CONNECT 路径只查不写 —— connect 部署开 STICKY_SESSION_ENABLED=1 完全空转(23 次请求 23 CHECK/23 MISS/0 SET),随后 getApiKey 候选排序以 lastUsed 升序收尾,把同一会话每轮主动派给不同账号。而上游 prompt cache 按账号隔离、写入约为读取 10 倍单价:换号 = 每轮重付整个累积上下文。用付费账号做了三账号交叉实测(tag4 write / tag5 read)钉死机制,修复后同一长对话 write 恒为本轮增量、read 随上下文线性攒到 17 万 token。最见功力的是 modelKey=null 键域细节:connect 取号恒传 null,绑定必须同域写入,否则查询静默不命中退化回空转 —— 他不但踩对了还为这个失败模式加了回归守卫。与 #226 pair-chain 互补成完整闭环:session_id 稳定 + 账号稳定,缓存才真正续得上。合并时 master 侧同步补了 sticky 快路径 excludeKeys、per-user-scope 门禁与 connect-metrics 观测(2f8bce0/f2c938e/3419854)。"
     }
   ]
 }
