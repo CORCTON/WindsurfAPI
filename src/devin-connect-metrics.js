@@ -41,6 +41,12 @@ const _counters = {
   // token; classified UPSTREAM_INTERNAL → streak-quarantine, NOT a re-login or
   // entitlement wall (#56/#57 shape, internal-error class)
   upstream_internal: 0,
+  // upstream returned an unclassified error, or the gRPC `internal` class that
+  // classifyUpstreamError documents as a PERMANENT CLIENT mistake (short
+  // fingerprint / gzipped body). Neither is an account fault, so it is recorded
+  // as a health event only — never an errorCount eviction (same treatment as
+  // CONTENT_BLOCKED). A spike here means callers are sending bad requests.
+  upstream_error: 0,
   // liveness probe pre-emptively recovered a dying token
   liveness_recovered: 0,
   // router-model (adaptive/arena-*) AssignModel resolution failed → fell back

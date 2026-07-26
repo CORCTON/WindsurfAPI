@@ -1968,6 +1968,22 @@ export function finalizeConnectAccount(acct, { model, selector = null, startTime
       reportInternalError(apiKey);
       bumpConnect('upstream_internal');
     }
+    // UPSTREAM_ERROR carries the gRPC `internal` class, which classifyUpstreamError
+    // documents as "PERMANENT client mistakes (short fingerprint, gzipped request
+    // body) — fails identically every retry". That is a fault in the REQUEST, not in
+    // the account: the session token is alive and the account is healthy. Same
+    // shape as CONTENT_BLOCKED above, which is already exempt — so a plain
+    // reportError here has the same failure mode that fix removed: three malformed
+    // requests from one caller flip a perfectly good account to status='error'
+    // (persisted), and a client looping on a bad request walks the whole pool
+    // offline one account at a time. Record it as a health-window event so a
+    // genuinely sick account is still de-prioritized by selection, but skip the
+    // errorCount eviction. (Verified by repro: 3 UPSTREAM_ERROR calls disabled a
+    // healthy account whenever a peer existed to void the last-account exemption.)
+    else if (err.code === 'UPSTREAM_ERROR') {
+      reportInternalError(apiKey);
+      bumpConnect('upstream_error');
+    }
     else reportError(apiKey);
   } else {
     reportSuccess(apiKey);
