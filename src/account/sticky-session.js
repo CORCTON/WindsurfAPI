@@ -68,6 +68,14 @@ function bindingKey(callerKey, modelKey) {
   return callerKey + '\0' + (modelKey || '*');
 }
 
+// Log-safe rendering of a binding key: the raw \0 delimiter must never reach
+// log output (it corrupts line-oriented log consumers), and the callerKey side
+// is truncated the same way auth.js truncates it.
+function displayKey(key) {
+  const [caller, model] = key.split('\0');
+  return `caller=${caller.slice(0, 50)} model=${model}`;
+}
+
 // ── Periodic cleanup ─────────────────────────────────────────────
 // Clean expired bindings every 5 minutes so memory doesn't grow
 // unbounded. The per-lookup path also checks TTL, so this is a safety
@@ -103,16 +111,15 @@ export function isStickyEnabled() {
  * @returns {{ accountId: string, apiKey: string } | null}
  */
 export function getStickyBinding(callerKey, modelKey = '') {
-  log.info('[sticky] ENTER callerKey=%s model=%s enabled=%s', (callerKey || '(none)').slice(0, 50), modelKey, ENABLED);
   if (!ENABLED) return null;
-  if (!callerKey) { log.info('[sticky] SKIP (no callerKey) model=%s', modelKey); return null; }
+  if (!callerKey) return null;
   ensureCleanupTimer();
 
   const key = bindingKey(callerKey, modelKey);
   const binding = _bindings.get(key);
   if (!binding) {
     _stats.misses++;
-    log.info('[sticky] MISS key=%s model=%s', key, modelKey);
+    log.debug(`[sticky] MISS ${displayKey(key)}`);
     return null;
   }
 
@@ -125,7 +132,7 @@ export function getStickyBinding(callerKey, modelKey = '') {
 
   binding.lastAccess = now;
   _stats.hits++;
-  log.info('[sticky] HIT key=%s account=%s', key, binding.accountId);
+  log.debug(`[sticky] HIT ${displayKey(key)} → account=${binding.accountId}`);
   return { accountId: binding.accountId, apiKey: binding.apiKey };
 }
 
@@ -170,7 +177,7 @@ export function setStickyBinding(callerKey, modelKey, accountId, apiKey) {
 
   if (!existing) {
     _stats.creates++;
-    log.info('[sticky] SET key=%s account=%s', key, accountId);
+    log.info(`[sticky] SET ${displayKey(key)} → account=${accountId}`);
   }
 }
 
@@ -184,7 +191,7 @@ export function setStickyBinding(callerKey, modelKey, accountId, apiKey) {
 export function clearStickyBinding(callerKey, modelKey = '') {
   if (!ENABLED || !callerKey) return;
   const key = bindingKey(callerKey, modelKey);
-  if (_bindings.has(key)) log.info('[sticky] CLEAR key=%s', key);
+  if (_bindings.has(key)) log.info(`[sticky] CLEAR ${displayKey(key)}`);
   _bindings.delete(key);
 }
 
