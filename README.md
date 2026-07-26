@@ -300,6 +300,9 @@ curl http://localhost:3003/v1/messages \
 | `ALLOW_PRIVATE_PROXY_HOSTS` | 空 | 设为 `1` 允许在代理测试和登录时使用内网 IP（如 `192.168.x.x`、`10.x.x.x`）。默认留空仅允许公网地址 |
 | `CASCADE_REUSE_BY_CALLER` | `0` | 设为 `1` 启用 caller 级别回退复用。指纹未命中时，按 callerKey+model 回退到最近的 cascade。适合单用户 Claude Code 场景 |
 | `CASCADE_POOL_MAX` | `500` | 对话池最大条目数。单用户场景设 `1`–`5` 即可，减少资源占用 |
+| `STICKY_SESSION_ENABLED` | `0` | 设为 `1` 把同一会话固定在同一上游账号。DEVIN_CONNECT 上强烈建议开启：上游 prompt cache 按账号隔离且写入约为读取 10 倍单价，不固定则每轮换号、整段上下文重写。需要 caller 有 per-user 信号（`user` / `safety_identifier` / `prompt_cache_key` / Claude Code `metadata.user_id`）；单用户自部署无这些信号时配 `WINDSURFAPI_SINGLE_TENANT_CACHE=1`。观测：`/dashboard/api/connect-metrics` 的 `sticky` 字段 |
+| `STICKY_SESSION_TTL_MS` | `1800000` | 绑定 TTL（30 分钟）；活跃会话每轮自动续期 |
+| `STICKY_SESSION_MAX` | `10000` | 绑定表上限，LRU 驱逐 |
 
 ## Dashboard 功能面板
 

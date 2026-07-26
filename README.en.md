@@ -307,6 +307,9 @@ In your client's settings for **Custom OpenAI Compatible**:
 | `CASCADE_REUSE_HASH_SYSTEM` | `0` | Set to `1` to include system messages in conversation reuse hash. |
 | `CASCADE_REUSE_BY_CALLER` | `0` | Set to `1` to enable caller-based fallback reuse. When fingerprint misses, falls back to the latest cascade for the same caller+model. Best for single-user Claude Code setups. |
 | `CASCADE_POOL_MAX` | `500` | Max conversation pool entries. Set to `1`–`5` for single-user setups to minimize resource usage. |
+| `STICKY_SESSION_ENABLED` | `0` | Set to `1` to pin each conversation to one upstream account. Strongly recommended on DEVIN_CONNECT: upstream prompt caches are per-account and a cache write costs ~10x a read, so without pinning every turn rotates accounts and re-writes the whole context. Requires a per-user signal on the caller (`user` / `safety_identifier` / `prompt_cache_key` / Claude Code `metadata.user_id`); single-user self-hosts without one set `WINDSURFAPI_SINGLE_TENANT_CACHE=1`. Observe via the `sticky` field of `/dashboard/api/connect-metrics`. |
+| `STICKY_SESSION_TTL_MS` | `1800000` | Binding TTL (30 min); active conversations auto-renew each turn. |
+| `STICKY_SESSION_MAX` | `10000` | Binding table cap, LRU-evicted. |
 
 ## Dashboard Features
 
