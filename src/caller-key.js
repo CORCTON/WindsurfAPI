@@ -94,7 +94,7 @@ export function callerKeyFromRequest(req, apiKey = '', body = null) {
   const hasUserInBody = !!(body && usableSignal(body.user));
   // Don't log the raw body.user — OpenAI's `user` field is often an end-user
   // email or stable account id (PII). bodySubKey is already its hash.
-  log.info('[caller-key] hasUser=%s subKey=%s', hasUserInBody ? 'yes' : 'no', bodySubKey || '(none)');
+  log.debug(`[caller-key] hasUser=${hasUserInBody ? 'yes' : 'no'} subKey=${bodySubKey || '(none)'}`);
   if (apiKey) {
     const base = `api:${sha256Hex(apiKey).slice(0, 32)}`;
     if (bodySubKey) return `${base}:user:${bodySubKey}`;

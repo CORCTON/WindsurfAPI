@@ -22,3 +22,15 @@ export function safeEmailRef(email) {
 export function safeKeyRef(key, prefix = 'key') {
   return `${prefix}Hash=${logHash(key)}`;
 }
+
+// Client-supplied strings (model names, selectors) are interpolated straight into
+// log lines. Raw control characters let an authenticated caller forge log records
+// or inject ANSI escape sequences into an operator's terminal, so strip them at
+// the log boundary. Only C0/C1 controls and DEL are replaced (the value stays
+// readable), and the length is bounded so one request cannot flood a line.
+const LOG_CONTROL_CHARS = /[\u0000-\u001F\u007F-\u009F]/g;
+
+export function safeLogValue(value, max = 120) {
+  const cleaned = String(value ?? '').replace(LOG_CONTROL_CHARS, '\u00b7');
+  return cleaned.length > max ? `${cleaned.slice(0, max)}\u2026` : cleaned;
+}

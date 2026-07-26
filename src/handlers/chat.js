@@ -10,7 +10,7 @@ import { isStickyEnabled, setStickyBinding } from '../account/sticky-session.js'
 import { resolveModel, getModelInfo, pickRateLimitFallback } from '../models.js';
 import { getLsFor, ensureLs } from '../langserver.js';
 import { config, log } from '../config.js';
-import { safeAccountRef, safeKeyRef } from '../log-safety.js';
+import { safeAccountRef, safeKeyRef, safeLogValue } from '../log-safety.js';
 import { recordRequest, recordTokenUsage, recordPolicyBlocked, recordRateLimited } from '../dashboard/stats.js';
 import { extractIntentFromNarrative, detectToolIntentInNarrative } from './intent-extractor.js';
 import { isModelAllowed } from '../dashboard/model-access.js';
@@ -2202,7 +2202,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
           : Array.isArray(c) ? c.filter(p => p?.type === 'text').map(p => p.text || '').join(' ') : '';
       }
     }
-    log.info(`Probe[${reqId}]: model=${reqModel} stream=${!!stream} rf=${response_format?.type || 'none'} tools=${Array.isArray(tools) ? tools.length : 0} reasoning=${body.reasoning_effort || body.thinking?.type || 'none'} ctypes=[${[...contentTypes].join(',')}] turns=${messages?.length || 0} lastUser=${requestLogSummary(lastUserText, 140)}`);
+    log.info(`Probe[${reqId}]: model=${safeLogValue(reqModel)} stream=${!!stream} rf=${response_format?.type || 'none'} tools=${Array.isArray(tools) ? tools.length : 0} reasoning=${body.reasoning_effort || body.thinking?.type || 'none'} ctypes=[${[...contentTypes].join(',')}] turns=${messages?.length || 0} lastUser=${requestLogSummary(lastUserText, 140)}`);
     // Also dump first-user / system content so we can see preambles.
     for (let mi = 0; mi < Math.min((messages || []).length, 3); mi++) {
       const m = messages[mi];
@@ -2378,13 +2378,22 @@ async function _handleChatCompletionsInner(body, context = {}) {
     // instead — the real devin CLI builds the wire and the server signs its own
     // turns, so vision works for ALL models including opus-4-8 (verified E2E).
     if (acpVisionEnabled() && hasMultimodalContent(messages)) {
-      log.info(`Chat[${reqId}]: image request → rerouting ${reqModelName} to ACP vision path (DEVIN_CONNECT synthetic-image path cannot serve thinking models)`);
+      log.info(`Chat[${reqId}]: image request → rerouting ${safeLogValue(reqModelName)} to ACP vision path (DEVIN_CONNECT synthetic-image path cannot serve thinking models)`);
+      // This reroute leaves the DEVIN_CONNECT branch BEFORE the neutralize pass
+      // below, so without this the Claude Code / Grok / Cline identity would reach
+      // the Devin CLI verbatim — the same fingerprint the neutralize step exists
+      // to strip, just via a different egress. Same both-shapes helper as below.
+      const acpMessages = messages.map((m) => {
+        if (m?.role !== 'system') return m;
+        const neut = neutralizeMessageContent(m.content);
+        return neut === m.content ? m : { ...m, content: neut };
+      });
       return handleSpecialAgentChatCompletion(body, {
         id: genId(),
         created: Math.floor(Date.now() / 1000),
         model: reqModelName,
         modelKey: routingModelKey,
-        messages,
+        messages: acpMessages,
         callerKey,
       }, context.specialAgent || {});
     }
@@ -2399,7 +2408,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
     // set WINDSURFAPI_STRICT_MODEL=0 to restore the legacy silent-degrade if the
     // snapshot is stale and a genuinely-live selector is being rejected.
     if (!mapped && String(process.env.WINDSURFAPI_STRICT_MODEL || '1') !== '0') {
-      log.warn(`Chat[${reqId}]: DEVIN_CONNECT rejecting unmapped model "${reqModelName}" (not in catalog whitelist) — 400 model_not_found`);
+      log.warn(`Chat[${reqId}]: DEVIN_CONNECT rejecting unmapped model "${safeLogValue(reqModelName)}" (not in catalog whitelist) — 400 model_not_found`);
       return {
         status: 400,
         body: { error: {
@@ -2432,7 +2441,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
       ? { tools: effectiveTools, trimmed: false, kept: Array.isArray(effectiveTools) ? effectiveTools.length : 0, dropped: 0 }
       : trimToolsForWeakModel(effectiveTools, reqModelName, { toolChoice: tool_choice });
     const connectTools = _trim.tools;
-    if (_trim.trimmed) log.warn(`Chat[${reqId}]: DEVIN_CONNECT weak model ${reqModelName} — trimmed tools ${effectiveTools.length}→${_trim.kept} (dropped ${_trim.dropped}) to avoid upstream overload`);
+    if (_trim.trimmed) log.warn(`Chat[${reqId}]: DEVIN_CONNECT weak model ${safeLogValue(reqModelName)} — trimmed tools ${effectiveTools.length}→${_trim.kept} (dropped ${_trim.dropped}) to avoid upstream overload`);
     const emulateTools = Array.isArray(connectTools) && connectTools.length > 0;
     // Double-send guard (#49): when the native ToolDef gate is calibrated, tools
     // also ride natively in the #10 `tools` field (connectParams.tools below), so
@@ -2547,7 +2556,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
         return neut === m.content ? m : { ...m, content: neut };
       });
     }
-    log.info(`Chat[${reqId}]: DEVIN_CONNECT ${reqModelName} -> selector=${selector}${mapped ? '' : ' [unmapped→free-tier]'} stream=${!!stream}${emulateTools ? ` tools=${connectTools.length}` : ''}`);
+    log.info(`Chat[${reqId}]: DEVIN_CONNECT ${safeLogValue(reqModelName)} -> selector=${safeLogValue(selector)}${mapped ? '' : ' [unmapped→free-tier]'} stream=${!!stream}${emulateTools ? ` tools=${connectTools.length}` : ''}`);
     const ccId = genId();
     const ccCreated = Math.floor(Date.now() / 1000);
     const ccStart = Date.now();
@@ -2692,10 +2701,10 @@ async function _handleChatCompletionsInner(body, context = {}) {
       try {
         const asg = await assignModel({ token: connectParams.token, modelUid: reqModelName, signal: context.signal });
         connectParams.model = asg.model_uid;
-        log.info(`Chat[${reqId}]: DEVIN_CONNECT router '${reqModelName}' resolved via AssignModel → ${asg.model_uid}`);
+        log.info(`Chat[${reqId}]: DEVIN_CONNECT router '${safeLogValue(reqModelName)}' resolved via AssignModel → ${asg.model_uid}`);
       } catch (e) {
         bumpConnect('assign_model_failed');
-        log.warn(`Chat[${reqId}]: DEVIN_CONNECT AssignModel for '${reqModelName}' failed (${e.code || 'ERR'}): ${e.message} — falling back to selector=${selector}`);
+        log.warn(`Chat[${reqId}]: DEVIN_CONNECT AssignModel for '${safeLogValue(reqModelName)}' failed (${e.code || 'ERR'}): ${e.message} — falling back to selector=${selector}`);
       }
     }
     // Thread the client's abort signal into the upstream HTTP request so a
