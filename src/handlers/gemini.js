@@ -627,7 +627,17 @@ export async function handleGemini(model, body, context = {}, { stream = false, 
   // Streaming path — ask handleChatCompletions for its streaming handler and
   // point its writes at our translator shim so the upstream poll loop drives
   // the downstream Gemini stream in real time.
-  const streamResult = await chatHandler({ ...openaiBody, stream: true, __route: 'gemini' }, context);
+  // O1: the internal chat stream omits the trailing usage-only frame unless the
+  // caller opts in via stream_options.include_usage. This translator consumes
+  // chunk.usage (→ this.finalUsage → the final frame's usageMetadata), so it must
+  // opt in regardless of what the downstream Gemini client asked for — Gemini
+  // always reports usageMetadata on the terminal frame. messages.js and
+  // responses.js were updated when O1 landed; this route was missed, so every
+  // Gemini streaming response shipped with usageMetadata entirely absent.
+  const streamResult = await chatHandler(
+    { ...openaiBody, stream: true, __route: 'gemini', stream_options: { ...(openaiBody.stream_options || {}), include_usage: true } },
+    context,
+  );
 
   if (!streamResult.stream) {
     // Non-stream error before any byte streamed — map to the Gemini error enum.

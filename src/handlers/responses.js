@@ -6,7 +6,7 @@
  */
 
 import { randomUUID } from 'crypto';
-import { handleChatCompletions, normalizeOpenAIErrorType } from './chat.js';
+import { handleChatCompletions, normalizeOpenAIErrorType, connectErrorToHttp } from './chat.js';
 import { log } from '../config.js';
 
 function genResponseId() {
@@ -906,6 +906,14 @@ class ResponsesStreamTranslator {
     if (this.finished) return;
     this.finished = true;
     this.start();
+    // Resolve the authoritative {status,type} from the DEVIN_CONNECT classification
+    // first, exactly like messages.js and gemini.js do. Reading only err.type
+    // collapsed every mid-stream CAPACITY / RATE_LIMITED / MODEL_BLOCKED into a
+    // flat api_error, so a Responses client lost the retryable-vs-terminal
+    // distinction the classifier had already computed.
+    const http = err?.code
+      ? connectErrorToHttp(err.code)
+      : { status: err?.status || 500, type: err?.type || 'upstream_error' };
     this.send('response.failed', {
       response: {
         ...this.responseBase('failed', this.outputItems.filter(Boolean)),
@@ -913,7 +921,7 @@ class ResponsesStreamTranslator {
           message: err?.message || 'Upstream stream error',
           // O10: Responses 是 OpenAI 家族,其错误帧在 server.js 之前就写好 →
           // 就地归一化内部词到官方 OpenAI type。
-          type: normalizeOpenAIErrorType(err?.type || 'upstream_error', err?.status),
+          type: normalizeOpenAIErrorType(http.type, http.status),
           code: err?.code || null,
         },
       },
