@@ -11,7 +11,7 @@
  */
 
 import { createHash, randomUUID, randomBytes, timingSafeEqual } from 'crypto';
-import { isStickyEnabled, getStickyBinding, setStickyBinding, clearStickyBinding } from './account/sticky-session.js';
+import { isStickyEnabled, getStickyBinding, setStickyBinding, clearStickyBinding, noteStickyFallback } from './account/sticky-session.js';
 import { isExperimentalEnabled, getDroughtThresholdPercent, getIpLockThreshold, getIpLockMs, getBackendSwitch, getBreakerTunable, getQuotaTunable } from './runtime-config.js';
 import { readFileSync, existsSync, unlinkSync, readdirSync } from 'fs';
 import { config, log } from './config.js';
@@ -1320,6 +1320,7 @@ export function getApiKey(excludeKeys = [], modelKey = null, callerKey = null, c
       }
       // Clear it so the next call falls through to normal selection instead of looping.
       clearStickyBinding(callerKey, modelKey);
+      noteStickyFallback();
     }
   }
 

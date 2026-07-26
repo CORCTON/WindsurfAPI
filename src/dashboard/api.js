@@ -20,6 +20,7 @@ import { restartLsForProxy } from '../langserver.js';
 import { getLsStatus, stopLanguageServerAndWait, startLanguageServer, isLanguageServerRunning, getLsAdmissionStatus } from '../langserver.js';
 import { getStats, resetStats, recordRequest, exportStats, importStats } from './stats.js';
 import { getConnectMetrics, resetConnectMetrics } from '../devin-connect-metrics.js';
+import { getStickyStats, isStickyEnabled } from '../account/sticky-session.js';
 import { cacheStats, cacheClear } from '../cache.js';
 import {
   getExperimental, setExperimental, getTunables, setTunables, getPrefs, setPrefs, getSystemPrompts, setSystemPrompts, resetSystemPrompt,
@@ -1226,7 +1227,14 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
     // C5: fold in the persisted per-account rolling-hour health window so an
     // operator sees not just fleet-wide counters but which accounts are
     // currently throwing throttles/errors/dead-tokens over the last hour.
-    return json(res, 200, { ...getConnectMetrics(), poolHealth: getPoolHealthWindow() });
+    // Sticky-session affinity counters ride along so an operator can verify
+    // STICKY_SESSION_ENABLED is actually binding (hits/creates > 0) instead
+    // of counting log lines — the only way to check before this.
+    return json(res, 200, {
+      ...getConnectMetrics(),
+      poolHealth: getPoolHealthWindow(),
+      sticky: { enabled: isStickyEnabled(), ...getStickyStats() },
+    });
   }
   if (subpath === '/connect-metrics' && method === 'DELETE') {
     resetConnectMetrics();

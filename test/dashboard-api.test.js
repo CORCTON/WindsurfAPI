@@ -206,6 +206,13 @@ describe('dashboard batch import proxy binding', () => {
     assert.equal(body.dead_tokens, 1);
     assert.equal(typeof body.credDecryptFailures, 'number');
     assert.ok(body.uptimeMs >= 0);
+    // Sticky affinity counters ride the same endpoint so an operator can see
+    // whether STICKY_SESSION_ENABLED is actually binding.
+    assert.equal(typeof body.sticky, 'object');
+    assert.equal(typeof body.sticky.enabled, 'boolean');
+    for (const k of ['hits', 'misses', 'creates', 'fallbacks', 'size']) {
+      assert.equal(typeof body.sticky[k], 'number', `sticky.${k} must be a number`);
+    }
 
     const del = fakeRes();
     await handleDashboardApi('DELETE', '/connect-metrics', {}, localReq('/connect-metrics'), del);

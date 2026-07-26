@@ -210,6 +210,16 @@ export function clearCallerBindings(callerKey) {
 }
 
 /**
+ * Record that a bound account was unusable and the caller fell back to normal
+ * selection (auth.js clears the binding right before this). Kept separate from
+ * clearStickyBinding so an operator can tell "pin broke and rotated" apart
+ * from ordinary clears.
+ */
+export function noteStickyFallback() {
+  _stats.fallbacks++;
+}
+
+/**
  * Reset all bindings. Useful for testing or full session reset.
  */
 export function resetAllBindings() {
