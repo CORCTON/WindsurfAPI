@@ -91,10 +91,23 @@ export function neutralizeClientIdentity(text, env = process.env, opts = {}) {
     /The most recent Claude models are[\s\S]*?most capable Claude models\./i,
     '',
   );
-  // "You are powered by the model <claude-*/fable-*>." — a self-model fingerprint
-  // some entrypoints inject into the Environment block.
+  // "You are powered by the model <claude-*/fable-*>." + the "The exact model ID
+  // is <id>." sentence that follows it — a self-model fingerprint some entrypoints
+  // inject into the Environment block.
+  //
+  // The sentence terminator must be a dot followed by WHITESPACE (or EOL), not any
+  // dot: the previous `[^\n.]*\.` stopped at the first dot, which for every dotted
+  // model version ("Opus 4.8", "Sonnet 4.6") cut the sentence mid-version — it
+  // deleted "…named Opus 4." and left a dangling "8. The exact model ID is
+  // claude-opus-4-8." behind, i.e. it BOTH mangled the prompt AND left the real
+  // fingerprint in place. The model-ID sentence was never matched by any rule at
+  // all, so even the undotted form ("Opus 5") leaked "claude-opus-5" verbatim.
   out = out.replace(
-    /You are powered by the model [^\n.]*\.\n?/i,
+    /You are powered by the model [^\n]*?(?:\.(?=\s|$)|(?=\n)|$)\s*/i,
+    '',
+  );
+  out = out.replace(
+    /The exact model ID is [^\n]*?(?:\.(?=\s|$)|(?=\n)|$)\s*/i,
     '',
   );
   // (a5) Cline's opening capability-boast identity sentence (2026-07-15, live A/B
@@ -173,4 +186,35 @@ export function neutralizeClientIdentity(text, env = process.env, opts = {}) {
     // (reserved) — no CC-only rewrites are confirmed yet; see block comment.
   }
   return out;
+}
+
+/**
+ * Neutralize a message `content` field in EITHER shape the pipeline carries.
+ *
+ * neutralizeClientIdentity only takes a string, so call sites that guarded with
+ * `typeof m.content !== 'string'` silently skipped array/parts content — which is
+ * the DEFAULT shape for Codex `/v1/responses` (responses.js normalizeMessageContent
+ * returns an array of `{type:'text'}` parts and does NOT flatten). Those messages
+ * then reached devin-connect.js's wire-time messageText() flattener, so the exact
+ * identity fingerprint this module exists to strip went upstream verbatim.
+ *
+ * Returns the input unchanged (same reference) when nothing was rewritten, so
+ * callers can keep using an identity check to avoid copying every message.
+ *
+ * @param {string|Array|null} content
+ * @param {object} env
+ * @param {object} opts  { ccActive?: boolean }
+ */
+export function neutralizeMessageContent(content, env = process.env, opts = {}) {
+  if (typeof content === 'string') return neutralizeClientIdentity(content, env, opts);
+  if (!Array.isArray(content)) return content;
+  let changed = false;
+  const parts = content.map((p) => {
+    if (!p || typeof p !== 'object' || p.type !== 'text' || typeof p.text !== 'string') return p;
+    const neut = neutralizeClientIdentity(p.text, env, opts);
+    if (neut === p.text) return p;
+    changed = true;
+    return { ...p, text: neut };
+  });
+  return changed ? parts : content;
 }

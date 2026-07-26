@@ -16,7 +16,7 @@ import { extractIntentFromNarrative, detectToolIntentInNarrative } from './inten
 import { isModelAllowed } from '../dashboard/model-access.js';
 import { cacheKey, cacheGet, cacheSet } from '../cache.js';
 import { isExperimentalEnabled, getBreakerTunable } from '../runtime-config.js';
-import { neutralizeClientIdentity } from './identity-neutralize.js';
+import { neutralizeClientIdentity, neutralizeMessageContent } from './identity-neutralize.js';
 import { normalizeStop, applyStop, StopSequenceGate } from '../stop-sequences.js';
 import { normalizeToolCallArgs, recordArgRepair } from './cline-compat.js';
 
@@ -2521,10 +2521,17 @@ async function _handleChatCompletionsInner(body, context = {}) {
     // Running here covers the original system prompt AND both injected preambles
     // (emulation + native). Only rewrites system messages; user/assistant content
     // is untouched. Off-switch: WINDSURFAPI_NEUTRALIZE_CLIENT_ID=0.
+    // Handles BOTH content shapes. Guarding on `typeof m.content === 'string'`
+    // silently skipped array/parts content — the DEFAULT shape for Codex
+    // /v1/responses, whose normalizeMessageContent returns `[{type:'text'}]` parts
+    // rather than a flat string. Those messages were only flattened later, by
+    // devin-connect.js's wire-time messageText(), so the identity fingerprint this
+    // step exists to strip reached Devin verbatim on the single most common
+    // Codex path.
     if (Array.isArray(connectMessages)) {
       connectMessages = connectMessages.map((m) => {
-        if (m?.role !== 'system' || typeof m.content !== 'string') return m;
-        const neut = neutralizeClientIdentity(m.content);
+        if (m?.role !== 'system') return m;
+        const neut = neutralizeMessageContent(m.content);
         return neut === m.content ? m : { ...m, content: neut };
       });
     }
