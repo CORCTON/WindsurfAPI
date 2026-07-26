@@ -1280,11 +1280,19 @@ export function getApiKey(excludeKeys = [], modelKey = null, callerKey = null, c
   // account so the cascade_id from the previous turn is still valid.
   // Falls through to normal selection if the bound account is unavailable.
   if (callerKey && isStickyEnabled()) {
-    log.info('[sticky] CHECK callerKey=%s model=%s enabled=%s', (callerKey || '(none)').slice(0, 50), modelKey || '(none)', isStickyEnabled());
     const bound = getStickyBinding(callerKey, modelKey);
     if (bound) {
       const acct = accounts.find(a => a.id === bound.accountId && a.status === 'active' && a.apiKey === bound.apiKey);
-      if (acct) {
+      if (!acct) {
+        log.debug(`[sticky] bound account ${bound.accountId} not selectable (removed, disabled, or re-keyed) — falling through`);
+      }
+      // A bound account listed in excludeKeys was already burned by THIS request
+      // (dead token / failover hop passes triedKeys here). Honoring the binding
+      // would re-hand the same dead account on every hop — the failover loop then
+      // exhausts maxHops on one account and 401s while healthy accounts sit idle
+      // (and the repeat reportError calls disable it). Treat it as unusable so it
+      // falls through to the no-longer-usable branch below.
+      if (acct && !excludeKeys.includes(acct.apiKey)) {
         const limit = rpmLimitFor(acct);
         const used = pruneRpmHistory(acct, now);
         if (limit > 0 && used < limit && !isRateLimitedForModel(acct, modelKey, now) && !isAccountInMaintenance(acct)) {
@@ -1307,15 +1315,12 @@ export function getApiKey(excludeKeys = [], modelKey = null, callerKey = null, c
       }
       // Bound account is no longer usable
       if (isExperimentalEnabled('stickyNoFallback')) {
-        log.info('[sticky] NO-FALLBACK callerKey=%s model=%s — bound account unavailable, refusing to rotate',
-          (callerKey || '').slice(0, 50), modelKey || '(none)');
+        log.info(`[sticky] NO-FALLBACK caller=${callerKey.slice(0, 50)} model=${modelKey || '(none)'} — bound account unavailable, refusing to rotate`);
         return null;
       }
       // Clear it so the next call falls through to normal selection instead of looping.
       clearStickyBinding(callerKey, modelKey);
     }
-  } else {
-    log.info('[sticky] SKIP-CHECK callerKey=%s enabled=%s', (callerKey ? callerKey.slice(0, 30) : String(callerKey)), isStickyEnabled());
   }
 
   const candidates = [];
