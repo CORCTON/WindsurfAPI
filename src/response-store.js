@@ -240,6 +240,17 @@ function truncateMessages(messages) {
 // the cross-tenant DoS the byte-denominated fair share is meant to prevent.
 const MAX_ENTRY_BYTES = Math.max(64 * 1024, Math.floor(MAX_BYTES / 4));
 
+// Floor under the per-tenant byte share used by the eviction loop. `MAX_BYTES /
+// tenants` is the fair-share rule, but taken literally it self-destructs at scale:
+// past a few hundred tenants the share falls below one ordinary conversation, so
+// EVERY tenant reads as over-share, each one only ever evicts its own oldest, and
+// a tenant holding a single entry has nothing to evict at all — the loop breaks
+// with the budget still exceeded. 1/64th of the budget (min 256KB) is the point
+// below which a tenant is too small for self-eviction to bound anything, and the
+// global LRU scan takes over. Above the floor the fair-share behaviour that
+// prevents the cross-tenant DoS is unchanged.
+const MIN_TENANT_BYTES = Math.max(256 * 1024, Math.floor(MAX_BYTES / 64));
+
 /**
  * Trim a conversation until it fits MAX_ENTRY_BYTES, dropping from the MIDDLE.
  * The leading system block and the most recent turns are what a next turn needs;
@@ -358,10 +369,21 @@ export function putResponse(responseId, messages, callerKey, opts = {}) {
   // (reproduced with MAX=2, MAX_BYTES=200k). An earlier version dropped this
   // guard as dead code because the mutation test only exercised the untenanted
   // path.
+  //
+  // The share has a FLOOR. `MAX_BYTES / tenants` alone collapses as tenants grow:
+  // at 600 tenants against the 2MB test budget the share is ~3.5KB, so every
+  // tenant is over share, every iteration evicts the writer's own oldest, and once
+  // the writer has nothing left of its own the loop breaks — with the budget still
+  // blown. Reproduced: 600 tenants x one 20KB conversation → 5.88x the budget and
+  // ZERO evictions, i.e. the byte bound stopped existing at exactly the scale it
+  // was written to protect. The floor keeps eviction working past that point: a
+  // tenant under MIN_TENANT_BYTES is treated as a small fry and the global LRU scan
+  // reclaims from whoever is actually oldest, which is the only thing that can
+  // bring a many-small-tenants total back under budget.
   let guard = _entries.size + 1;
   while (_bytes > MAX_BYTES && _entries.size > 1 && guard-- > 0) {
     const tenant = tenantOf(callerKey);
-    const byteShare = MAX_BYTES / Math.max(1, _tenantBytes.size);
+    const byteShare = Math.max(MIN_TENANT_BYTES, MAX_BYTES / Math.max(1, _tenantBytes.size));
     const overShare = (_tenantBytes.get(tenant) || 0) > byteShare;
     // An over-share tenant evicts its OWN oldest. If it has nothing of its own
     // left, stop — accepting a temporary overage is correct, because flushing
@@ -384,7 +406,10 @@ export function putResponse(responseId, messages, callerKey, opts = {}) {
  * proceeding with just the new turn is the bug this module exists to remove: the
  * model would answer with no context and the client could not tell.
  *
- * @returns {{ ok: true, messages: Array, model: string|null }
+ * `createdAt` is returned so the retrieval endpoint can report the response's real
+ * creation time instead of the time it happened to be read.
+ *
+ * @returns {{ ok: true, messages: Array, model: string|null, createdAt: number }
  *          | { ok: false, reason: 'disabled'|'not_found'|'expired'|'forbidden' }}
  */
 export function getResponse(responseId, callerKey) {
@@ -416,7 +441,7 @@ export function getResponse(responseId, callerKey) {
   _entries.delete(responseId);
   _entries.set(responseId, entry);
   _stats.hits++;
-  return { ok: true, messages: entry.messages, model: entry.model };
+  return { ok: true, messages: entry.messages, model: entry.model, createdAt: entry.createdAt };
 }
 
 /** Explicit deletion (DELETE /v1/responses/{id}). Scoped like the lookup. */

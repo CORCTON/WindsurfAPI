@@ -186,6 +186,50 @@ describe('byte eviction is tenant-fair (found by adversarial review of the first
       'a write that returns true must be readable — otherwise the caller holds an id that 404s');
   });
 
+  it('the budget still holds with HUNDREDS of tenants (the fair share has a floor)', () => {
+    // The fair share `MAX_BYTES / tenants` self-destructs at scale. Past a few
+    // hundred tenants the share falls below one ordinary conversation, so EVERY
+    // tenant reads as over-share, each only ever evicts its own oldest, and a tenant
+    // holding a single entry has nothing of its own to evict — the loop breaks with
+    // the budget still blown. Reproduced before the fix: 600 tenants x one 20KB
+    // conversation → 5.88x the budget and ZERO evictions, i.e. the byte bound
+    // stopped existing at exactly the scale it was written to protect.
+    //
+    // A shared deployment behind one relay reaches hundreds of distinct API-key
+    // prefixes as a matter of course, so this is the ordinary case, not an attack.
+    for (let t = 0; t < 600; t++) {
+      store.putResponse(`s${t}`, [{ role: 'user', content: 'x'.repeat(10 * 1024) }], `api:key${t}:user:1`);
+    }
+    const st = store.getResponseStoreStats();
+    assert.ok(st.bytes <= st.maxBytes,
+      `the byte budget must hold at 600 tenants (${st.bytes} vs ${st.maxBytes})`);
+    assert.ok(st.evictions > 0, 'and eviction must actually have run');
+  });
+
+  it('the newest write is still readable at that scale', () => {
+    // The floor lets the global LRU scan reclaim from other tenants again, so the
+    // guard that the writer is never its own victim has to keep holding.
+    for (let t = 0; t < 600; t++) {
+      store.putResponse(`n${t}`, [{ role: 'user', content: 'x'.repeat(10 * 1024) }], `api:key${t}:user:1`);
+    }
+    assert.equal(store.getResponse('n599', 'api:key599:user:1').ok, true,
+      'a write that returned true must be readable');
+  });
+
+  it('fair-share protection still holds when tenants are few (no regression)', () => {
+    // The floor only takes effect once the computed share is small. With a handful of
+    // tenants the byte-denominated fair share is what prevents the cross-tenant DoS,
+    // and it must be untouched.
+    for (let t = 0; t < 3; t++) {
+      for (let i = 0; i < 2; i++) store.putResponse(`f${t}_${i}`, conv(100), `api:fvic${t}:user:${i}`);
+    }
+    for (let i = 0; i < 30; i++) store.putResponse(`fatk${i}`, conv(100), `api:fatk:user:${i}`);
+    assert.deepEqual(
+      [0, 1, 2].map(t => store.getResponse(`f${t}_0`, `api:fvic${t}:user:0`).ok),
+      [true, true, true],
+      'a flooding tenant must still pay for its own growth');
+  });
+
   it('no single conversation can claim the whole budget', () => {
     // Without a per-entry ceiling the eviction loop cannot converge fairly: a tenant
     // whose one entry alone exceeds the budget has nothing of its OWN to evict, so it
