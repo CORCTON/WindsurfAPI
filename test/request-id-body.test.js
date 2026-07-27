@@ -91,14 +91,17 @@ describe('F4 withRequestId — pure function', () => {
   });
 });
 
-// F4(b): source-level prefix assertions (all 4 header sites migrated to req_).
+// F4(b): source-level prefix assertions (every header site migrated to req_).
 describe('F4 source — request id prefix migrated req- → req_', () => {
   const src = readFileSync(join(__dirname, '..', 'src', 'server.js'), 'utf8');
   it('no legacy req- prefix remains', () => {
     assert.doesNotMatch(src, /'req-'\s*\+\s*randomUUID/);
   });
-  it('exactly 4 req_ prefixed sites', () => {
-    assert.equal((src.match(/'req_'\s*\+\s*randomUUID/g) || []).length, 4);
+  it('exactly 5 req_ prefixed sites', () => {
+    // The count is the point: it fails when a NEW request-id site is added, forcing
+    // whoever adds it to confirm the prefix is req_ rather than the legacy req-.
+    // Bumped 4 → 5 for GET/DELETE /v1/responses/{id}, which mints its own id.
+    assert.equal((src.match(/'req_'\s*\+\s*randomUUID/g) || []).length, 5);
   });
 });
 

@@ -26,7 +26,7 @@ import { trustedClientIp } from './net-safety.js';
 import { handleChatCompletions, normalizeOpenAIErrorBody } from './handlers/chat.js';
 import { handleMessages, handleCountTokens, validateMessagesRequest, validateCountTokensRequest } from './handlers/messages.js';
 import { handleGemini, parseGeminiPath } from './handlers/gemini.js';
-import { handleResponses } from './handlers/responses.js';
+import { handleResponses, handleGetResponse, handleDeleteResponse } from './handlers/responses.js';
 import { handleModels } from './handlers/models.js';
 import { resolveClineCompat, stripClineNamespace } from './handlers/cline-compat.js';
 import { resolveCcCompat, stripCcNamespace } from './handlers/cc-compat.js';
@@ -674,6 +674,33 @@ async function route(req, res) {
     return;
   }
 
+  // GET / DELETE /v1/responses/{id} — retrieve or drop a stored response.
+  //
+  // Matched with an explicit prefix + a strict id shape rather than a loose
+  // startsWith slice: `path` is never URL-decoded anywhere in this router (see the
+  // audit note on path normalization), and keeping the id charset closed means a
+  // crafted suffix cannot smuggle a traversal segment or a second path component
+  // into the store lookup. Anything that does not match falls through to the 404.
+  if ((method === 'GET' || method === 'DELETE') && path.startsWith('/v1/responses/')) {
+    const responseId = path.slice('/v1/responses/'.length);
+    if (/^[A-Za-z0-9_-]{1,128}$/.test(responseId)) {
+      const token = extractToken(req);
+      // No body on GET/DELETE, so the callerKey comes from the API key + the
+      // ip/ua fingerprint — exactly what a chained POST with no `user` derives, so
+      // a client that can chain can also retrieve.
+      const callerKey = callerKeyFromRequest(req, token, null);
+      const result = (method === 'GET' ? handleGetResponse : handleDeleteResponse)(
+        responseId, { context: { callerKey } },
+      );
+      const requestId = 'req_' + randomUUID();
+      res.setHeader('x-request-id', requestId);
+      res.setHeader('openai-version', '2020-10-01');
+      res.setHeader('openai-organization', 'org-windsurf-proxy');
+      normalizeOpenAIErrorBody(result.body, result.status);
+      return json(res, result.status, withRequestId(result.status, result.body, requestId));
+    }
+  }
+
   // Anthropic Messages API — Claude Code compatibility
   if (path === '/v1/messages/count_tokens' && method === 'POST') {
     if (!isAuthenticated()) {
@@ -857,6 +884,8 @@ export function startServer() {
     log.info(`Server on http://${bindHost}:${config.port}`);
     log.info('  POST /v1/chat/completions');
     log.info('  POST /v1/responses');
+    log.info('  GET  /v1/responses/{id}   (retrieve stored)');
+    log.info('  DEL  /v1/responses/{id}');
     log.info('  POST /v1/messages         (Anthropic)');
     log.info('  POST /v1/messages/count_tokens');
     log.info('  POST /v1beta/models/{model}:generateContent       (Gemini)');
