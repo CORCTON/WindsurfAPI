@@ -5,6 +5,7 @@ import {
   buildGetChatMessageRequest,
   decodeFrame,
   mapFinishReason,
+  resolveFinishReason,
   classifyUpstreamError,
   isRetryable,
   streamChat,
@@ -649,9 +650,16 @@ describe('mapFinishReason', () => {
   it('returns null when no finish signal was seen', () => {
     assert.equal(mapFinishReason(null), null);
   });
-  it('maps max_tokens truncation to "length"', () => {
-    // 3 is still a best-effort default for the un-pinned max_tokens variant.
-    assert.equal(mapFinishReason(3), 'length');
+  it('maps the un-calibrated 3 and 5 to "stop", NOT to length/content_filter', () => {
+    // Both were name-order guesses (max_tokens→'length', refusal→'content_filter').
+    // 4 proved that method wrong once already, and the cost of a wrong guess is
+    // asymmetric: on /v1/responses either value closes the turn as
+    // `response.incomplete` (a whole-turn hard failure for Codex-style clients),
+    // and content_filter additionally surfaces on /v1/messages as
+    // stop_reason:'refusal' — reporting a normal answer as the model refusing.
+    // Truncation is inferred from usage instead (see resolveFinishReason).
+    assert.equal(mapFinishReason(3), 'stop');
+    assert.equal(mapFinishReason(5), 'stop');
   });
 
   it('maps 4 to "stop" — paid capture overturned the name-order guess', () => {
@@ -665,7 +673,10 @@ describe('mapFinishReason', () => {
   });
   it('handles BigInt finish values (proto varints decode as BigInt)', () => {
     assert.equal(mapFinishReason(2n), 'stop');
-    assert.equal(mapFinishReason(3n), 'length');
+    // A BigInt must resolve through the same table as its Number twin — the Number
+    // conversion is what makes the map lookup hit at all.
+    assert.equal(mapFinishReason(3n), mapFinishReason(3));
+    assert.equal(mapFinishReason(7n, { DEVIN_CONNECT_STOP_REASON_MAP: '7=length' }), 'length');
   });
   it('falls back to "stop" for unknown values (never an error)', () => {
     assert.equal(mapFinishReason(99), 'stop');
@@ -676,9 +687,61 @@ describe('mapFinishReason', () => {
     assert.equal(mapFinishReason(7, env), 'length');
     assert.equal(mapFinishReason(8, env), 'content_filter');
     assert.equal(mapFinishReason(2, env), 'stop');       // anchor still holds
+    // An operator WITH a real capture can restore 'length' for 3.
+    assert.equal(mapFinishReason(3, { DEVIN_CONNECT_STOP_REASON_MAP: '3=length' }), 'length');
     // garbage in the override is ignored, defaults survive
     const env2 = { DEVIN_CONNECT_STOP_REASON_MAP: '3=bogus,xx=length' };
-    assert.equal(mapFinishReason(3, env2), 'length');    // bad value ignored → default
+    assert.equal(mapFinishReason(3, env2), 'stop');      // bad value ignored → default
+  });
+});
+
+describe('resolveFinishReason — truncation from usage, not from the un-calibrated enum', () => {
+  it('reports "length" when completion_tokens lands exactly on the requested cap', () => {
+    assert.equal(resolveFinishReason(2, { completion_tokens: 64 }, 64), 'length');
+  });
+
+  it('reports "stop" for a complete answer well under the cap', () => {
+    // The regression that made v3.9.0 unusable in reverse: a 12-token answer under
+    // a 4096 cap is complete, and must never read as truncated.
+    assert.equal(resolveFinishReason(4, { completion_tokens: 12 }, 4096), 'stop');
+  });
+
+  it('reports "stop" when the caller set no cap at all', () => {
+    // Nothing to compare against → no truncation claim. Covers the common case of a
+    // client that never sends max_tokens.
+    assert.equal(resolveFinishReason(2, { completion_tokens: 4096 }, null), 'stop');
+    assert.equal(resolveFinishReason(2, { completion_tokens: 4096 }, undefined), 'stop');
+    assert.equal(resolveFinishReason(2, { completion_tokens: 4096 }, 0), 'stop');
+  });
+
+  it('reports "stop" when usage is missing entirely', () => {
+    // Free-tier / un-instrumented turns carry no usage block; absence of evidence
+    // must not become evidence of truncation.
+    assert.equal(resolveFinishReason(2, null, 100), 'stop');
+    assert.equal(resolveFinishReason(2, {}, 100), 'stop');
+  });
+
+  it('never overwrites a stronger signal than "stop"', () => {
+    // tool_calls / content_filter say something specific about what the turn did.
+    // Only a clean stop is eligible for the truncation upgrade.
+    const env = { DEVIN_CONNECT_STOP_REASON_MAP: '9=tool_calls,10=content_filter' };
+    assert.equal(resolveFinishReason(9, { completion_tokens: 50 }, 50, env), 'tool_calls');
+    assert.equal(resolveFinishReason(10, { completion_tokens: 50 }, 50, env), 'content_filter');
+  });
+
+  it('an operator override for that value wins over the inference', () => {
+    // Someone who captured the real integers is the better authority: with 2 pinned
+    // to 'stop' explicitly, a cap-equal turn stays 'stop'.
+    const env = { DEVIN_CONNECT_STOP_REASON_MAP: '2=stop' };
+    assert.equal(resolveFinishReason(2, { completion_tokens: 30 }, 30, env), 'stop');
+  });
+
+  it('passes a null finish through as null (no finish signal seen)', () => {
+    assert.equal(resolveFinishReason(null, { completion_tokens: 30 }, 30), null);
+  });
+
+  it('tolerates a string cap (max_tokens arriving as JSON text)', () => {
+    assert.equal(resolveFinishReason(2, { completion_tokens: 16 }, '16'), 'length');
   });
 });
 

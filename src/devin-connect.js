@@ -1653,7 +1653,12 @@ export function classifyUpstreamError(text, code = null, status = null) {
 //   - internal: per this file's header the server returns `internal` for
 //     PERMANENT client mistakes (short fingerprint, gzipped request body) — those
 //     fail identically every retry, so retrying burns attempts for nothing.
-const RETRYABLE_CODES = new Set(['ECONNRESET', 'ETIMEDOUT', 'ECONNREFUSED', 'EPIPE', 'TIMEOUT', 'unavailable', 'CAPACITY']);
+//   - STREAM_TRUNCATED: the socket ended mid-stream without the mandatory
+//     end-of-stream frame. Transport-level, indistinguishable from ECONNRESET in
+//     cause, and a replay usually lands a complete answer. The stream path only
+//     replays while nothing has been emitted, so a truncated turn that already
+//     wrote bytes surfaces as an error instead.
+const RETRYABLE_CODES = new Set(['ECONNRESET', 'ETIMEDOUT', 'ECONNREFUSED', 'EPIPE', 'TIMEOUT', 'unavailable', 'CAPACITY', 'STREAM_TRUNCATED']);
 
 /** True when an error should be retried (vs surfaced immediately). */
 export function isRetryable(err) {
@@ -1696,7 +1701,16 @@ const STOP_REASON_DEFAULT = Object.freeze({
   // cancelled→stop. These are guesses keyed off the variant NAME order and are
   // overridable; they only matter once a paid/edge capture pins the integers.
   1: 'stop',        // end_turn
-  3: 'length',      // max_tokens (truncated)
+  // 3 WAS 'length' on the strength of the variant NAME order alone. That guess is
+  // now retired, for the same reason the 4→'length' guess had to be: an integer
+  // guessed wrong makes every COMPLETE response read as truncated, and on
+  // /v1/responses a 'length' closes the turn as `response.incomplete`, which is a
+  // whole-turn hard failure for Codex-style clients. 4 proved the guess wrong once
+  // already (paid capture, §8.7). Truncation is not something to infer from an
+  // uncalibrated enum: real truncation is corroborated by completion_tokens
+  // reaching the requested cap, which resolveFinishReason checks from the usage
+  // block, so nothing is lost by defaulting to a clean stop here.
+  3: 'stop',        // was max_tokens→'length' (name-order guess, retired)
   // 4 = LIVE-ANCHORED normal completion on a PAID (teams) account, calibrated
   // 2026-07-27 — §8.7 had been waiting for exactly this capture. Three probes on
   // claude-sonnet-4.6 with max_tokens 300 / 8 / 40 all returned 4, and the
@@ -1708,7 +1722,13 @@ const STOP_REASON_DEFAULT = Object.freeze({
   // auto-continue on a length finish would loop on complete answers.
   // Override with DEVIN_CONNECT_STOP_REASON_MAP if a future capture disagrees.
   4: 'stop',        // normal completion (paid); was max_turn_requests guess
-  5: 'content_filter', // refusal
+  // 5 WAS 'content_filter' from the same name-order guess, and it is the most
+  // damaging one to get wrong: content_filter also closes /v1/responses as
+  // `response.incomplete`, AND the messages route maps it to Anthropic
+  // `stop_reason:'refusal'` — so a normal completion would be reported to the
+  // client as the model refusing. A real refusal is visible in the answer text;
+  // a fabricated one is not recoverable by the client.
+  5: 'stop',        // was refusal→'content_filter' (name-order guess, retired)
   6: 'stop',        // cancelled
 });
 
@@ -1769,6 +1789,49 @@ export function mapFinishReason(finish, env = process.env) {
   const map = stopReasonMap(env);
   // Unknown values → 'stop': a completed stream must never read as an error.
   return map[n] || 'stop';
+}
+
+/**
+ * Resolve the OpenAI finish_reason for a completed connect turn.
+ *
+ * The enum alone cannot tell us about truncation: only 2 and 4 are pinned by live
+ * captures, and every name-order guess for the rest has been wrong so far (4 was
+ * 'length' and made every complete paid response read as truncated). So the enum
+ * now defaults to 'stop' and truncation is detected from a signal that does not
+ * depend on the un-calibrated integers: `completion_tokens` reaching the output cap
+ * the caller asked for. That is the same test an OpenAI client would apply itself.
+ *
+ * The check is deliberately conservative — equality with the cap, not >=, and only
+ * when the caller set an explicit cap:
+ *   - `max_tokens` is NOT enforced upstream on every tier (a free-tier probe varied
+ *     16 → 1000 with byte-identical output), so a turn that never approaches the cap
+ *     is unaffected either way;
+ *   - reporting a complete answer as truncated is the more harmful error (clients
+ *     that auto-continue on 'length' loop forever), so ambiguity resolves to 'stop'.
+ *
+ * An explicit DEVIN_CONNECT_STOP_REASON_MAP override always wins: an operator who
+ * HAS captured the real integers is a better authority than this inference.
+ *
+ * @param {number|bigint|null} finish  raw upstream enum (proto #5)
+ * @param {object|null} usage         normalized usage ({completion_tokens})
+ * @param {number|null} maxTokens     output cap the caller requested, if any
+ */
+export function resolveFinishReason(finish, usage, maxTokens, env = process.env) {
+  const mapped = mapFinishReason(finish, env);
+  // A calibrated override for THIS value takes precedence over the inference.
+  const overridden = finish != null
+    && Object.hasOwn(stopReasonMap(env), typeof finish === 'bigint' ? Number(finish) : finish)
+    && String(env.DEVIN_CONNECT_STOP_REASON_MAP || '').trim() !== '';
+  if (overridden) return mapped;
+  // Only a clean stop can be upgraded to 'length'. tool_calls / content_filter are
+  // stronger signals about what the turn actually did and must not be overwritten.
+  if (mapped !== 'stop') return mapped;
+  const cap = Number(maxTokens);
+  const completion = Number(usage?.completion_tokens);
+  if (Number.isFinite(cap) && cap > 0 && Number.isFinite(completion) && completion === cap) {
+    return 'length';
+  }
+  return mapped;
 }
 
 
@@ -1869,6 +1932,14 @@ export async function* streamChat({
   let done = false;
   let streamError = null;
   let wake = null;
+  // Did the upstream send its mandatory end-of-stream frame? Connect-RPC always
+  // terminates a stream with one (carrying `{}` on success or an error trailer), so
+  // a socket that just ends without it delivered a PARTIAL answer. Before this flag
+  // that case was indistinguishable from a clean completion: the generator returned
+  // normally with reason=null, mapFinishReason defaulted null→'stop', and the half
+  // answer was reported as a finished turn — on /v1/responses closing the turn as
+  // `response.completed` and entering the response store as the next turn's context.
+  let sawEndOfStream = false;
   let lastFinish = null;
   let lastUsage = null;
   let lastBilling = null;
@@ -1939,6 +2010,7 @@ export async function* streamChat({
       catch (err) { streamError = err; done = true; req.destroy(); pump(); return; }
       for (const frame of frames) {
         if (frame.isEndStream) {
+          sawEndOfStream = true;
           // Trailer is JSON: {} on success, {"error":{...}} on failure.
           const text = frame.payload.toString('utf8').trim();
           // Calibration (DEBUG-gated, default OFF): surface the raw trailer bytes
@@ -2070,11 +2142,28 @@ export async function* streamChat({
         const tailReasoning = reasoningDecoder.end();
         if (tailReasoning) yield { type: 'reasoning', text: tailReasoning };
         if (tailContent) yield { type: 'content', text: tailContent };
+        // The socket ended without the mandatory end-of-stream frame: the answer is
+        // TRUNCATED, not finished. Throwing here (rather than yielding a finish
+        // event) is what keeps a partial answer out of every "completed turn"
+        // pathway — the /v1/responses translator only commits to the response store
+        // on a clean finish, the session-continuity pair-chain only commits on 'ok',
+        // and the stream path can still replay while nothing was emitted. Raised
+        // AFTER the tail flush so a caller that already streamed bytes to its client
+        // has delivered everything the upstream actually sent.
+        if (!sawEndOfStream) {
+          throw Object.assign(
+            new Error('DEVIN_CONNECT: upstream stream ended without an end-of-stream frame (truncated response)'),
+            { code: 'STREAM_TRUNCATED' },
+          );
+        }
         // One terminal event carrying finish_reason + usage for the caller to
         // close out an OpenAI-shaped response.
+        const finishUsage = normalizeConnectUsage(lastUsage);
         yield {
           type: 'finish',
-          reason: mapFinishReason(lastFinish, env),
+          // Truncation is inferred from completion_tokens hitting the caller's cap,
+          // NOT from the un-calibrated enum — see resolveFinishReason.
+          reason: resolveFinishReason(lastFinish, finishUsage, completion?.maxTokens, env),
           // Same normalization the Cascade path already applies (chat.js, #118):
           // prompt_tokens INCLUDES cache_read (cached_tokens is a SUBSET detail of
           // it, per OpenAI's shape), and total_tokens carries the full cost
@@ -2088,7 +2177,7 @@ export async function* streamChat({
           // proxy (one-api / new-api and friends) meters from exactly these
           // numbers, and all four protocol routes read this one object, so fixing
           // it at the birth point corrects them together. Live-reproduced.
-          usage: normalizeConnectUsage(lastUsage),
+          usage: finishUsage,
           // Billing detail (credit/acu cost) only present when an operator has
           // calibrated DEVIN_CONNECT_BILLING_TAGS against a paid token. Null on
           // free tier / un-configured deployments — zero behavioral change.

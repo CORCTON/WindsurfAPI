@@ -20,7 +20,7 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mapFinishReason, normalizeConnectUsage } from '../src/devin-connect.js';
+import { mapFinishReason, resolveFinishReason, normalizeConnectUsage } from '../src/devin-connect.js';
 
 describe('stop reason mapping (paid calibration 2026-07-27)', () => {
   it('4 is a clean stop, not a truncation', () => {
@@ -33,9 +33,23 @@ describe('stop reason mapping (paid calibration 2026-07-27)', () => {
     assert.equal(mapFinishReason(2, {}), 'stop', '2 is the verified free-tier clean stop');
   });
 
-  it('still reports a genuine truncation', () => {
-    assert.equal(mapFinishReason(3, {}), 'length', 'max_tokens truncation must stay length');
-    assert.equal(mapFinishReason(5, {}), 'content_filter');
+  it('still reports a genuine truncation — but from usage, not from the enum', () => {
+    // 3 and 5 were name-order guesses like 4 was, so they no longer claim
+    // length/content_filter on their own: the same reasoning that retired the 4 guess
+    // applies to them, and a spurious 'incomplete' is a hard failure on
+    // /v1/responses (and a fabricated 'refusal' on /v1/messages).
+    assert.equal(mapFinishReason(3, {}), 'stop');
+    assert.equal(mapFinishReason(5, {}), 'stop');
+    // Real truncation is still reported — corroborated by completion_tokens landing
+    // on the cap the caller asked for, which does not depend on the un-pinned
+    // integers at all.
+    assert.equal(resolveFinishReason(3, { completion_tokens: 128 }, 128, {}), 'length',
+      'a turn that used its entire output budget is a genuine truncation');
+    assert.equal(resolveFinishReason(2, { completion_tokens: 128 }, 128, {}), 'length');
+    // And an operator with a real capture can restore the enum mapping outright.
+    assert.equal(mapFinishReason(3, { DEVIN_CONNECT_STOP_REASON_MAP: '3=length' }), 'length');
+    assert.equal(mapFinishReason(5, { DEVIN_CONNECT_STOP_REASON_MAP: '5=content_filter' }),
+      'content_filter');
   });
 
   it('an unknown value degrades to stop, never to an error-looking reason', () => {

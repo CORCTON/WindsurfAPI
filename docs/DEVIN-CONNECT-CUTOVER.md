@@ -359,18 +359,43 @@ DEVIN_CONNECT_BILLING_TAGS="credit_cost=6,cache_read_tokens=14,cache_write_token
 
 `mapFinishReason` maps the upstream `StopReason` enum (recon variant order:
 `end_turn, max_tokens, max_turn_requests, refusal, cancelled`) to the OpenAI
-vocabulary. The normal-completion value `2 → stop` is LIVE-ANCHORED (free-tier
-verified) and shipped on by default. The remaining integers use best-effort
-defaults (`3/4 → length`, `5 → content_filter`); if a paid/edge capture shows
-different integers, override the whole table:
+vocabulary. **Two integers are LIVE-ANCHORED and must not be changed without a
+capture that contradicts them:**
+
+| value | maps to | evidence |
+|---|---|---|
+| `2` | `stop` | free-tier normal completion (verified) |
+| `4` | `stop` | **paid teams** normal completion, calibrated 2026-07-27 — three probes on claude-sonnet-4.6 (`max_tokens` 300 / 8 / 40) all returned 4, and the `max_tokens=300` one answered "HI" (2 chars, unambiguously complete) |
+
+Every OTHER value maps to `stop`. The earlier best-effort guesses (`3 → length`,
+`5 → content_filter`), inferred from the variant NAME order, have been **retired**:
+value 4 proved that method wrong, and the cost of a wrong guess is asymmetric.
+A spurious `length` or `content_filter` closes a `/v1/responses` turn as
+`response.incomplete` (a whole-turn hard failure for Codex-style clients), and
+`content_filter` additionally surfaces on `/v1/messages` as Anthropic
+`stop_reason:'refusal'` — reporting a completed answer as the model refusing.
+
+**Truncation is detected from usage, not from the enum.** `resolveFinishReason`
+reports `length` when `completion_tokens` lands exactly on the cap the caller
+requested — the same test an OpenAI client would apply itself, and one that does
+not depend on un-calibrated integers. The check is conservative by design (exact
+equality, and only when the caller set a cap), because reporting a complete answer
+as truncated is the more harmful error: clients that auto-continue on `length`
+would loop on a finished response.
+
+An operator with a real capture is a better authority than either mechanism and
+can override the whole table — an explicit override for a value also takes
+precedence over the usage inference:
 
 ```sh
 DEVIN_CONNECT_STOP_REASON_MAP="1=stop,2=stop,3=length,5=content_filter"
 ```
 
 Unknown values always fall back to `stop` so a finished stream is never an error.
-Note: free-tier `swe-1-6-slow` does NOT enforce `max_tokens` (probe: 16 vs 1000
-→ identical output), so `length` cannot be exercised without a paid capture.
+Note: `max_tokens` is NOT reliably enforced upstream — the free-tier probe (16 vs
+1000 → identical output) and a paid re-check (16 vs 4096 → byte-identical output)
+both show the cap being ignored, so a genuinely truncated turn may be rare enough
+that pinning 3/5 requires deliberately provoking one.
 
 ### 8.8 Live re-login recovery check (real credentials, zero-billable)
 
