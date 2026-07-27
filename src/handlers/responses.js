@@ -6,7 +6,7 @@
  */
 
 import { randomUUID } from 'crypto';
-import { handleChatCompletions, normalizeOpenAIErrorType, connectErrorToHttp } from './chat.js';
+import { handleChatCompletions, normalizeOpenAIErrorType, connectErrorToHttp, hasPerUserScope } from './chat.js';
 import { getResponse, putResponse, isResponseStoreEnabled } from '../response-store.js';
 import { safeLogValue } from '../log-safety.js';
 import { log } from '../config.js';
@@ -1160,6 +1160,18 @@ export async function handleResponses(body, deps = {}) {
     delete chatBody.__instructionsLead;
   }
 
+  // Storing requires a TRUSTWORTHY caller identity. A `:client:<ip+ua>` bucket is a
+  // GUESSED one: behind a reverse proxy every end user collapses to the same proxy
+  // IP and the same UA (verified: two callers with identical ip/ua derive a
+  // byte-identical callerKey), so treating it as a per-caller scope would let user B
+  // chain from user A's response id and read A's conversation — the exact
+  // cross-tenant leak SEC-W2 forbids, and the same gate cascade reuse and
+  // bindConnectSticky already sit behind.
+  //
+  // A genuine single-user self-host opts back in with
+  // WINDSURFAPI_SINGLE_TENANT_CACHE=1 (which is what hasPerUserScope consults).
+  // Without it such a caller simply cannot chain, and the 404 below says so.
+  const chainable = hasPerUserScope(callerKey);
   // Responses API server-side state: when the caller chains with
   // previous_response_id it sends ONLY the new turn, so the stored conversation
   // has to be prepended here. A miss must FAIL — proceeding with just the new turn
@@ -1194,8 +1206,13 @@ export async function handleResponses(body, deps = {}) {
             // control characters would let a caller forge lines in any log that
             // records this error, and an unbounded value would be reflected in
             // full (safeLogValue strips C0/C1 + DEL and caps the length).
-            message: `Previous response with id '${safeLogValue(body.previous_response_id, 64)}' not found. It may have expired`
-              + ` (server-side conversations are retained for a limited time) or was created with store:false.`
+            message: `Previous response with id '${safeLogValue(body.previous_response_id, 64)}' not found.`
+              + (chainable
+                ? ' It may have expired (server-side conversations are retained for a limited time)'
+                  + ' or was created with store:false.'
+                : ' Server-side conversations require a per-caller identity: send `user`,'
+                  + ' `safety_identifier` or `prompt_cache_key` on every turn of the conversation'
+                  + ' (a single-user self-host can instead set WINDSURFAPI_SINGLE_TENANT_CACHE=1).')
               + ' Send the full conversation in `input` to continue without server-side state.',
             type: 'invalid_request_error',
             param: 'previous_response_id',
@@ -1209,7 +1226,7 @@ export async function handleResponses(body, deps = {}) {
   // The conversation to persist for the NEXT turn: everything the upstream saw.
   const priorMessages = chatBody.messages || [];
   const commit = (assistantMessage) => {
-    if (!isResponseStoreEnabled()) return;
+    if (!isResponseStoreEnabled() || !chainable) return;
     try {
       putResponse(
         responseId,

@@ -832,7 +832,7 @@ const SINGLE_TENANT_CACHE = process.env.WINDSURFAPI_SINGLE_TENANT_CACHE === '1';
 // a bare API key (`api:<hash>`) or a guessed `:client:` bucket. Callers without
 // one must not share response-cache hits or resume each other's cascade — see
 // HIGH-3 and SEC-W2 above.
-function hasPerUserScope(callerKey) {
+export function hasPerUserScope(callerKey) {
   if (typeof callerKey !== 'string' || !callerKey) return false;
   // A real, client-supplied user/session signal is always trusted.
   if (callerKey.includes(':user:')) return true;

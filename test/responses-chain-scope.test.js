@@ -60,24 +60,47 @@ describe('chain scope stays stable across turns', () => {
     }
   });
 
-  it('a client with NO stable signal can still chain end to end', async () => {
-    // The exact shape that used to 404: no user, no prompt_cache_key, callerKey
-    // supplied by the server layer (ip+ua fingerprint) and identical on both turns.
+  it('a guessed :client: identity cannot chain — SEC-W2 isolation', async () => {
+    // Behind a reverse proxy every end user collapses to the SAME `:client:<ip+ua>`
+    // bucket (verified: identical ip/ua derive a byte-identical callerKey). Storing
+    // under that bucket would let user B chain from user A's response id and read
+    // A's conversation. Same gate cascade reuse and bindConnectSticky sit behind.
     const rec = recorder('remembered');
-    const CALLER = 'api:hashhashhashhashhashhashhashha:client:fingerprint1';
+    const CLIENT = 'api:hashhashhashhashhashhashhashha:client:fingerprint1';
     const t1 = await handleResponses(
       { model: 'm', input: userTurn('remember 55123') },
-      { handleChatCompletions: rec.handler, context: { callerKey: CALLER } },
+      { handleChatCompletions: rec.handler, context: { callerKey: CLIENT } },
     );
-    assert.equal(t1.status, 200);
+    assert.equal(t1.status, 200, 'the turn itself must still be served');
 
     const t2 = await handleResponses(
       { model: 'm', previous_response_id: t1.body.id, input: userTurn('what number?') },
-      { handleChatCompletions: rec.handler, context: { callerKey: CALLER } },
+      { handleChatCompletions: rec.handler, context: { callerKey: CLIENT } },
     );
-    assert.equal(t2.status, 200, 'a bare SDK client must be able to chain');
+    assert.equal(t2.status, 404, 'a guessed identity must not get server-side state');
+    assert.match(t2.body.error.message, /per-caller identity/,
+      'and the error must tell the caller how to fix it');
+    assert.match(t2.body.error.message, /WINDSURFAPI_SINGLE_TENANT_CACHE/,
+      'including the single-tenant opt-out for a genuine self-host');
+  });
+
+  it('a client-supplied identity chains end to end', async () => {
+    // The supported shape: any of user / safety_identifier / prompt_cache_key makes
+    // callerKey carry a real `:user:` segment.
+    const rec = recorder('remembered');
+    const SCOPED = 'api:hashhashhashhashhashhashhashha:user:alice';
+    const t1 = await handleResponses(
+      { model: 'm', input: userTurn('remember 55123') },
+      { handleChatCompletions: rec.handler, context: { callerKey: SCOPED } },
+    );
+    const t2 = await handleResponses(
+      { model: 'm', previous_response_id: t1.body.id, input: userTurn('what number?') },
+      { handleChatCompletions: rec.handler, context: { callerKey: SCOPED } },
+    );
+    assert.equal(t2.status, 200);
     assert.equal(rec.seen[1].messages.length, 3, 'the stored turn must be prepended');
   });
+
 });
 
 describe('an unanswerable conversation is rejected locally, never forwarded', () => {
