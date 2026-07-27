@@ -35,6 +35,10 @@
 
 ### 测试
 
+改动协议层 / 鉴权面 / 解码器前,先看 [docs/AUDIT-LEDGER.md](docs/AUDIT-LEDGER.md) —— 那里记了哪些子系统已被实际探测过、结论如何,以及哪些不变式有突变验证过的守卫。
+碰到标 🛡 的地方,注意别把守卫住的性质改掉(例如给路由路径加 URL 解码、
+或把 parseFields 改成自动递归)。
+
 项目有完整的自动测试套件，`npm test` 跑全部用例（目前 2800+）。PR 合并前 CI 会自动跑。
 
 提 PR 时建议在描述里补充：
@@ -82,6 +86,11 @@ GitHub Actions 跑 `npm run test:release`（语法校验 + 核心回归）。本
 - Enable the commit template locally: `git config commit.template .gitmessage`
 
 ### Testing
+
+Before touching the protocol layer, the auth surface or a decoder, read [docs/AUDIT-LEDGER.md](docs/AUDIT-LEDGER.md) — it records which subsystems have actually
+been probed, what the conclusion was, and which invariants have mutation-verified guards.
+Where you see 🛡, take care not to change the guarded property (e.g. adding URL decoding to
+the routed path, or making parseFields recurse).
 
 The project has a full automated test suite — `npm test` runs all cases (2800+ and growing). CI runs automatically on every PR. In your PR description, also include:
 

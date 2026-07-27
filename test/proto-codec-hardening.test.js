@@ -1,0 +1,184 @@
+// Protobuf codec hardening — src/proto.js.
+//
+// proto.js is the floor everything else stands on: every byte the upstream
+// (or, on the Cascade path, the local language server) sends is parsed here
+// before any handler sees it. Ten test files import it, but all of them use it
+// to ENCODE or to decode well-formed frames — its behaviour on hostile input had
+// no coverage at all.
+//
+// The invariants below are load-bearing and cheap to break by accident:
+//   - a truncated or over-long varint throws instead of returning garbage
+//     (a silently wrong varint becomes a wrong field number → wrong routing)
+//   - a length prefix that overruns the buffer throws instead of returning a
+//     short read (this is the classic parser bug that turns into a heap overread
+//     in a language without bounds checks, and into silent data loss here)
+//   - the parser never loops forever: `pos` strictly advances on every branch
+//   - unknown/deprecated wire types (3,4,6,7) are rejected, not skipped
+//   - parseFields is FLAT — it hands nested messages back as Buffers instead of
+//     recursing, so a deeply nested frame cannot exhaust the stack
+//
+// Verified live before being written down: 18 malformed inputs (truncated
+// varints, 10×0xFF overflow, absurd length prefixes, every bad wire type, a
+// 400-deep nesting bomb, 16KB of random bytes) all produced controlled throws
+// or clean parses, none slow, RSS bounded.
+
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import { parseFields, decodeVarint, encodeVarint, getField, getAllFields } from '../src/proto.js';
+
+describe('decodeVarint: hostile input', () => {
+  it('throws on a lone continuation byte', () => {
+    assert.throws(() => decodeVarint(Buffer.from([0x80])), /Truncated varint/);
+  });
+
+  it('throws on a varint that never terminates', () => {
+    assert.throws(() => decodeVarint(Buffer.from([0xFF, 0xFF, 0xFF])), /Truncated varint/);
+  });
+
+  it('throws on a varint wider than 64 bits instead of wrapping', () => {
+    // 10 continuation bytes exceeds the uint64 ceiling. Wrapping here would
+    // silently produce a plausible-but-wrong number.
+    assert.throws(() => decodeVarint(Buffer.from(Array(10).fill(0xFF))), /Varint overflow/);
+  });
+
+  it('decodes a genuine 64-bit value without truncating to 32 bits', () => {
+    // `>>>` in the fast path truncates to uint32; the BigInt fallback is what
+    // keeps request ids / timestamps / credit counters accurate.
+    const big = 0x1FFFFFFFFFFFFFn; // > 2^32, still a safe integer as Number
+    const { value } = decodeVarint(encodeVarint(big));
+    assert.equal(BigInt(value), big);
+  });
+
+  it('round-trips values across the 28-bit fast-path boundary', () => {
+    for (const v of [0, 1, 127, 128, 0x0FFFFFFF, 0x10000000, 0xFFFFFFFF, 2 ** 40]) {
+      const { value } = decodeVarint(encodeVarint(v));
+      assert.equal(Number(value), v, `round-trip failed for ${v}`);
+    }
+  });
+
+  it('reports the byte length it consumed so callers can advance correctly', () => {
+    const buf = Buffer.concat([encodeVarint(300), Buffer.from([0xAA])]);
+    const { value, length } = decodeVarint(buf);
+    assert.equal(value, 300);
+    assert.equal(length, 2, 'a 300 varint is 2 bytes — a wrong length desyncs the whole parse');
+  });
+});
+
+describe('parseFields: bounds checking', () => {
+  it('throws when a length prefix overruns the buffer', () => {
+    // field 1, wire 2, advertises 100 bytes, supplies 3.
+    const buf = Buffer.concat([Buffer.from([0x0A]), encodeVarint(100), Buffer.from([1, 2, 3])]);
+    assert.throws(() => parseFields(buf), /truncated len-delim/);
+  });
+
+  it('throws on an absurd length prefix rather than attempting the read', () => {
+    const buf = Buffer.concat([Buffer.from([0x0A]), encodeVarint(0xFFFFFFF)]);
+    assert.throws(() => parseFields(buf), /truncated len-delim/);
+  });
+
+  it('throws on a truncated fixed64', () => {
+    assert.throws(() => parseFields(Buffer.from([0x09, 0x01, 0x02])), /truncated fixed64/);
+  });
+
+  it('throws on a truncated fixed32', () => {
+    assert.throws(() => parseFields(Buffer.from([0x0D, 0x01])), /truncated fixed32/);
+  });
+
+  it('rejects every unknown / deprecated wire type instead of skipping it', () => {
+    // 3 and 4 are the deprecated group-start/end; 6 and 7 were never assigned.
+    // Skipping an unknown type would desync the parse and mis-assign every
+    // following field.
+    for (const wt of [3, 4, 6, 7]) {
+      const tag = (1 << 3) | wt;
+      assert.throws(() => parseFields(Buffer.from([tag, 0x01])),
+        new RegExp(`Unknown wire type ${wt}`), `wire type ${wt} must be rejected`);
+    }
+  });
+
+  it('accepts a well-formed frame and preserves field order', () => {
+    const buf = Buffer.concat([
+      Buffer.from([0x08]), encodeVarint(7),          // field 1 varint = 7
+      Buffer.from([0x12]), encodeVarint(2), Buffer.from('hi'), // field 2 = "hi"
+      Buffer.from([0x08]), encodeVarint(9),          // field 1 again (repeated)
+    ]);
+    const f = parseFields(buf);
+    assert.deepEqual(f.map(x => x.field), [1, 2, 1]);
+    assert.equal(getField(f, 1).value, 7, 'getField returns the FIRST match');
+    assert.equal(getAllFields(f, 1).length, 2, 'repeated fields are all retained');
+    assert.equal(getField(f, 2).value.toString('utf8'), 'hi');
+  });
+
+  it('parses an empty buffer as zero fields rather than throwing', () => {
+    assert.deepEqual(parseFields(Buffer.alloc(0)), []);
+  });
+});
+
+describe('parseFields: cannot hang or exhaust the stack', () => {
+  it('is flat — a deeply nested frame yields one Buffer, not recursion', () => {
+    // 400 levels of length-delimited nesting. A recursive parser would either
+    // blow the stack or spend O(n^2) copying; parseFields hands the caller a
+    // subarray and lets it decide whether to descend.
+    let buf = Buffer.from([0x08, 0x01]);
+    for (let i = 0; i < 400; i++) {
+      buf = Buffer.concat([Buffer.from([0x0A]), encodeVarint(buf.length), buf]);
+    }
+    const started = Date.now();
+    const fields = parseFields(buf);
+    assert.equal(fields.length, 1, 'only the outermost field is parsed');
+    assert.equal(fields[0].wireType, 2);
+    assert.ok(Date.now() - started < 1000, 'must not be quadratic');
+  });
+
+  it('terminates on 8KB of zero bytes (every field is a valid empty varint)', () => {
+    const started = Date.now();
+    const fields = parseFields(Buffer.alloc(8192));
+    // tag 0x00 = field 0, wire 0, then a 0x00 varint → 2 bytes per field.
+    assert.equal(fields.length, 4096);
+    assert.ok(Date.now() - started < 1000, 'must not hang');
+  });
+
+  it('never returns without consuming input (no zero-progress loop)', () => {
+    // Property check: for a spread of random buffers, parseFields either throws
+    // or returns — it must never spin. A regression that failed to advance `pos`
+    // on some branch would hang here rather than fail an assertion.
+    for (let i = 0; i < 200; i++) {
+      const len = 1 + Math.floor(Math.random() * 64);
+      const buf = Buffer.from(Array.from({ length: len }, () => Math.floor(Math.random() * 256)));
+      try { parseFields(buf); } catch (err) {
+        assert.ok(err instanceof Error, 'failures must be Error instances');
+      }
+    }
+  });
+});
+
+describe('encodeVarint: no silent corruption on large or negative values', () => {
+  it('encodes a negative number as a two-complement uint64, not a truncated int32', () => {
+    // `>>>` would turn -1 into 0xFFFFFFFF (5 bytes); the wire format requires
+    // the full 10-byte uint64 form.
+    const bytes = encodeVarint(-1);
+    assert.equal(bytes.length, 10, `-1 must encode as 10 bytes, got ${bytes.length}`);
+    // Round-trips as the unsigned form (what the wire actually carries), and
+    // reinterpreting it as a signed 64-bit int must give the original value back.
+    const { value } = decodeVarint(bytes);
+    assert.equal(String(value), '18446744073709551615', 'must be the full uint64 form');
+    assert.equal(BigInt.asIntN(64, BigInt(value)), -1n, 'must reinterpret back to -1');
+  });
+
+  it('round-trips other negative values through the same two-complement path', () => {
+    for (const v of [-42, -1000, -(2 ** 31)]) {
+      const { value } = decodeVarint(encodeVarint(v));
+      assert.equal(BigInt.asIntN(64, BigInt(value)), BigInt(v), `failed for ${v}`);
+    }
+  });
+
+  it('encodes values above 2^31 without truncation', () => {
+    for (const v of [0x80000000, 0xFFFFFFFF, 2 ** 40]) {
+      assert.equal(Number(decodeVarint(encodeVarint(v)).value), v);
+    }
+  });
+
+  it('accepts BigInt input', () => {
+    const v = 12345678901234567n;
+    assert.equal(BigInt(decodeVarint(encodeVarint(v)).value), v);
+  });
+});
