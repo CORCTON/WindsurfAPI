@@ -20,7 +20,7 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mapFinishReason } from '../src/devin-connect.js';
+import { mapFinishReason, normalizeConnectUsage } from '../src/devin-connect.js';
 
 describe('stop reason mapping (paid calibration 2026-07-27)', () => {
   it('4 is a clean stop, not a truncation', () => {
@@ -62,22 +62,11 @@ describe('stop reason mapping (paid calibration 2026-07-27)', () => {
 });
 
 describe('usage subset invariant on the connect path', () => {
-  // The shape the connect finish event now emits. Asserting the arithmetic
-  // contract directly keeps this readable without reaching into the generator.
-  const normalize = (u) => {
-    const fresh = u.prompt || 0;
-    const cacheRead = u.cache_read_tokens || 0;
-    const cacheWrite = u.cache_write_tokens || 0;
-    const completion = u.completion || 0;
-    const promptTokens = fresh + cacheRead;
-    return {
-      prompt_tokens: promptTokens,
-      completion_tokens: completion,
-      total_tokens: promptTokens + completion + cacheWrite,
-      ...(u.cache_read_tokens != null ? { prompt_tokens_details: { cached_tokens: cacheRead } } : {}),
-      ...(u.cache_write_tokens != null ? { cache_creation_input_tokens: cacheWrite } : {}),
-    };
-  };
+  // Uses the REAL production normalizer. An earlier version of this suite
+  // reimplemented the arithmetic inline, so degrading the production path did not
+  // fail it — a mirror test is not a test. Verified by mutation: with the mirror,
+  // breaking `prompt = fresh + cacheRead` left all 12 cases green.
+  const normalize = (u) => normalizeConnectUsage(u);
 
   it('cached_tokens is a SUBSET of prompt_tokens on a cache-hit turn', () => {
     // The measured live shape before the fix: fresh=3, cache_read=1765.

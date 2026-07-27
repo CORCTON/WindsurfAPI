@@ -1729,6 +1729,40 @@ function stopReasonMap(env = process.env) {
   return map;
 }
 
+/**
+ * Normalize the upstream usage counters into the OpenAI-shaped object every
+ * protocol route reads. Exported so it can be tested against the real
+ * implementation rather than a copy — the earlier test mirrored this arithmetic
+ * inline, which meant degrading the production path did not fail it.
+ *
+ * Same semantics the Cascade path settled on (#118):
+ *   prompt_tokens  = fresh input + cache_read   (cached_tokens is a SUBSET detail)
+ *   total_tokens   = prompt + completion + cache_write  (full billable cost)
+ *   cache_write stays OUT of prompt_tokens — it is generation-side and ships on
+ *   cache_creation_input_tokens.
+ *
+ * Returns null for a missing usage block so callers can pass it straight through.
+ */
+export function normalizeConnectUsage(lastUsage) {
+  if (!lastUsage) return null;
+  const fresh = lastUsage.prompt || 0;
+  const cacheRead = lastUsage.cache_read_tokens || 0;
+  const cacheWrite = lastUsage.cache_write_tokens || 0;
+  const completion = lastUsage.completion || 0;
+  const promptTokens = fresh + cacheRead;
+  return {
+    prompt_tokens: promptTokens,
+    completion_tokens: completion,
+    total_tokens: promptTokens + completion + cacheWrite,
+    ...(lastUsage.cache_read_tokens != null
+      ? { prompt_tokens_details: { cached_tokens: cacheRead } }
+      : {}),
+    ...(lastUsage.cache_write_tokens != null
+      ? { cache_creation_input_tokens: cacheWrite }
+      : {}),
+  };
+}
+
 export function mapFinishReason(finish, env = process.env) {
   if (finish == null) return null;
   const n = typeof finish === 'bigint' ? Number(finish) : finish;
@@ -2054,29 +2088,7 @@ export async function* streamChat({
           // proxy (one-api / new-api and friends) meters from exactly these
           // numbers, and all four protocol routes read this one object, so fixing
           // it at the birth point corrects them together. Live-reproduced.
-          usage: lastUsage
-            ? (() => {
-              const fresh = lastUsage.prompt || 0;
-              const cacheRead = lastUsage.cache_read_tokens || 0;
-              const cacheWrite = lastUsage.cache_write_tokens || 0;
-              const completion = lastUsage.completion || 0;
-              const promptTokens = fresh + cacheRead;
-              return {
-                prompt_tokens: promptTokens,
-                completion_tokens: completion,
-                total_tokens: promptTokens + completion + cacheWrite,
-                // Prompt-cache hits, OpenAI-standard shape. Only present when the
-                // upstream carried cache_read_tokens AND the tag was calibrated
-                // (DEVIN_CONNECT_BILLING_TAGS); absent on free tier (no caching).
-                ...(lastUsage.cache_read_tokens != null
-                  ? { prompt_tokens_details: { cached_tokens: lastUsage.cache_read_tokens } }
-                  : {}),
-                ...(lastUsage.cache_write_tokens != null
-                  ? { cache_creation_input_tokens: lastUsage.cache_write_tokens }
-                  : {}),
-              };
-            })()
-            : null,
+          usage: normalizeConnectUsage(lastUsage),
           // Billing detail (credit/acu cost) only present when an operator has
           // calibrated DEVIN_CONNECT_BILLING_TAGS against a paid token. Null on
           // free tier / un-configured deployments — zero behavioral change.
