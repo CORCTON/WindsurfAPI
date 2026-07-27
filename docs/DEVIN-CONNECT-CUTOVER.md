@@ -191,6 +191,70 @@ rather than the harness guessing. (PAID-1 2026-07-01 already confirmed the sibli
 > — logs in, encrypts+stores the credential (arms auto-relogin), adds to the pool,
 > and verifies tier. Bare run = offline self-test.
 
+### 8.0.1 PAID CALIBRATION RESULTS — captured 2026-07-27 (teams account)
+
+The §8.0/§8.1 tooling below sat "ready, blocked on a paid token" for months. A paid
+`teams` account finally ran it. Recording the outcomes so nobody re-derives them:
+
+**§8.1 paid reachability — ANSWERED.** `tier=teams paid=true`, **13/13 selectors
+reachable** (claude-opus-4-6 ×4 variants, claude-sonnet-4-6 ×4, gpt-5.2 ×5). The
+long-open question "does a paid token actually reach claude/gpt, or do they
+tier-wall like free?" is settled: they reach.
+
+**Free-model wall persists on a paid account.** `swe-1-6-slow` still returns
+`UPSTREAM_INTERNAL` on this teams token while every paid selector works. So the
+§8.8 free-tier note is NOT purely a free-account condition — do not read a
+`swe-1-6-slow` failure as "the account is dead". It also means the calibrator's
+default model is the one model a paid account cannot probe (see §8.0.2).
+
+**Cache metering — the tag calibration is CORRECT, and the GPT/Claude split is
+real.** Measured by replaying one identical ~2.3k-token prefix three times per
+family through `/v1/chat/completions` (stable `user` field to pin the callerKey):
+
+| | 1st call | 2nd call | 3rd call |
+|---|---|---|---|
+| **claude-sonnet-4.6** | `cache_creation=2268`, cached=none | `cached_tokens=2262`, creation=6 | `cached_tokens=2262`, creation=6 |
+| **gpt-5.2** | no cache fields at all | `cached_tokens=1280`, creation=**none** | `cached_tokens=1280`, creation=**none** |
+
+Conclusions:
+- Claude family: write-then-read behaves exactly as `DEFAULT_BILLING_TAGS`
+  (`cache_read_tokens=5,cache_write_tokens=4`) assumes. Calibration confirmed.
+- GPT family: `cached_tokens` (read) IS reported, `cache_creation` (tag 4) is
+  **never** reported. This confirms the `devin-connect.js` note that GPT selectors
+  carry no tag 4 — their full input rides tag 2. **The cost table in PR #230,
+  which claimed a tag-4 cache write on `gpt-5-6-sol-max`, does not reproduce
+  here.** The PR's mechanism conclusion (rotating accounts re-pays for context)
+  still holds — it is demonstrated by the Claude row above — but the GPT numbers
+  in that table should not be treated as calibration data.
+- `prompt_tokens` excludes both cached and created tokens (Claude reports
+  `prompt=3` while 2268 ride the cache fields), consistent with #118.
+
+**`actual_model_uid` (#47) — independently re-confirmed.** The dump shows
+`sub #7.9 string="claude-sonnet-4-6"`, i.e. the concrete model rides the #7
+metadata sub-message at inner tag 9 — matching the 2026-07-05 opus-4-8 frame
+verification already noted in `devin-connect.js`. So
+`DEVIN_CONNECT_ACTUAL_MODEL_TAG=9` is confirmed on a second model family. (Wire
+position confirmed; the decode wiring was not separately exercised.)
+
+**Newly surfaced paid-only fields** (dumped, NOT wired — pin deliberately):
+
+| Position | Value seen | Reading |
+|---|---|---|
+| `#7.7` | `"msg_011CdRd3offZL5QAzA7LaNTb"` | upstream (Anthropic) message id |
+| `#7.8` | nested, `Date: Mon, 27 Jul 2026 …` | upstream response headers |
+| `#7.9` | `"claude-sonnet-4-6"` | actual_model_uid (see above) |
+| `#28` | `"Token Usage"` block, incl. `cached_input_tokens` / `"Cached input tokens"` | human-readable usage/labels block — the `#28` trailer §8.0 flagged |
+| `#2.{1,2}` | `1785112410`, `85016380` | epoch-second timestamps, NOT billing |
+
+### 8.0.2 Calibrator gotcha: pass a SELECTOR, not an alias
+
+`streamChat` takes `model` RAW — alias resolution lives in the chat handler, not
+the transport — so `CALIBRATE_MODEL=claude-sonnet-4.6` (dotted alias) produced
+`UPSTREAM_INTERNAL`, **indistinguishable from a dead token or a walled account**,
+which is precisely the state a paid calibration run is trying to diagnose. Two paid
+runs were burned on this. `scripts/devin-connect-calibrate.mjs` now resolves the
+alias itself and logs `resolved alias X -> selector Y`, so either form works.
+
 ### 8.1 Verify paid selectors are actually reachable (#15/#28)
 
 The single command that resolves the long-blocked "does a paid token reach

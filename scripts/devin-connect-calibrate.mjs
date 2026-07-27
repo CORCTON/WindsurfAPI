@@ -39,7 +39,27 @@ const TIMEOUT_MS = Number(process.env.CALIBRATE_TIMEOUT_MS || 90000);
 // (trace ID: ...)" for an UNRECOGNIZED selector. The dotted "swe-1.6-slow"
 // looked like a dead-token/backend-fault for hours until this was isolated on
 // free account <redacted> (dashed swe-1-6-slow → alive, dotted → error).
-const DEFAULT_MODEL = process.env.CALIBRATE_MODEL || 'swe-1-6-slow';
+// The same trap bites CALIBRATE_MODEL: an operator naturally passes the
+// client-facing alias ("claude-sonnet-4.6") and gets the identical, deeply
+// misleading UPSTREAM_INTERNAL — indistinguishable from a dead token or a walled
+// account, which is exactly the state a paid calibration run is trying to escape.
+// Resolve the alias to its real selector here so either form works, and say so
+// when the two differ. (Cost two failed paid runs on 2026-07-27 before the
+// dotted/dashed distinction was spotted.)
+const RAW_MODEL = process.env.CALIBRATE_MODEL || 'swe-1-6-slow';
+const DEFAULT_MODEL = await (async () => {
+  try {
+    const { resolveConnectSelector } = await import('../src/devin-connect-models.js');
+    const { selector, mapped } = resolveConnectSelector(RAW_MODEL);
+    if (mapped && selector && selector !== RAW_MODEL) {
+      console.log(`[calibrate] resolved alias ${RAW_MODEL} -> selector ${selector}`);
+      return selector;
+    }
+    return RAW_MODEL;
+  } catch {
+    return RAW_MODEL; // resolution is a convenience, never a hard dependency
+  }
+})();
 const DEFAULT_PROMPT = process.env.CALIBRATE_PROMPT
   || 'Reply with exactly: PONG';
 
