@@ -382,11 +382,12 @@ export function responsesToChat(body) {
   })();
 
   if (body.instructions) {
-    // Tagged so the chain merge can tell a REQUEST-LEVEL instructions block apart
-    // from a system/developer message that arrived as a conversation ITEM. Per the
-    // Responses contract the former does not carry over across
-    // previous_response_id; the latter is part of the conversation and does.
-    // A Symbol key never serializes, so it cannot leak onto the wire or into JSON.
+    // Counted (see instructionsLead) so the caller can tell a REQUEST-LEVEL
+    // instructions block apart from a system/developer message that arrived as a
+    // conversation ITEM. Per the Responses contract the former does not carry over
+    // across previous_response_id; the latter is part of the conversation and does.
+    // The count rides the returned object, never the message — message objects get
+    // deep-compared in tests and shipped upstream, so they stay pristine.
     messages.push({ role: 'system', content: stringifyMaybe(body.instructions) });
     instructionsLead = 1;
   }

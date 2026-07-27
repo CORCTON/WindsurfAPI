@@ -119,3 +119,64 @@ describe('response store — bounded memory', () => {
     assert.equal(got.messages.at(-1).content, 'm899', 'the most recent turn must survive');
   });
 });
+
+describe('truncateMessages boundary (the negative-slice bug and its fix)', () => {
+  // At lead >= MAX_MESSAGES the old code computed a NEGATIVE tail budget, and
+  // `slice(-negative)` silently becomes `slice(positive)` — it returned most of the
+  // array, so the result GREW instead of shrinking (measured: 501 in, 901 stored).
+  // The fix must cap the head, but only where it has to: capping at MAX/2 would
+  // also change the (MAX/2, MAX) range where the old behaviour was already correct.
+  const MAX = 400; // RESPONSE_STORE_MAX_MESSAGES default
+  const build = (lead, conv) => [
+    ...Array.from({ length: lead }, (_, i) => ({ role: 'system', content: `s${i}` })),
+    ...Array.from({ length: conv }, (_, i) => ({ role: 'user', content: `u${i}` })),
+  ];
+  const store = (msgs, id = 'b') => {
+    resetResponseStore();
+    putResponse(id, msgs, 'api:bound:user:1');
+    return getResponse(id, 'api:bound:user:1').messages;
+  };
+
+  it('never exceeds the cap, for any ratio of system to conversation', () => {
+    for (const [lead, conv] of [[0, 500], [1, 500], [200, 300], [201, 199], [300, 100], [399, 2], [400, 1], [500, 1], [800, 0], [1000, 1000]]) {
+      const out = store(build(lead, conv));
+      assert.ok(out.length <= MAX,
+        `lead=${lead} conv=${conv} produced ${out.length}, cap is ${MAX}`);
+    }
+  });
+
+  it('leaves a conversation at or below the cap completely untouched', () => {
+    // This is the range the old code handled correctly — the fix must not change it.
+    for (const [lead, conv] of [[201, 199], [300, 100], [0, 400], [399, 1]]) {
+      const input = build(lead, conv);
+      assert.equal(input.length, MAX, 'precondition: exactly at the cap');
+      const out = store(input);
+      assert.equal(out.length, MAX);
+      assert.equal(out.filter(m => m.role === 'system').length, lead,
+        `lead=${lead}: every leading system message must survive when no truncation is needed`);
+    }
+  });
+
+  it('when truncation IS needed, keeps as much of the system block as the cap allows', () => {
+    // lead=300 conv=200 → 500 messages, so truncation runs. The two candidate head
+    // budgets diverge here: MAX-1 keeps all 300 system messages (+100 recent turns),
+    // while a MAX/2 cap would keep only 200 and silently discard 100 system messages
+    // that the pre-fix code preserved. This case is what pins the policy.
+    const out = store(build(300, 200));
+    assert.equal(out.length, 400, 'must fill the cap exactly');
+    assert.equal(out.filter(m => m.role === 'system').length, 300,
+      'the whole system block fits under the cap and must be kept');
+    assert.equal(out.at(-1).content, 'u199', 'and the newest turn must still be there');
+  });
+
+  it('keeps room for at least one real turn when the system block is huge', () => {
+    const out = store(build(500, 50));
+    assert.ok(out.length <= MAX);
+    assert.equal(out.at(-1).content, 'u49', 'the newest turn must survive a huge system block');
+  });
+
+  it('preserves the FIRST system messages, not a middle slice', () => {
+    const out = store(build(500, 5));
+    assert.equal(out[0].content, 's0', 'truncation drops from the middle, never the head');
+  });
+});

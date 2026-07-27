@@ -2256,9 +2256,13 @@ async function _handleChatCompletionsInner(body, context = {}) {
     // Anthropic "prefill" shape) is NOT supported there either — it returns
     // UPSTREAM_INTERNAL — so converting it into a clear 400 removes an opaque 503
     // and an account penalty without taking away anything that worked.
+    // `function` is the legacy OpenAI tool-result role (pre-`tool`); the wire
+    // encoder maps it to the same source, and clients still send it. Leaving it out
+    // of the answerable set rejected a working shape.
+    const ANSWERABLE_ROLES = new Set(['user', 'tool', 'function']);
     const convo = (messages || []).filter(m => m?.role !== 'system');
     const last = convo[convo.length - 1];
-    if (!last || (last.role !== 'user' && last.role !== 'tool')) {
+    if (!last || !ANSWERABLE_ROLES.has(last.role)) {
       return {
         status: 400,
         body: {

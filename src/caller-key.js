@@ -22,7 +22,8 @@ function usableSignal(value) {
 // Extract a per-user / per-session signal from the request body so two
 // different end users sharing one API key get different conversation pool
 // scopes. v2.0.25 HIGH-3: chat & responses now look at body.user /
-// conversation / previous_response_id / metadata.{conversation_id,session_id}.
+// conversation / metadata.{conversation_id,session_id}. previous_response_id is
+// deliberately NOT inspected — see the note at the candidates list below.
 //
 // metadata.user_id is INTENTIONALLY NOT inspected here — handlers/messages.js
 // has a specialized parser for it (Claude Code's JSON-encoded

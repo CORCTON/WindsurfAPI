@@ -18,6 +18,7 @@ import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 
 const store = await import('../src/response-store.js');
+const { parseByteSize } = store;
 
 const CALLER = (n) => `api:budgetbudgetbudgetbudgetbudget:user:u${n}`;
 
@@ -109,24 +110,23 @@ describe('byte budget is enforced', () => {
 });
 
 describe('byte budget: size suffix parsing', () => {
-  it('accepts the documented suffixes', () => {
-    // Parsing lives behind a module-load const, so assert the contract via the
-    // same regex/multiplier logic rather than re-importing per case.
-    const parse = (raw) => {
-      const m = String(raw).trim().match(/^(\d+)\s*(b|k|kb|m|mb|g|gb)?$/i);
-      if (!m) return null;
-      const mult = { b: 1, k: 1024, kb: 1024, m: 1048576, mb: 1048576, g: 1073741824, gb: 1073741824 };
-      const n = Number(m[1]) * (mult[(m[2] || 'b').toLowerCase()] || 1);
-      return n > 0 ? n : null;
-    };
-    assert.equal(parse('128m'), 128 * 1048576);
-    assert.equal(parse('64MB'), 64 * 1048576);
-    assert.equal(parse('512k'), 512 * 1024);
-    assert.equal(parse('1g'), 1073741824);
-    assert.equal(parse('1024'), 1024, 'a bare number is bytes');
-    assert.equal(parse('0'), null, 'zero is not a usable budget');
-    assert.equal(parse('abc'), null);
-    assert.equal(parse('-5m'), null);
+  it('accepts the documented suffixes — via the production parser', () => {
+    // Uses parseByteSize itself. An earlier version re-derived the regex inside the
+    // test and asserted against its own copy, so a broken production parser stayed
+    // green — a mirror test is not a test.
+    assert.equal(parseByteSize('128m'), 128 * 1048576);
+    assert.equal(parseByteSize('64MB'), 64 * 1048576);
+    assert.equal(parseByteSize('512k'), 512 * 1024);
+    assert.equal(parseByteSize('512kb'), 512 * 1024);
+    assert.equal(parseByteSize('1g'), 1073741824);
+    assert.equal(parseByteSize('1024'), 1024, 'a bare number is bytes');
+    assert.equal(parseByteSize(' 8m '), 8 * 1048576, 'surrounding whitespace is tolerated');
+  });
+
+  it('returns null for anything unusable so the caller can apply its default', () => {
+    for (const bad of ['0', '0m', 'abc', '-5m', '', null, undefined, '5tb', '1.5m', '5 m b']) {
+      assert.equal(parseByteSize(bad), null, `must reject ${JSON.stringify(bad)}`);
+    }
   });
 });
 

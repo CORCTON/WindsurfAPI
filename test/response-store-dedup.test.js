@@ -15,16 +15,19 @@
 import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { handleResponses, mergeChainedMessages } from '../src/handlers/responses.js';
-import { resetResponseStore, putResponse } from '../src/response-store.js';
+import { resetResponseStore, putResponse, getResponse } from '../src/response-store.js';
 
 const CALLER = 'api:dedupdedupdedupdedupdedupdedupd:user:agent';
 
 function recorder(reply = 'done') {
   const seen = [];
+  const sentBodies = [];
   return {
     seen,
+    sentBodies,
     handler: async (body) => {
       seen.push(body.messages);
+      sentBodies.push(body);
       return { status: 200, body: { id: 'x', choices: [{ message: { role: 'assistant', content: reply } }] } };
     },
   };
@@ -179,10 +182,42 @@ describe('request-level instructions do not carry over (Responses contract)', ()
       'a developer/system conversation item must persist across the chain');
   });
 
-  it('the instructions marker never reaches the wire', async () => {
-    // It is Symbol-keyed precisely so it cannot serialize into the upstream body
-    // or into anything persisted.
-    const seen = await runChain(['RULES']);
-    assert.equal(JSON.stringify(seen[0]).includes('fromInstructions'), false);
+  it('the instructions block is not persisted, so it cannot resurface', async () => {
+    // The mechanism is "never store it", not "tag and filter later" — an earlier
+    // attempt tagged the message and a still earlier one recorded a leading count,
+    // which stopped being valid once the merge moved the block into the middle.
+    // Assert the OBSERVABLE consequence: the stored chain has no system message.
+    resetResponseStore();
+    const rec = recorder();
+    const res = await handleResponses({
+      model: 'm', instructions: 'RULES',
+      input: [{ role: 'user', content: [{ type: 'input_text', text: 'q' }] }],
+    }, { handleChatCompletions: rec.handler, context: { callerKey: CALLER } });
+
+    // The upstream DID see it on this turn...
+    assert.ok(rec.seen[0].some(m => m.role === 'system' && m.content === 'RULES'),
+      'the current turn must carry its own instructions');
+    // ...but the stored conversation must not, or the next turn would inherit it.
+    const stored = getResponse(res.body.id, CALLER);
+    assert.equal(stored.ok, true);
+    assert.deepEqual(stored.messages.filter(m => m.role === 'system'), [],
+      'a persisted instructions block is what made toggle-back keep the revoked value');
+  });
+
+  it('no internal marker field leaks into the upstream body', async () => {
+    // The internal `__instructionsLead` hint must be stripped before delegation —
+    // an earlier version of this test asserted on a symbol name that the
+    // implementation no longer used, so it could never fail.
+    resetResponseStore();
+    const rec = recorder();
+    await handleResponses({
+      model: 'm', instructions: 'RULES',
+      input: [{ role: 'user', content: [{ type: 'input_text', text: 'q' }] }],
+    }, { handleChatCompletions: rec.handler, context: { callerKey: CALLER } });
+    const bodies = rec.sentBodies || [];
+    for (const b of bodies) {
+      assert.equal('__instructionsLead' in b, false,
+        'the internal hint must not reach the chat layer');
+    }
   });
 });

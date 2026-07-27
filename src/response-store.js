@@ -64,18 +64,22 @@ const MAX_MESSAGES = (() => {
 // targets (the README tells 2GB hosts to lower LS_MAX_INSTANCES) that is enough to
 // matter on its own. So the store also carries a BYTE budget and evicts on
 // whichever limit binds first.
-const MAX_BYTES = (() => {
-  const raw = String(process.env.RESPONSE_STORE_MAX_BYTES || '').trim();
-  if (raw) {
-    const m = raw.match(/^(\d+)\s*(b|k|kb|m|mb|g|gb)?$/i);
-    if (m) {
-      const mult = { b: 1, k: 1024, kb: 1024, m: 1048576, mb: 1048576, g: 1073741824, gb: 1073741824 };
-      const n = Number(m[1]) * (mult[(m[2] || 'b').toLowerCase()] || 1);
-      if (n > 0) return n;
-    }
-  }
-  return 128 * 1024 * 1024; // 128MB — roughly 800 realistic conversations
-})();
+/**
+ * Parse a byte-size setting like `128m` / `512kb` / `1g` / a bare byte count.
+ * Exported so the suffix contract is tested against THIS implementation instead of
+ * a copy — a test that re-derives the regex passes even when production breaks.
+ * Returns null for anything unusable so the caller applies its default.
+ */
+export function parseByteSize(raw) {
+  const m = String(raw ?? '').trim().match(/^(\d+)\s*(b|k|kb|m|mb|g|gb)?$/i);
+  if (!m) return null;
+  const mult = { b: 1, k: 1024, kb: 1024, m: 1048576, mb: 1048576, g: 1073741824, gb: 1073741824 };
+  const n = Number(m[1]) * (mult[(m[2] || 'b').toLowerCase()] || 1);
+  return n > 0 ? n : null;
+}
+
+const MAX_BYTES = parseByteSize(process.env.RESPONSE_STORE_MAX_BYTES)
+  ?? 128 * 1024 * 1024; // 128MB — roughly 800 realistic conversations
 
 // Approximate retained size of a stored conversation. Deliberately cheap: string
 // length (not byteLength) plus a flat per-message overhead. An exact figure would
@@ -218,8 +222,12 @@ function truncateMessages(messages) {
   // INSTEAD of shrinking (measured: 501 messages in, 901 stored). Codex-style
   // clients that send AGENTS.md / environment context as many separate developer
   // items reach that shape with no adversarial intent.
-  const headBudget = Math.max(1, Math.floor(MAX_MESSAGES / 2));
-  const head = messages.slice(0, Math.min(lead, headBudget));
+  // Cap the head only where it MUST be capped. The negative-slice bug fired at
+  // lead >= MAX_MESSAGES; a head budget of MAX/2 also changed the outcome for lead
+  // in (MAX/2, MAX), a range where the old code was already correct and preserved
+  // every leading system message. Clamping to MAX_MESSAGES - 1 fixes the bug while
+  // leaving that range byte-identical, and still guarantees room for one real turn.
+  const head = messages.slice(0, Math.min(lead, MAX_MESSAGES - 1));
   const tailBudget = MAX_MESSAGES - head.length;
   const tail = tailBudget > 0 ? messages.slice(-tailBudget) : [];
   return [...head, ...tail];
