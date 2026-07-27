@@ -133,3 +133,76 @@ describe('empty input is rejected locally, never forwarded', () => {
     assert.equal(res.status, 200, 'tool outputs are a real turn and must not be rejected');
   });
 });
+
+describe('truncation status is reserved for truncation', () => {
+  // The rule both paths share: `incomplete` means length / content_filter only.
+  // A turn that ends by emitting function calls is a COMPLETE turn — an agent loop
+  // depends on that, since every tool round-trip would otherwise look truncated.
+  // The streaming translator used to hardcode `completed`, which hid real
+  // truncation; aligning it must not swing the other way and mark tool turns
+  // incomplete.
+  const fakeRes = () => ({
+    out: '', writableEnded: false,
+    write(c) { this.out += c; return true; },
+    end(c) { if (c) this.out += c; this.writableEnded = true; },
+    on() { return this; },
+  });
+
+  const streamWith = (finishReason, extra = {}) => async () => ({
+    status: 200, stream: true,
+    handler: async (res) => {
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: 'partial answer' } }] })}\n\n`);
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: finishReason }], ...extra })}\n\n`);
+      res.write('data: [DONE]\n\n');
+      res.end();
+    },
+  });
+
+  const lastEvent = (out) => {
+    const evts = [...out.matchAll(/^event: (\S+)$/gm)].map(m => m[1]);
+    return evts.at(-1);
+  };
+
+  it('finish_reason=length closes the stream as response.incomplete', async () => {
+    const t = await handleResponses(
+      { model: 'm', stream: true, input: [{ role: 'user', content: [{ type: 'input_text', text: 'x' }] }] },
+      { handleChatCompletions: streamWith('length'), context: { callerKey: 'api:x:user:u' } },
+    );
+    const res = fakeRes();
+    await t.handler(res);
+    assert.equal(lastEvent(res.out), 'response.incomplete');
+    assert.match(res.out, /max_output_tokens/, 'the reason must be surfaced');
+  });
+
+  it('finish_reason=tool_calls stays response.completed', async () => {
+    const t = await handleResponses(
+      { model: 'm', stream: true, input: [{ role: 'user', content: [{ type: 'input_text', text: 'x' }] }] },
+      { handleChatCompletions: streamWith('tool_calls'), context: { callerKey: 'api:x:user:u' } },
+    );
+    const res = fakeRes();
+    await t.handler(res);
+    assert.equal(lastEvent(res.out), 'response.completed',
+      'a tool round-trip is a complete turn — an agent loop depends on this');
+  });
+
+  it('finish_reason=stop stays response.completed', async () => {
+    const t = await handleResponses(
+      { model: 'm', stream: true, input: [{ role: 'user', content: [{ type: 'input_text', text: 'x' }] }] },
+      { handleChatCompletions: streamWith('stop'), context: { callerKey: 'api:x:user:u' } },
+    );
+    const res = fakeRes();
+    await t.handler(res);
+    assert.equal(lastEvent(res.out), 'response.completed');
+  });
+
+  it('content_filter also yields incomplete, with its own reason', async () => {
+    const t = await handleResponses(
+      { model: 'm', stream: true, input: [{ role: 'user', content: [{ type: 'input_text', text: 'x' }] }] },
+      { handleChatCompletions: streamWith('content_filter'), context: { callerKey: 'api:x:user:u' } },
+    );
+    const res = fakeRes();
+    await t.handler(res);
+    assert.equal(lastEvent(res.out), 'response.incomplete');
+    assert.match(res.out, /content_filter/);
+  });
+});

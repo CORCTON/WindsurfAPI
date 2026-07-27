@@ -565,8 +565,12 @@ export function chatToResponse(chatBody, requestedModel, responseId = genRespons
 
   // A turn that ends by emitting function calls is `completed` in the OpenAI
   // Responses API — `incomplete` is reserved for truncation (length /
-  // content_filter). The streaming path always sends response.completed, so
-  // map non-stream the same way to keep agent loops (Codex etc.) consistent.
+  // content_filter). Both paths apply this same rule; the streaming translator
+  // used to hardcode response.completed, which meant a truncated stream claimed to
+  // be a finished answer while the identical non-stream request reported
+  // incomplete. Verified after aligning them: a tool-call turn still closes as
+  // `completed` on both paths, and only length / content_filter yields
+  // `incomplete`.
   const truncated = finishReason === 'length' || finishReason === 'content_filter';
   return {
     id: responseId,
