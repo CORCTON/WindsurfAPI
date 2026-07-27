@@ -7,7 +7,7 @@
 
 import { randomUUID } from 'crypto';
 import { handleChatCompletions, normalizeOpenAIErrorType, connectErrorToHttp, hasPerUserScope } from './chat.js';
-import { getResponse, putResponse, isResponseStoreEnabled } from '../response-store.js';
+import { getResponse, putResponse, deleteResponse, isResponseStoreEnabled } from '../response-store.js';
 import { safeLogValue } from '../log-safety.js';
 import { log } from '../config.js';
 
@@ -624,6 +624,12 @@ class ResponsesStreamTranslator {
     this.toolCalls = new Map();
     this.finalUsage = {};
     this.sequenceNumber = 0;
+    // Did the upstream stream ever deliver a terminal chunk? Every real success
+    // path emits a finish_reason chunk (the connect adapter and the Cascade path
+    // both always send one), so its ABSENCE means the stream died mid-answer. Kept
+    // separate from streamFinishReason because `null` there is ambiguous: it is also
+    // what a stream that is still running looks like.
+    this.sawTerminalChunk = false;
   }
 
   send(event, data) {
@@ -667,7 +673,10 @@ class ResponsesStreamTranslator {
       // stream always closed as 'completed'. An agent then accepted a half answer as
       // a finished one — the non-stream path on the identical request reported
       // incomplete/max_output_tokens. Live-reproduced.
-      if (choice.finish_reason) this.streamFinishReason = choice.finish_reason;
+      if (choice.finish_reason) {
+        this.streamFinishReason = choice.finish_reason;
+        this.sawTerminalChunk = true;
+      }
       const delta = choice.delta || {};
       if (delta.reasoning_content) this.emitReasoningDelta(delta.reasoning_content);
       if (delta.content) this.emitTextDelta(delta.content);
@@ -936,16 +945,34 @@ class ResponsesStreamTranslator {
     this.finishToolCalls();
     if (this.messageStarted || this.text) this.finishMessage();
     // Same truncation rule as the non-streaming path (see chatToResponse):
-    // 'incomplete' is reserved for length / content_filter, everything else — and
-    // an absent reason — closes as 'completed'.
+    // 'incomplete' is reserved for length / content_filter, everything else closes
+    // as 'completed'.
+    //
+    // An ABSENT reason is NOT the same as a benign one. Every real success path
+    // emits a finish_reason chunk, so reaching the end of the stream without one
+    // means the upstream connection died mid-answer. Reporting that as 'completed'
+    // handed an agent a half answer as a finished one AND committed it to the
+    // response store, where it became the next turn's context — a silent corruption
+    // that outlived the request. It closes as 'incomplete' instead, and `truncated`
+    // also gates the store commit below.
     const reason = this.streamFinishReason;
-    const truncated = reason === 'length' || reason === 'content_filter';
+    const aborted = !this.sawTerminalChunk;
+    const truncated = reason === 'length' || reason === 'content_filter' || aborted;
     const status = truncated ? 'incomplete' : 'completed';
+    this.truncated = truncated;
     this.send(truncated ? 'response.incomplete' : 'response.completed', {
       response: {
         ...this.responseBase(status, this.outputItems.filter(Boolean)),
         ...(truncated
-          ? { incomplete_details: { reason: reason === 'length' ? 'max_output_tokens' : 'content_filter' } }
+          ? {
+            incomplete_details: {
+              // A dropped connection is not a token limit; naming it as one would
+              // send an auto-continuing client off to extend a turn the upstream
+              // never finished.
+              reason: aborted ? 'upstream_incomplete'
+                : (reason === 'length' ? 'max_output_tokens' : 'content_filter'),
+            },
+          }
           : {}),
         usage: mapUsage(this.finalUsage),
       },
@@ -1122,6 +1149,99 @@ function messageHasText(m) {
   return false;
 }
 
+/**
+ * Reconstruct a stored conversation as a Responses object.
+ *
+ * The store keeps the accumulated MESSAGE list, not the response body that was
+ * originally emitted, so this rebuilds the output items from the trailing assistant
+ * turn. Everything a chaining client needs (id, model, status, output text, tool
+ * calls) round-trips; per-request usage does not, because the store never held it —
+ * so usage is reported as zeroed rather than invented.
+ */
+function storedResponseBody(responseId, entry) {
+  const assistant = [...entry.messages].reverse().find(m => m?.role === 'assistant') || null;
+  const output = [];
+  if (assistant?.content) output.push(textMessageItem(genMessageId(), assistant.content));
+  for (const tc of assistant?.tool_calls || []) output.push(functionCallItem(tc));
+  return {
+    object: 'response',
+    id: responseId,
+    created_at: Math.floor((entry.createdAt || Date.now()) / 1000),
+    status: 'completed',
+    model: entry.model || null,
+    output,
+    output_text: assistant?.content || '',
+    usage: mapUsage({}),
+  };
+}
+
+/** Shared 404 for a response id that is unknown, expired, or another caller's. */
+function responseNotFound(responseId) {
+  return {
+    status: 404,
+    body: {
+      error: {
+        message: `Response with id '${safeLogValue(responseId, 64)}' not found.`,
+        type: 'invalid_request_error',
+        param: 'response_id',
+        code: 'response_not_found',
+      },
+    },
+  };
+}
+
+/** Shared 400 for the store being switched off. */
+function storeDisabled(verb) {
+  return {
+    status: 400,
+    body: {
+      error: {
+        message: `${verb} a stored response requires the response store, which is disabled on this server (RESPONSE_STORE_ENABLED=0).`,
+        type: 'invalid_request_error',
+      },
+    },
+  };
+}
+
+/**
+ * GET /v1/responses/{id} — retrieve a stored response.
+ *
+ * Scoped exactly like the chaining lookup: a caller can only read ids minted for
+ * its own callerKey, and an untrustworthy `:client:<ip+ua>` identity cannot read
+ * anything at all. Without that second gate this endpoint would be a way to read
+ * another tenant's conversation from behind a shared reverse proxy — the same
+ * cross-tenant leak the store's own commit path is gated against.
+ */
+export function handleGetResponse(responseId, deps = {}) {
+  const callerKey = deps.context?.callerKey || '';
+  if (!isResponseStoreEnabled()) return storeDisabled('Retrieving');
+  if (!hasPerUserScope(callerKey)) return responseNotFound(responseId);
+  const found = getResponse(responseId, callerKey);
+  if (!found.ok) return responseNotFound(responseId);
+  return {
+    status: 200,
+    body: storedResponseBody(responseId, { messages: found.messages, model: found.model, createdAt: found.createdAt }),
+  };
+}
+
+/**
+ * DELETE /v1/responses/{id} — drop a stored response.
+ *
+ * Same scoping as the retrieval above. Reports OpenAI's deletion shape; an id the
+ * caller cannot see is a 404, never a silent success, so a caller is never told it
+ * deleted something that still exists.
+ */
+export function handleDeleteResponse(responseId, deps = {}) {
+  const callerKey = deps.context?.callerKey || '';
+  if (!isResponseStoreEnabled()) return storeDisabled('Deleting');
+  if (!hasPerUserScope(callerKey)) return responseNotFound(responseId);
+  if (!deleteResponse(responseId, callerKey)) return responseNotFound(responseId);
+  return {
+    status: 200,
+    body: { id: responseId, object: 'response.deleted', deleted: true },
+  };
+}
+
 export async function handleResponses(body, deps = {}) {
   const chatHandler = deps.handleChatCompletions || handleChatCompletions;
   const context = deps.context || {};
@@ -1287,7 +1407,11 @@ export async function handleResponses(body, deps = {}) {
         // Persist only a COMPLETED turn. Committing a half-turn (aborted or
         // errored) would poison the next request's context with a truncated
         // assistant reply the client never received.
-        if (translator.finished && !translator.failed) {
+        //
+        // `!translator.truncated` covers the case `failed` cannot see: a stream that
+        // ended with no terminal chunk at all raises no error, so it reached here
+        // looking clean and its half answer was stored as the next turn's context.
+        if (translator.finished && !translator.failed && !translator.truncated) {
           commit({
             role: 'assistant',
             content: translator.text || '',

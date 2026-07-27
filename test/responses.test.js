@@ -856,6 +856,11 @@ describe('handleResponses streaming', () => {
           stream: true,
           async handler(res) {
             res.write(chatChunk({ id: 'chat_1', created: 123, model: body.model, choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call_args_only', type: 'function', function: { arguments: '{"value":0}' } }] }, finish_reason: null }] }));
+            // The terminal chunk every real upstream sends. Without it the stream
+            // reads as one that died mid-answer (→ response.incomplete), which would
+            // make this case about stream termination instead of the nameless delta
+            // it is meant to cover.
+            res.write(chatChunk({ id: 'chat_1', created: 123, model: body.model, choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] }));
             res.end('data: [DONE]\n\n');
           },
         };
