@@ -258,13 +258,29 @@ function pickUsage(rawUsage, messages, completionText) {
 // stop_reason here must degrade to 'stop', not lie about a tool call that was
 // never sent. hasToolCalls defaults false so every existing text-only call site
 // is corrected; a future tool-capable ACP path passes true to keep 'tool_calls'.
+// The content_filter test is deliberately NARROW. A bare `includes('content')`
+// classified any reason with the substring "content" as a refusal, and the words
+// upstreams actually use for a NORMAL completion contain it: `content_complete`,
+// `no_content`, `contents_delivered`, `end_turn_content` all resolved to
+// content_filter. That is not a cosmetic mislabel — content_filter closes a
+// /v1/responses turn as `response.incomplete` and surfaces on /v1/messages as
+// Anthropic `stop_reason:'refusal'`, so a completed answer was reported to the
+// client as the model refusing to answer. A real refusal is visible in the reply
+// text; a fabricated one is not something the client can recover from.
+//
+// So the filter vocabulary is matched on whole tokens (split on non-letters), not
+// as substrings. `refusal` / `content_filter` / `content_policy` / `safety` still
+// classify; `content_complete` no longer does.
+const FILTER_TOKENS = new Set(['filter', 'filtered', 'refusal', 'refused', 'refuse',
+  'safety', 'unsafe', 'blocked', 'policy', 'moderation', 'moderated', 'censored']);
+
 function mapFinishReason(stopReason, hasToolCalls = false) {
   const r = String(stopReason || '').toLowerCase();
   if (!r) return 'stop';
   if (r.includes('max_tokens') || r.includes('max_token') || r.includes('length') || r.includes('truncat')) return 'length';
   if (r.includes('tool')) return hasToolCalls ? 'tool_calls' : 'stop';
-  if (r.includes('filter') || r.includes('content') || r.includes('safety') || r.includes('refus')) return 'content_filter';
-  if (r.includes('end_turn') || r.includes('stop') || r.includes('complete') || r.includes('eos')) return 'stop';
+  const tokens = r.split(/[^a-z]+/).filter(Boolean);
+  if (tokens.some(t => FILTER_TOKENS.has(t))) return 'content_filter';
   return 'stop';
 }
 export { mapFinishReason };

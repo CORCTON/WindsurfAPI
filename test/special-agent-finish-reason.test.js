@@ -17,6 +17,21 @@ describe('mapFinishReason (cline-01)', () => {
     assert.equal(mapFinishReason('content_filter'), 'content_filter');
     assert.equal(mapFinishReason('safety'), 'content_filter');
     assert.equal(mapFinishReason('refusal'), 'content_filter');
+    assert.equal(mapFinishReason('CONTENT_FILTERED'), 'content_filter', 'case-insensitive');
+    assert.equal(mapFinishReason('content_policy_violation'), 'content_filter');
+    assert.equal(mapFinishReason('blocked_by_moderation'), 'content_filter');
+  });
+
+  it('does NOT treat a normal completion as a refusal just because it says "content"', () => {
+    // The bug: a bare `includes('content')` classified every one of these as
+    // content_filter. The cost is not cosmetic — content_filter closes a
+    // /v1/responses turn as `response.incomplete`, and /v1/messages maps it to
+    // Anthropic stop_reason:'refusal', so a completed answer was reported to the
+    // client as the model refusing to answer it.
+    for (const reason of ['content_complete', 'no_content', 'contents_delivered',
+      'end_turn_content', 'content_done', 'all_content_sent']) {
+      assert.equal(mapFinishReason(reason), 'stop', `${reason} is a completion, not a refusal`);
+    }
   });
 
   it('maps clean completion reasons to "stop"', () => {
