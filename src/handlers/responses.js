@@ -1026,6 +1026,52 @@ function createCaptureRes(translator, realRes) {
   };
 }
 
+/**
+ * Splice a client's new turn onto the stored conversation.
+ *
+ * Per the Responses contract a chained client sends only what is NEW — for a tool
+ * loop that is the `function_call_output` items, because the `function_call`s were
+ * produced by the server and are already in the stored response. But clients do
+ * re-send them (it reads as the safer thing to do), and then the upstream sees the
+ * SAME assistant tool_call twice and rejects the whole conversation with an opaque
+ * "an internal error occurred (trace ID …)" — a 503 the caller cannot act on.
+ * Verified with a real agent loop: re-sending the calls failed every turn 2, while
+ * sending only the outputs completed the task.
+ *
+ * So drop assistant tool_calls the stored history already carries, keyed by id.
+ * Anything genuinely new (tool results, fresh user turns, calls with unseen ids)
+ * passes through untouched.
+ */
+export function mergeChainedMessages(storedMessages, newMessages) {
+  const known = new Set();
+  for (const m of storedMessages) {
+    if (m?.role === 'assistant' && Array.isArray(m.tool_calls)) {
+      for (const tc of m.tool_calls) if (tc?.id) known.add(tc.id);
+    }
+  }
+  if (!known.size) return [...storedMessages, ...newMessages];
+
+  const merged = [...storedMessages];
+  for (const m of newMessages) {
+    if (m?.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length) {
+      const fresh = m.tool_calls.filter(tc => !tc?.id || !known.has(tc.id));
+      // Every call already known and no text of its own → a pure duplicate, drop it.
+      if (!fresh.length && !messageHasText(m)) continue;
+      merged.push(fresh.length === m.tool_calls.length ? m : { ...m, tool_calls: fresh });
+      for (const tc of fresh) if (tc?.id) known.add(tc.id);
+      continue;
+    }
+    merged.push(m);
+  }
+  return merged;
+}
+
+function messageHasText(m) {
+  if (typeof m?.content === 'string') return m.content.trim() !== '';
+  if (Array.isArray(m?.content)) return m.content.some(p => (p?.text || '').trim() !== '');
+  return false;
+}
+
 export async function handleResponses(body, deps = {}) {
   const chatHandler = deps.handleChatCompletions || handleChatCompletions;
   const context = deps.context || {};
@@ -1057,7 +1103,7 @@ export async function handleResponses(body, deps = {}) {
   if (body.previous_response_id) {
     const prior = getResponse(body.previous_response_id, callerKey);
     if (prior.ok) {
-      chatBody = { ...chatBody, messages: [...prior.messages, ...(chatBody.messages || [])] };
+      chatBody = { ...chatBody, messages: mergeChainedMessages(prior.messages, chatBody.messages || []) };
     } else if (prior.reason === 'disabled') {
       return {
         status: 400,
