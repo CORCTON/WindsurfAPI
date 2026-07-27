@@ -111,3 +111,59 @@ describe('chained tool loop end to end', () => {
     assert.equal(rec.seen[0].filter(m => m.role === 'tool').length, 1);
   });
 });
+
+describe('chained turns do not accumulate duplicate system prompts', () => {
+  // Responses clients re-send `instructions` every turn — it is a request-level
+  // field, not a conversation item, so the API is designed that way. Each one
+  // became a fresh system message, and devin-connect concatenates EVERY system
+  // message into the single upstream system_prompt field: turn N shipped N copies
+  // of the same instructions, paid for each time and diluting the prompt.
+  // Measured before the fix: 5 turns → 5 copies.
+  const sysCount = (msgs) => msgs.filter(m => m.role === 'system').length;
+
+  it('an identical instructions block is not duplicated across five turns', async () => {
+    const rec = recorder();
+    const deps = { handleChatCompletions: rec.handler, context: { callerKey: CALLER } };
+    let prev = null;
+    for (let t = 1; t <= 5; t++) {
+      const res = await handleResponses({
+        model: 'm',
+        instructions: 'YOU ARE AN AGENT. RULES...',
+        ...(prev ? { previous_response_id: prev } : {}),
+        input: [{ role: 'user', content: [{ type: 'input_text', text: `turn ${t}` }] }],
+      }, deps);
+      prev = res.body.id;
+    }
+    assert.equal(sysCount(rec.seen.at(-1)), 1,
+      `turn 5 must carry exactly one system message, got ${sysCount(rec.seen.at(-1))}`);
+  });
+
+  it('a CHANGED instructions block still reaches the model', async () => {
+    // Clients legitimately adjust instructions mid-conversation; dropping the new
+    // text would silently ignore the change.
+    const rec = recorder();
+    const deps = { handleChatCompletions: rec.handler, context: { callerKey: CALLER } };
+    const t1 = await handleResponses({
+      model: 'm', instructions: 'RULES A',
+      input: [{ role: 'user', content: [{ type: 'input_text', text: 'a' }] }],
+    }, deps);
+    await handleResponses({
+      model: 'm', instructions: 'RULES B (changed)', previous_response_id: t1.body.id,
+      input: [{ role: 'user', content: [{ type: 'input_text', text: 'b' }] }],
+    }, deps);
+    const texts = rec.seen[1].filter(m => m.role === 'system').map(m => m.content);
+    assert.ok(texts.includes('RULES B (changed)'), 'the updated instructions must pass through');
+  });
+
+  it('dedupe compares flattened text, so a parts-array system message matches too', () => {
+    const stored = [{ role: 'system', content: 'SAME RULES' }];
+    const incoming = [{ role: 'system', content: [{ type: 'text', text: 'SAME RULES' }] }];
+    assert.equal(mergeChainedMessages(stored, incoming).filter(m => m.role === 'system').length, 1);
+  });
+
+  it('an empty system message is not treated as a duplicate of another', () => {
+    const stored = [{ role: 'system', content: '' }];
+    const out = mergeChainedMessages(stored, [{ role: 'system', content: 'REAL RULES' }]);
+    assert.ok(JSON.stringify(out).includes('REAL RULES'));
+  });
+});

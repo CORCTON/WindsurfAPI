@@ -1059,15 +1059,37 @@ function createCaptureRes(translator, realRes) {
  */
 export function mergeChainedMessages(storedMessages, newMessages) {
   const known = new Set();
+  // System text already in the chain. Responses clients re-send `instructions` on
+  // every turn (the API is designed that way — it is a request-level field, not a
+  // conversation item), and responsesToChat turns each one into a fresh system
+  // message. Without this the stored chain accumulated one copy per turn, and
+  // devin-connect concatenates EVERY system message into the single upstream
+  // system_prompt field — so turn N shipped N copies of the same instructions,
+  // paying for them each time and diluting the prompt. Measured: 5 turns → 5 copies.
+  const knownSystem = new Set();
   for (const m of storedMessages) {
     if (m?.role === 'assistant' && Array.isArray(m.tool_calls)) {
       for (const tc of m.tool_calls) if (tc?.id) known.add(tc.id);
     }
+    if (m?.role === 'system') {
+      const text = systemText(m);
+      if (text) knownSystem.add(text);
+    }
   }
-  if (!known.size) return [...storedMessages, ...newMessages];
+  if (!known.size && !knownSystem.size) return [...storedMessages, ...newMessages];
 
   const merged = [...storedMessages];
   for (const m of newMessages) {
+    // An identical system message is already in the chain — drop the duplicate.
+    // A CHANGED instructions block still passes through: clients legitimately
+    // adjust it mid-conversation and the newer text must reach the model.
+    if (m?.role === 'system') {
+      const text = systemText(m);
+      if (text && knownSystem.has(text)) continue;
+      if (text) knownSystem.add(text);
+      merged.push(m);
+      continue;
+    }
     if (m?.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length) {
       const fresh = m.tool_calls.filter(tc => !tc?.id || !known.has(tc.id));
       // Every call already known and no text of its own → a pure duplicate, drop it.
@@ -1079,6 +1101,14 @@ export function mergeChainedMessages(storedMessages, newMessages) {
     merged.push(m);
   }
   return merged;
+}
+
+/** Flattened text of a system message, for identity comparison. */
+function systemText(m) {
+  const c = m?.content;
+  if (typeof c === 'string') return c.trim();
+  if (Array.isArray(c)) return c.map(p => (typeof p?.text === 'string' ? p.text : '')).join('\n').trim();
+  return '';
 }
 
 function messageHasText(m) {
