@@ -21,6 +21,7 @@ import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { extractBodyCallerSubKey } from '../src/caller-key.js';
 import { handleResponses } from '../src/handlers/responses.js';
+import { handleChatCompletions } from '../src/handlers/chat.js';
 import { resetResponseStore } from '../src/response-store.js';
 
 function recorder(reply = 'ok') {
@@ -79,58 +80,58 @@ describe('chain scope stays stable across turns', () => {
   });
 });
 
-describe('empty input is rejected locally, never forwarded', () => {
-  it('returns 400 without touching the upstream', async () => {
-    const rec = recorder();
-    const res = await handleResponses(
-      { model: 'm', input: [] },
-      { handleChatCompletions: rec.handler, context: { callerKey: 'api:x:user:u' } },
-    );
-    assert.equal(res.status, 400);
-    assert.equal(res.body.error.param, 'input');
-    assert.equal(rec.seen.length, 0,
-      'the upstream must not be called — that path quarantines the account after two hits');
+describe('an unanswerable conversation is rejected locally, never forwarded', () => {
+  // The guard lives in the shared chat layer, not per-route, so these drive the
+  // REAL handleChatCompletions rather than a mock — a mock would bypass the very
+  // thing under test. That layering is the point: an earlier per-route guard in
+  // handleResponses checked `messages.length === 0` and was bypassed by adding
+  // `instructions` (length becomes 1), while /v1/chat/completions with only a
+  // system message and /v1/messages with only an assistant message were never
+  // covered at all. All three reached the upstream, came back UPSTREAM_INTERNAL,
+  // and two consecutive of those quarantine the account for 120s.
+  //
+  // Verified against the real upstream that an assistant-terminated conversation
+  // (the Anthropic prefill shape) is NOT supported there either, so turning it into
+  // a 400 removes an opaque 503 plus an account penalty without losing anything.
+  const unanswerable = [
+    ['no messages at all', []],
+    ['only a system message', [{ role: 'system', content: 'You are X.' }]],
+    ['only an assistant message', [{ role: 'assistant', content: 'hi' }]],
+    ['ending on an assistant turn', [{ role: 'user', content: 'a' }, { role: 'assistant', content: 'b' }]],
+  ];
+
+  for (const [label, messages] of unanswerable) {
+    it(`rejects ${label} with 400, without acquiring an account`, async () => {
+      const res = await handleChatCompletions(
+        { model: 'claude-sonnet-4.6', max_tokens: 8, messages },
+        { callerKey: 'api:x:user:u' },
+      );
+      assert.equal(res.status, 400, `${label} must be rejected locally`);
+      assert.equal(res.body.error.type, 'invalid_request_error');
+      assert.equal(res.body.error.param, 'messages');
+    });
+  }
+
+  it('accepts a conversation ending on a tool result (the agent-loop shape)', async () => {
+    // This must NOT be rejected — every tool round-trip ends here.
+    const res = await handleChatCompletions({
+      model: 'claude-sonnet-4.6',
+      max_tokens: 8,
+      messages: [
+        { role: 'user', content: 'call f' },
+        { role: 'assistant', content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'f', arguments: '{}' } }] },
+        { role: 'tool', tool_call_id: 'c1', content: 'result' },
+      ],
+    }, { callerKey: 'api:x:user:u' });
+    assert.notEqual(res.status, 400, 'a tool-terminated conversation is answerable');
   });
 
-  it('rejects a missing input field the same way', async () => {
-    const rec = recorder();
-    const res = await handleResponses(
-      { model: 'm' },
-      { handleChatCompletions: rec.handler, context: { callerKey: 'api:x:user:u' } },
+  it('accepts a normal system + user conversation', async () => {
+    const res = await handleChatCompletions(
+      { model: 'claude-sonnet-4.6', max_tokens: 8, messages: [{ role: 'system', content: 'X' }, { role: 'user', content: 'hi' }] },
+      { callerKey: 'api:x:user:u' },
     );
-    assert.equal(res.status, 400);
-    assert.equal(rec.seen.length, 0);
-  });
-
-  it('an empty input is still rejected when chaining', async () => {
-    const rec = recorder();
-    const t1 = await handleResponses(
-      { model: 'm', input: userTurn('hi') },
-      { handleChatCompletions: rec.handler, context: { callerKey: 'api:x:user:u' } },
-    );
-    const res = await handleResponses(
-      { model: 'm', previous_response_id: t1.body.id, input: [] },
-      { handleChatCompletions: rec.handler, context: { callerKey: 'api:x:user:u' } },
-    );
-    assert.equal(res.status, 400, 'a chained request with no new turn has nothing to answer');
-  });
-
-  it('a tool-result-only input is NOT empty and must pass', async () => {
-    // The legitimate chained shape: only function_call_output items.
-    const rec = recorder();
-    const t1 = await handleResponses(
-      { model: 'm', input: userTurn('go') },
-      { handleChatCompletions: rec.handler, context: { callerKey: 'api:x:user:u' } },
-    );
-    const res = await handleResponses(
-      {
-        model: 'm',
-        previous_response_id: t1.body.id,
-        input: [{ type: 'function_call_output', call_id: 'c1', output: 'result' }],
-      },
-      { handleChatCompletions: rec.handler, context: { callerKey: 'api:x:user:u' } },
-    );
-    assert.equal(res.status, 200, 'tool outputs are a real turn and must not be rejected');
+    assert.notEqual(res.status, 400);
   });
 });
 

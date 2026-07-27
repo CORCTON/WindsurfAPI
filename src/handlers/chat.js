@@ -2233,6 +2233,44 @@ async function _handleChatCompletionsInner(body, context = {}) {
   // output (caught by the OpenClaw human-scenario probe — scenario #14).
   // Match OpenAI's behaviour: 400 invalid_request_error.
   {
+    // A conversation must END on something answerable — a user turn or a tool
+    // result. Everything else (empty, system-only, assistant-only, or an item array
+    // whose entries all got dropped) reaches the upstream as an unanswerable
+    // request, comes back "an internal error occurred (trace ID …)", and is
+    // classified UPSTREAM_INTERNAL → reportInternalError → two consecutive of those
+    // quarantine the account for 120s. So a caller looping on such a request
+    // degrades a pool toward its last account (lastAccountExempt keeps one survivor
+    // per tier, so it cannot be blacked out entirely).
+    //
+    // This is deliberately a CLASS check at the shared layer rather than a
+    // per-route emptiness test. An earlier attempt guarded `messages.length === 0`
+    // inside handleResponses, and review showed both failure modes of that shape:
+    // adding `instructions` made the array length 1 and sailed straight through
+    // (live: 503 with a real trace ID), while `/v1/chat/completions` with only a
+    // system message and `/v1/messages` with only an assistant message were never
+    // covered at all (live: 503 and 529). One check here closes all of them.
+    // The LAST message is what decides answerability, not merely the presence of a
+    // user turn somewhere: a chain whose newest items all got dropped ends on an
+    // `assistant` message and the upstream rejects it just the same. Verified
+    // against the real upstream that an assistant-terminated conversation (the
+    // Anthropic "prefill" shape) is NOT supported there either — it returns
+    // UPSTREAM_INTERNAL — so converting it into a clear 400 removes an opaque 503
+    // and an account penalty without taking away anything that worked.
+    const convo = (messages || []).filter(m => m?.role !== 'system');
+    const last = convo[convo.length - 1];
+    if (!last || (last.role !== 'user' && last.role !== 'tool')) {
+      return {
+        status: 400,
+        body: {
+          error: {
+            message: 'The conversation must end with a user message or a tool result. '
+              + 'Provide at least one user turn to respond to.',
+            type: 'invalid_request_error',
+            param: 'messages',
+          },
+        },
+      };
+    }
     const lastUser = (messages || []).filter(m => m?.role === 'user').pop();
     if (lastUser) {
       const c = lastUser.content;

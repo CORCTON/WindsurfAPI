@@ -1141,31 +1141,6 @@ export async function handleResponses(body, deps = {}) {
     };
   }
 
-  // An empty conversation must be rejected HERE, before an account is acquired.
-  // /v1/chat/completions and /v1/messages both reject it locally (server.js:562,
-  // server.js:712), but this route forwarded it to the real upstream, which answers
-  // "an internal error occurred (trace ID …)" → classified UPSTREAM_INTERNAL →
-  // reportInternalError, and two consecutive of those quarantine the account for
-  // two minutes. So any authenticated caller (or a client bug / an empty prompt box)
-  // could walk a multi-account pool offline with empty requests. Live-confirmed:
-  // {input:[]} reached the upstream on this route and 503'd, while the other two
-  // routes returned 400 locally.
-  //
-  // Note previous_response_id makes an empty `input` legitimate-looking but still
-  // useless: there is no new turn to answer, so it is rejected either way.
-  if (!Array.isArray(chatBody.messages) || chatBody.messages.length === 0) {
-    return {
-      status: 400,
-      body: {
-        error: {
-          message: 'Missing required parameter: \'input\'. Provide at least one input item.',
-          type: 'invalid_request_error',
-          param: 'input',
-        },
-      },
-    };
-  }
-
   const requestedTools = chatBody.tools || [];
   const callerKey = context.callerKey || '';
 
