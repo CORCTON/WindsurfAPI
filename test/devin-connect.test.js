@@ -649,10 +649,19 @@ describe('mapFinishReason', () => {
   it('returns null when no finish signal was seen', () => {
     assert.equal(mapFinishReason(null), null);
   });
-  it('maps max_tokens-style truncation enums to "length"', () => {
-    // best-effort defaults for the un-pinned named variants
+  it('maps max_tokens truncation to "length"', () => {
+    // 3 is still a best-effort default for the un-pinned max_tokens variant.
     assert.equal(mapFinishReason(3), 'length');
-    assert.equal(mapFinishReason(4), 'length');
+  });
+
+  it('maps 4 to "stop" — paid capture overturned the name-order guess', () => {
+    // 4 was guessed as max_turn_requests→'length' from the protobuf variant NAME
+    // order. Calibrated 2026-07-27 on a paid teams account: three probes with
+    // max_tokens 300 / 8 / 40 all returned 4, and the max_tokens=300 one answered
+    // "HI" (2 chars, unambiguously complete). Mapping it to 'length' made EVERY
+    // complete paid response read as truncated — finish_reason='length' on
+    // /v1/chat/completions and status='incomplete' on /v1/responses.
+    assert.equal(mapFinishReason(4), 'stop');
   });
   it('handles BigInt finish values (proto varints decode as BigInt)', () => {
     assert.equal(mapFinishReason(2n), 'stop');

@@ -33,9 +33,28 @@ describe('extractBodyCallerSubKey (v2.0.25 HIGH-3)', () => {
     assert.equal(extractBodyCallerSubKey({ user: '   ' }), '');
   });
 
-  it('uses Responses-style previous_response_id when no user', () => {
-    const k = extractBodyCallerSubKey({ previous_response_id: 'resp_abc123' });
-    assert.ok(k && k.length === 16);
+  it('does NOT scope on previous_response_id — it changes every turn', () => {
+    // It used to mint a subkey here. That silently cost cache affinity, and once
+    // the response store shipped it became a hard failure: turn 1 (no
+    // previous_response_id) and turn 2 (with one) derived DIFFERENT callerKeys, so
+    // the store's per-caller isolation check rejected the lookup and a standard
+    // OpenAI SDK client got a 404 on every chained turn. Live-reproduced before
+    // this changed.
+    assert.equal(extractBodyCallerSubKey({ previous_response_id: 'resp_abc123' }), '',
+      'a per-turn id must not become a per-caller scope');
+  });
+
+  it('a chained caller keeps ONE scope across turns', () => {
+    // The property the store depends on: whatever scope a caller resolves to on
+    // turn 1 must still resolve on turn 2, when previous_response_id appears.
+    const turn1 = extractBodyCallerSubKey({ model: 'm', input: [] });
+    const turn2 = extractBodyCallerSubKey({ model: 'm', input: [], previous_response_id: 'resp_1' });
+    assert.equal(turn1, turn2, 'adding previous_response_id must not re-mint the scope');
+
+    // And the same holds when the caller does supply a stable signal.
+    const a = extractBodyCallerSubKey({ user: 'alice' });
+    const b = extractBodyCallerSubKey({ user: 'alice', previous_response_id: 'resp_9' });
+    assert.equal(a, b);
   });
 
   it('honors safety_identifier and prompt_cache_key as turn-stable scopes', () => {

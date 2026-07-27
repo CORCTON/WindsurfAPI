@@ -173,10 +173,21 @@ function ensureSweepTimer() {
  */
 function truncateMessages(messages) {
   if (messages.length <= MAX_MESSAGES) return messages;
+
   let lead = 0;
   while (lead < messages.length && messages[lead]?.role === 'system') lead++;
-  const head = messages.slice(0, lead);
-  const tail = messages.slice(-(MAX_MESSAGES - lead));
+
+  // The leading system block gets at most HALF the budget. Without a cap on the
+  // head, `MAX_MESSAGES - lead` goes negative once the system block alone reaches
+  // the budget, and `slice(-negative)` silently becomes `slice(positive)` — it
+  // returns most of the array instead of the last few entries, so the result grew
+  // INSTEAD of shrinking (measured: 501 messages in, 901 stored). Codex-style
+  // clients that send AGENTS.md / environment context as many separate developer
+  // items reach that shape with no adversarial intent.
+  const headBudget = Math.max(1, Math.floor(MAX_MESSAGES / 2));
+  const head = messages.slice(0, Math.min(lead, headBudget));
+  const tailBudget = MAX_MESSAGES - head.length;
+  const tail = tailBudget > 0 ? messages.slice(-tailBudget) : [];
   return [...head, ...tail];
 }
 

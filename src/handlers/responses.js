@@ -644,6 +644,12 @@ class ResponsesStreamTranslator {
 
     const choice = chunk.choices?.[0];
     if (choice) {
+      // Remember the terminal reason: the Responses API signals truncation through
+      // status:'incomplete' + incomplete_details, and without capturing it here the
+      // stream always closed as 'completed'. An agent then accepted a half answer as
+      // a finished one — the non-stream path on the identical request reported
+      // incomplete/max_output_tokens. Live-reproduced.
+      if (choice.finish_reason) this.streamFinishReason = choice.finish_reason;
       const delta = choice.delta || {};
       if (delta.reasoning_content) this.emitReasoningDelta(delta.reasoning_content);
       if (delta.content) this.emitTextDelta(delta.content);
@@ -911,9 +917,18 @@ class ResponsesStreamTranslator {
     this.finishReasoning();
     this.finishToolCalls();
     if (this.messageStarted || this.text) this.finishMessage();
-    this.send('response.completed', {
+    // Same truncation rule as the non-streaming path (see chatToResponse):
+    // 'incomplete' is reserved for length / content_filter, everything else — and
+    // an absent reason — closes as 'completed'.
+    const reason = this.streamFinishReason;
+    const truncated = reason === 'length' || reason === 'content_filter';
+    const status = truncated ? 'incomplete' : 'completed';
+    this.send(truncated ? 'response.incomplete' : 'response.completed', {
       response: {
-        ...this.responseBase('completed', this.outputItems.filter(Boolean)),
+        ...this.responseBase(status, this.outputItems.filter(Boolean)),
+        ...(truncated
+          ? { incomplete_details: { reason: reason === 'length' ? 'max_output_tokens' : 'content_filter' } }
+          : {}),
         usage: mapUsage(this.finalUsage),
       },
     });
@@ -1087,6 +1102,31 @@ export async function handleResponses(body, deps = {}) {
         error: {
           message: err?.message || 'Invalid Responses request',
           type: 'invalid_request_error',
+        },
+      },
+    };
+  }
+
+  // An empty conversation must be rejected HERE, before an account is acquired.
+  // /v1/chat/completions and /v1/messages both reject it locally (server.js:562,
+  // server.js:712), but this route forwarded it to the real upstream, which answers
+  // "an internal error occurred (trace ID …)" → classified UPSTREAM_INTERNAL →
+  // reportInternalError, and two consecutive of those quarantine the account for
+  // two minutes. So any authenticated caller (or a client bug / an empty prompt box)
+  // could walk a multi-account pool offline with empty requests. Live-confirmed:
+  // {input:[]} reached the upstream on this route and 503'd, while the other two
+  // routes returned 400 locally.
+  //
+  // Note previous_response_id makes an empty `input` legitimate-looking but still
+  // useless: there is no new turn to answer, so it is rejected either way.
+  if (!Array.isArray(chatBody.messages) || chatBody.messages.length === 0) {
+    return {
+      status: 400,
+      body: {
+        error: {
+          message: 'Missing required parameter: \'input\'. Provide at least one input item.',
+          type: 'invalid_request_error',
+          param: 'input',
         },
       },
     };

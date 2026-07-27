@@ -1697,7 +1697,17 @@ const STOP_REASON_DEFAULT = Object.freeze({
   // overridable; they only matter once a paid/edge capture pins the integers.
   1: 'stop',        // end_turn
   3: 'length',      // max_tokens (truncated)
-  4: 'length',      // max_turn_requests
+  // 4 = LIVE-ANCHORED normal completion on a PAID (teams) account, calibrated
+  // 2026-07-27 — §8.7 had been waiting for exactly this capture. Three probes on
+  // claude-sonnet-4.6 with max_tokens 300 / 8 / 40 all returned 4, and the
+  // max_tokens=300 one answered "HI" (2 chars — unambiguously complete), so 4 is
+  // the paid tier's clean stop, not a turn-limit. It was guessed as
+  // max_turn_requests→'length' from the variant NAME order, which made EVERY
+  // complete paid response read as truncated: finish_reason='length' on
+  // /v1/chat/completions and status='incomplete' on /v1/responses. Clients that
+  // auto-continue on a length finish would loop on complete answers.
+  // Override with DEVIN_CONNECT_STOP_REASON_MAP if a future capture disagrees.
+  4: 'stop',        // normal completion (paid); was max_turn_requests guess
   5: 'content_filter', // refusal
   6: 'stop',        // cancelled
 });
@@ -2031,11 +2041,30 @@ export async function* streamChat({
         yield {
           type: 'finish',
           reason: mapFinishReason(lastFinish, env),
+          // Same normalization the Cascade path already applies (chat.js, #118):
+          // prompt_tokens INCLUDES cache_read (cached_tokens is a SUBSET detail of
+          // it, per OpenAI's shape), and total_tokens carries the full cost
+          // including cache_write so per-account accounting stays honest.
+          //
+          // Without this the connect path reported the upstream's raw fresh-input
+          // figure as prompt_tokens, so on a cache-hit turn it emitted
+          // cached_tokens=1765 alongside prompt_tokens=3 — a superset field larger
+          // than the field it is a subset of — and total_tokens=158 against ~1768
+          // real input tokens, a ~91% under-report. Every relay in front of this
+          // proxy (one-api / new-api and friends) meters from exactly these
+          // numbers, and all four protocol routes read this one object, so fixing
+          // it at the birth point corrects them together. Live-reproduced.
           usage: lastUsage
-            ? {
-                prompt_tokens: lastUsage.prompt,
-                completion_tokens: lastUsage.completion,
-                total_tokens: lastUsage.prompt + lastUsage.completion,
+            ? (() => {
+              const fresh = lastUsage.prompt || 0;
+              const cacheRead = lastUsage.cache_read_tokens || 0;
+              const cacheWrite = lastUsage.cache_write_tokens || 0;
+              const completion = lastUsage.completion || 0;
+              const promptTokens = fresh + cacheRead;
+              return {
+                prompt_tokens: promptTokens,
+                completion_tokens: completion,
+                total_tokens: promptTokens + completion + cacheWrite,
                 // Prompt-cache hits, OpenAI-standard shape. Only present when the
                 // upstream carried cache_read_tokens AND the tag was calibrated
                 // (DEVIN_CONNECT_BILLING_TAGS); absent on free tier (no caching).
@@ -2045,7 +2074,8 @@ export async function* streamChat({
                 ...(lastUsage.cache_write_tokens != null
                   ? { cache_creation_input_tokens: lastUsage.cache_write_tokens }
                   : {}),
-              }
+              };
+            })()
             : null,
           // Billing detail (credit/acu cost) only present when an operator has
           // calibrated DEVIN_CONNECT_BILLING_TAGS against a paid token. Null on

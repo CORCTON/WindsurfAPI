@@ -48,10 +48,22 @@ export function extractBodyCallerSubKey(body) {
   if (safety) return sha256Hex(safety).slice(0, 16);
   const cacheKey = usableSignal(body.prompt_cache_key);
   if (cacheKey) return sha256Hex(cacheKey).slice(0, 16);
+  // previous_response_id is deliberately NOT a scope signal. It changes on every
+  // turn, so folding it in re-mints the callerKey each turn — and once the
+  // response store shipped that became a hard failure rather than just a lost
+  // cache: turn 1 (no previous_response_id) and turn 2 (with one) derive
+  // DIFFERENT callerKeys, the store's per-caller isolation check rejects the
+  // lookup, and a standard OpenAI SDK client that sends neither `user` nor
+  // `prompt_cache_key` gets a 404 on every chained turn. Live-reproduced.
+  //
+  // Clients that DO want a per-conversation scope have three stable signals
+  // above (user / safety_identifier / prompt_cache_key) plus the conversation
+  // ids below. A chained caller with none of them falls through to the
+  // ip+ua fingerprint, which is stable across the turns of one session — which
+  // is exactly what chaining needs.
   const candidates = [
     usableSignal(body?.metadata?.conversation_id),
     usableSignal(body.conversation),
-    usableSignal(body.previous_response_id),
     usableSignal(body?.metadata?.session_id),
   ].filter(Boolean);
   if (!candidates.length) return '';

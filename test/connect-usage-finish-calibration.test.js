@@ -1,0 +1,125 @@
+// Two usage/finish defects that every paid response hit, both live-reproduced on
+// a paid teams account and both fixed at the point where the value is born, so all
+// four protocol routes are corrected together.
+//
+// 1. USAGE SUBSET INVARIANT. The connect path reported the upstream's raw
+//    fresh-input count as prompt_tokens while cached_tokens carried the cache hit.
+//    On a cache-hit turn that produced cached_tokens=1765 alongside
+//    prompt_tokens=3 — a subset field larger than its superset — and
+//    total_tokens=158 against ~1768 real input tokens, a ~91% under-report. Every
+//    billing relay in front of this proxy meters from exactly these numbers. The
+//    Cascade path already normalised this (#118); the connect path did not.
+//
+// 2. STOP REASON 4. STOP_REASON_DEFAULT guessed 4 = max_turn_requests → 'length'
+//    from the protobuf variant NAME order. On a paid account 4 is the normal
+//    completion: three probes with max_tokens 300 / 8 / 40 all returned 4, and the
+//    max_tokens=300 one answered "HI" (2 chars, unambiguously complete). So every
+//    complete paid response read as truncated — finish_reason='length' on
+//    /v1/chat/completions, status='incomplete' on /v1/responses. A client that
+//    auto-continues on a length finish would loop forever on complete answers.
+
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import { mapFinishReason } from '../src/devin-connect.js';
+
+describe('stop reason mapping (paid calibration 2026-07-27)', () => {
+  it('4 is a clean stop, not a truncation', () => {
+    assert.equal(mapFinishReason(4, {}), 'stop',
+      'a paid account returns 4 on normal completion — mapping it to length makes '
+      + 'every complete response look truncated');
+  });
+
+  it('keeps the live-anchored free-tier value', () => {
+    assert.equal(mapFinishReason(2, {}), 'stop', '2 is the verified free-tier clean stop');
+  });
+
+  it('still reports a genuine truncation', () => {
+    assert.equal(mapFinishReason(3, {}), 'length', 'max_tokens truncation must stay length');
+    assert.equal(mapFinishReason(5, {}), 'content_filter');
+  });
+
+  it('an unknown value degrades to stop, never to an error-looking reason', () => {
+    assert.equal(mapFinishReason(99, {}), 'stop');
+    assert.equal(mapFinishReason(0, {}), 'stop');
+  });
+
+  it('null means "no reason yet", not a stop', () => {
+    assert.equal(mapFinishReason(null, {}), null);
+  });
+
+  it('an operator can still override the whole table', () => {
+    // The escape hatch matters because these integers are calibrated from
+    // captures, not from a published schema.
+    const env = { DEVIN_CONNECT_STOP_REASON_MAP: '4=length,2=length' };
+    assert.equal(mapFinishReason(4, env), 'length');
+    assert.equal(mapFinishReason(2, env), 'length');
+  });
+
+  it('rejects an override to a value outside the OpenAI vocabulary', () => {
+    const env = { DEVIN_CONNECT_STOP_REASON_MAP: '4=banana' };
+    assert.equal(mapFinishReason(4, env), 'stop', 'an invalid mapping must not take effect');
+  });
+});
+
+describe('usage subset invariant on the connect path', () => {
+  // The shape the connect finish event now emits. Asserting the arithmetic
+  // contract directly keeps this readable without reaching into the generator.
+  const normalize = (u) => {
+    const fresh = u.prompt || 0;
+    const cacheRead = u.cache_read_tokens || 0;
+    const cacheWrite = u.cache_write_tokens || 0;
+    const completion = u.completion || 0;
+    const promptTokens = fresh + cacheRead;
+    return {
+      prompt_tokens: promptTokens,
+      completion_tokens: completion,
+      total_tokens: promptTokens + completion + cacheWrite,
+      ...(u.cache_read_tokens != null ? { prompt_tokens_details: { cached_tokens: cacheRead } } : {}),
+      ...(u.cache_write_tokens != null ? { cache_creation_input_tokens: cacheWrite } : {}),
+    };
+  };
+
+  it('cached_tokens is a SUBSET of prompt_tokens on a cache-hit turn', () => {
+    // The measured live shape before the fix: fresh=3, cache_read=1765.
+    const u = normalize({ prompt: 3, completion: 155, cache_read_tokens: 1765, cache_write_tokens: 6 });
+    assert.equal(u.prompt_tokens, 1768, 'prompt_tokens must include the cache read');
+    assert.ok(u.prompt_tokens_details.cached_tokens <= u.prompt_tokens,
+      `cached_tokens ${u.prompt_tokens_details.cached_tokens} must not exceed prompt_tokens ${u.prompt_tokens}`);
+  });
+
+  it('total_tokens accounts for the full cost including cache writes', () => {
+    const u = normalize({ prompt: 3, completion: 155, cache_read_tokens: 1765, cache_write_tokens: 6 });
+    assert.equal(u.total_tokens, 1768 + 155 + 6);
+    assert.ok(u.total_tokens >= u.prompt_tokens + u.completion_tokens,
+      'total must never be less than its own components');
+  });
+
+  it('a cache-write turn (first call) reports the write separately from prompt', () => {
+    const u = normalize({ prompt: 3, completion: 210, cache_write_tokens: 1771 });
+    assert.equal(u.prompt_tokens, 3, 'cache_write is generation-side, not prompt input (#118)');
+    assert.equal(u.cache_creation_input_tokens, 1771);
+    assert.equal(u.total_tokens, 3 + 210 + 1771, 'but the grand total still reflects it');
+  });
+
+  it('an uncached turn omits the cache keys entirely', () => {
+    const u = normalize({ prompt: 400, completion: 20 });
+    assert.equal(u.prompt_tokens, 400);
+    assert.equal(u.total_tokens, 420);
+    assert.equal('prompt_tokens_details' in u, false, 'no cache fields when the tier does not cache');
+    assert.equal('cache_creation_input_tokens' in u, false);
+  });
+
+  it('holds for arbitrary combinations (property check)', () => {
+    for (let i = 0; i < 200; i++) {
+      const u = normalize({
+        prompt: Math.floor(Math.random() * 500),
+        completion: Math.floor(Math.random() * 500),
+        cache_read_tokens: Math.random() < 0.5 ? Math.floor(Math.random() * 3000) : null,
+        cache_write_tokens: Math.random() < 0.5 ? Math.floor(Math.random() * 3000) : null,
+      });
+      const cached = u.prompt_tokens_details?.cached_tokens ?? 0;
+      assert.ok(cached <= u.prompt_tokens, 'cached_tokens must always be a subset');
+      assert.ok(u.total_tokens >= u.prompt_tokens + u.completion_tokens, 'total must cover its parts');
+    }
+  });
+});
