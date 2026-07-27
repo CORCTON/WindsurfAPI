@@ -129,3 +129,139 @@ describe('byte budget: size suffix parsing', () => {
     assert.equal(parse('-5m'), null);
   });
 });
+
+describe('byte eviction is tenant-fair (found by adversarial review of the first cut)', () => {
+  // The first cut reused the COUNT-based fair-share test inside a BYTE-driven
+  // loop. Under any byte-bound workload the writer's entry count stays far below
+  // its entry share, so `overShare` was always false, the loop fell through to the
+  // untenanted scan, and one caller storing a large conversation flushed every
+  // other tenant's sessions. Reproduced before the fix: 5 tenants x 5
+  // conversations all readable, then a single large write evicted 25/25.
+  const tenantCaller = (t, u) => `api:key${t}:user:u${u}`;
+  const conv = (kb) => [{ role: 'user', content: 'x'.repeat(kb * 512) }]; // *512 → ~kb KB at 2B/char
+
+  it('a tenant flooding MANY entries evicts its OWN, never other tenants', () => {
+    // This is the path the count-based fair-share test broke: the byte loop is
+    // byte-driven, so comparing the writer's entry COUNT against
+    // MAX_ENTRIES/tenants left it looking under-share forever, and the loop fell
+    // through to the untenanted scan. Reproduced before the fix: 5 tenants x 5
+    // conversations all readable, then one large write evicted 25/25.
+    //
+    // The flood has to be MANY entries, not one huge one — a single oversized
+    // conversation is trimmed by capEntryBytes and never reaches this branch.
+    for (let t = 0; t < 3; t++) {
+      for (let i = 0; i < 2; i++) store.putResponse(`v${t}_${i}`, conv(100), `api:vic${t}:user:${i}`);
+    }
+    const before = [0, 1, 2].map(t => store.getResponse(`v${t}_0`, `api:vic${t}:user:0`).ok);
+    assert.deepEqual(before, [true, true, true], 'precondition: victims seeded');
+
+    for (let i = 0; i < 30; i++) store.putResponse(`atk${i}`, conv(100), `api:atk:user:${i}`);
+
+    const after = [0, 1, 2].map(t => store.getResponse(`v${t}_0`, `api:vic${t}:user:0`).ok);
+    assert.deepEqual(after, [true, true, true],
+      'the flooding tenant must pay for its own growth — other tenants must survive');
+    const st = store.getResponseStoreStats();
+    assert.ok(st.evictions > 0, 'the flood must have triggered eviction');
+    assert.ok(st.bytes <= st.maxBytes, 'and the budget must hold');
+  });
+
+  it('the entry just written is never the eviction victim, even via the tenant scan', () => {
+    // `_entries.size > 1` only protects the UNtenanted scan (the new entry sits at
+    // the Map tail, so it is never the global LRU head). oldestId(tenant) CAN return
+    // it — when the writer's tenant is over its byte share AND the new entry is that
+    // tenant's only survivor. putResponse then returned true while the id 404'd
+    // immediately, handing the caller an unusable response id.
+    //
+    // Reaching that branch needs the byte share to be SMALLER than the per-entry
+    // ceiling, i.e. more than four tenants: with MAX_BYTES=2m the ceiling is 512KB
+    // while eight tenants get 256KB each, so one near-ceiling entry is over share.
+    // An earlier version of this guard used a single-tenant flood and could not
+    // reach the branch at all — it passed with the fix reverted.
+    for (let t = 0; t < 7; t++) store.putResponse(`o${t}`, conv(250), `api:t${t}:user:1`);
+    assert.equal(store.getResponseStoreStats().tenants, 7, 'precondition: many tenants');
+
+    const ok = store.putResponse('mine', conv(500), 'api:t7:user:1');
+    assert.equal(ok, true);
+    assert.equal(store.getResponse('mine', 'api:t7:user:1').ok, true,
+      'a write that returns true must be readable — otherwise the caller holds an id that 404s');
+  });
+
+  it('no single conversation can claim the whole budget', () => {
+    // Without a per-entry ceiling the eviction loop cannot converge fairly: a tenant
+    // whose one entry alone exceeds the budget has nothing of its OWN to evict, so it
+    // falls through to the global scan and flushes strangers. The ceiling is what
+    // makes the byte-denominated fair share able to hold.
+    const huge = [{ role: 'user', content: 'y'.repeat(50 * 1024 * 1024) }];
+    store.putResponse('huge', huge, 'api:solo:user:1');
+    const st = store.getResponseStoreStats();
+    assert.ok(st.bytes <= st.maxBytes,
+      `one conversation must be trimmed to fit the budget (${st.bytes} vs ${st.maxBytes})`);
+    assert.equal(store.getResponse('huge', 'api:solo:user:1').ok, true,
+      'and it must still be readable — trimmed, not rejected');
+  });
+
+  it('a single oversized MESSAGE is truncated in place, with a visible marker', () => {
+    // Dropping messages cannot shrink a conversation that is one giant message, so
+    // the content itself is cut. The marker keeps that visible to whoever reads the
+    // chained context instead of silently changing what the model saw.
+    store.putResponse('one', [{ role: 'user', content: 'z'.repeat(20 * 1024 * 1024) }], 'api:solo:user:2');
+    const st = store.getResponseStoreStats();
+    assert.ok(st.bytes <= st.maxBytes);
+    const got = store.getResponse('one', 'api:solo:user:2');
+    assert.equal(got.ok, true);
+    assert.match(got.messages[0].content, /truncated by the response store/,
+      'the truncation must be visible, not silent');
+  });
+
+  it('trimming a conversation to fit keeps the system block and the newest turns', () => {
+    const msgs = [
+      { role: 'system', content: 'INSTRUCTIONS' },
+      ...Array.from({ length: 200 }, (_, i) => ({ role: 'user', content: `m${i}:${'z'.repeat(20000)}` })),
+    ];
+    store.putResponse('trim', msgs, 'api:solo:user:2');
+    const got = store.getResponse('trim', 'api:solo:user:2');
+    assert.equal(got.ok, true);
+    assert.equal(got.messages[0].content, 'INSTRUCTIONS', 'the system block must survive');
+    assert.match(got.messages.at(-1).content, /^m199:/, 'the newest turn must survive');
+  });
+});
+
+describe('byte accounting covers every string, not just .text', () => {
+  it('a base64 image part is charged its real size', () => {
+    // normalizeMessageContent turns a Responses input_image into
+    // {type:'image_url', image_url:{url:'data:...'}} — no `.text` field at all, so
+    // the first cut charged a multi-megabyte data URI a flat 32 bytes and the
+    // budget never fired on vision payloads (measured ~15000x under).
+    const img = {
+      role: 'user',
+      content: [{ type: 'image_url', image_url: { url: `data:image/png;base64,${'A'.repeat(200000)}` } }],
+    };
+    store.putResponse('img', [img], 'api:vision:user:1');
+    const st = store.getResponseStoreStats();
+    assert.ok(st.bytes > 200000,
+      `a 200KB data URI must be accounted for, got ${st.bytes}`);
+  });
+
+  it('charges tool_call arguments and ids', () => {
+    const m = [{
+      role: 'assistant',
+      content: '',
+      tool_calls: [{ id: 'c1', type: 'function', function: { name: 'f', arguments: 'q'.repeat(50000) } }],
+    }];
+    store.putResponse('tc', m, 'api:tools:user:1');
+    assert.ok(store.getResponseStoreStats().bytes > 50000, 'tool arguments count toward the budget');
+  });
+
+  it('never UNDERcounts non-Latin1 text (V8 stores it 2 bytes/char)', () => {
+    store.resetResponseStore();
+    store.putResponse('cjk', [{ role: 'user', content: '中'.repeat(100000) }], 'api:cjk:user:1');
+    const cjk = store.getResponseStoreStats().bytes;
+    store.resetResponseStore();
+    store.putResponse('ascii', [{ role: 'user', content: 'a'.repeat(100000) }], 'api:ascii:user:1');
+    const ascii = store.getResponseStoreStats().bytes;
+    assert.ok(cjk >= ascii,
+      'CJK must not be charged less than the same number of ASCII chars — undercounting '
+      + 'is what lets real memory exceed the budget');
+    assert.ok(cjk >= 200000, `100k CJK chars occupy ~200KB in V8, accounted ${cjk}`);
+  });
+});

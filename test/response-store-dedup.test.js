@@ -112,58 +112,77 @@ describe('chained tool loop end to end', () => {
   });
 });
 
-describe('chained turns do not accumulate duplicate system prompts', () => {
-  // Responses clients re-send `instructions` every turn — it is a request-level
-  // field, not a conversation item, so the API is designed that way. Each one
-  // became a fresh system message, and devin-connect concatenates EVERY system
-  // message into the single upstream system_prompt field: turn N shipped N copies
-  // of the same instructions, paid for each time and diluting the prompt.
-  // Measured before the fix: 5 turns → 5 copies.
-  const sysCount = (msgs) => msgs.filter(m => m.role === 'system').length;
+describe('request-level instructions do not carry over (Responses contract)', () => {
+  // The spec: "when used along with previous_response_id, the instructions from a
+  // previous response will not be carried over to the next response." So the stored
+  // chain's instructions block is REPLACED by the current request's, not merged.
+  //
+  // A first cut append-with-deduped instead, which accumulated one copy per turn
+  // (devin-connect concatenates every system message into one system_prompt) and —
+  // worse — silently kept a REVOKED value on toggle-back: with X→Y→X, turn 3's X
+  // was dropped as a duplicate, leaving Y as the last and therefore winning line.
+  // Live-reproduced: an EN→JA→EN sequence answered in Japanese.
+  const sys = (msgs) => msgs.filter(m => m.role === 'system').map(m => m.content);
 
-  it('an identical instructions block is not duplicated across five turns', async () => {
+  const runChain = async (instructionsPerTurn) => {
+    resetResponseStore();
     const rec = recorder();
     const deps = { handleChatCompletions: rec.handler, context: { callerKey: CALLER } };
     let prev = null;
-    for (let t = 1; t <= 5; t++) {
+    for (const ins of instructionsPerTurn) {
       const res = await handleResponses({
         model: 'm',
-        instructions: 'YOU ARE AN AGENT. RULES...',
+        ...(ins ? { instructions: ins } : {}),
         ...(prev ? { previous_response_id: prev } : {}),
-        input: [{ role: 'user', content: [{ type: 'input_text', text: `turn ${t}` }] }],
+        input: [{ role: 'user', content: [{ type: 'input_text', text: 'q' }] }],
       }, deps);
       prev = res.body.id;
     }
-    assert.equal(sysCount(rec.seen.at(-1)), 1,
-      `turn 5 must carry exactly one system message, got ${sysCount(rec.seen.at(-1))}`);
+    return rec.seen;
+  };
+
+  it('a toggle-back keeps the CURRENT instructions, not the revoked one', async () => {
+    const seen = await runChain(['Respond in ENGLISH.', 'Respond in JAPANESE.', 'Respond in ENGLISH.']);
+    assert.deepEqual(sys(seen[2]), ['Respond in ENGLISH.'],
+      'the instructions the client just sent must be the only system block');
   });
 
-  it('a CHANGED instructions block still reaches the model', async () => {
-    // Clients legitimately adjust instructions mid-conversation; dropping the new
-    // text would silently ignore the change.
+  it('identical instructions across five turns stay a single copy', async () => {
+    const seen = await runChain(Array(5).fill('YOU ARE AN AGENT. RULES...'));
+    assert.equal(sys(seen[4]).length, 1, `turn 5 must carry one system message, got ${sys(seen[4]).length}`);
+  });
+
+  it('dropping instructions on a later turn drops them from the chain', async () => {
+    // Per the contract there is nothing to carry over, so no system block remains.
+    const seen = await runChain(['RULES', null]);
+    assert.deepEqual(sys(seen[1]), [], 'stored instructions must not resurface');
+  });
+
+  it('a system/developer message that arrived as an input ITEM does carry over', async () => {
+    // Conversation items are part of the conversation — only the request-level
+    // `instructions` field is per-request.
+    resetResponseStore();
     const rec = recorder();
     const deps = { handleChatCompletions: rec.handler, context: { callerKey: CALLER } };
     const t1 = await handleResponses({
-      model: 'm', instructions: 'RULES A',
-      input: [{ role: 'user', content: [{ type: 'input_text', text: 'a' }] }],
+      model: 'm',
+      input: [
+        { role: 'developer', content: [{ type: 'input_text', text: 'ITEM RULE' }] },
+        { role: 'user', content: [{ type: 'input_text', text: 'a' }] },
+      ],
     }, deps);
     await handleResponses({
-      model: 'm', instructions: 'RULES B (changed)', previous_response_id: t1.body.id,
+      model: 'm', previous_response_id: t1.body.id,
       input: [{ role: 'user', content: [{ type: 'input_text', text: 'b' }] }],
     }, deps);
-    const texts = rec.seen[1].filter(m => m.role === 'system').map(m => m.content);
-    assert.ok(texts.includes('RULES B (changed)'), 'the updated instructions must pass through');
+    assert.ok(JSON.stringify(rec.seen[1]).includes('ITEM RULE'),
+      'a developer/system conversation item must persist across the chain');
   });
 
-  it('dedupe compares flattened text, so a parts-array system message matches too', () => {
-    const stored = [{ role: 'system', content: 'SAME RULES' }];
-    const incoming = [{ role: 'system', content: [{ type: 'text', text: 'SAME RULES' }] }];
-    assert.equal(mergeChainedMessages(stored, incoming).filter(m => m.role === 'system').length, 1);
-  });
-
-  it('an empty system message is not treated as a duplicate of another', () => {
-    const stored = [{ role: 'system', content: '' }];
-    const out = mergeChainedMessages(stored, [{ role: 'system', content: 'REAL RULES' }]);
-    assert.ok(JSON.stringify(out).includes('REAL RULES'));
+  it('the instructions marker never reaches the wire', async () => {
+    // It is Symbol-keyed precisely so it cannot serialize into the upstream body
+    // or into anything persisted.
+    const seen = await runChain(['RULES']);
+    assert.equal(JSON.stringify(seen[0]).includes('fromInstructions'), false);
   });
 });

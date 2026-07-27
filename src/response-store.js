@@ -85,18 +85,44 @@ function approxBytes(messages) {
   let n = 0;
   for (const m of messages) {
     n += 64; // object + role + bookkeeping
-    const c = m?.content;
-    if (typeof c === 'string') n += c.length;
-    else if (Array.isArray(c)) for (const p of c) n += 32 + (typeof p?.text === 'string' ? p.text.length : 0);
+    n += strBytes(m?.content);
     if (Array.isArray(m?.tool_calls)) {
       for (const tc of m.tool_calls) {
-        n += 96 + String(tc?.id || '').length + String(tc?.function?.name || '').length
-          + String(tc?.function?.arguments ?? '').length;
+        n += 96 + strBytes(tc?.id) + strBytes(tc?.function?.name) + strBytes(tc?.function?.arguments);
       }
     }
-    if (m?.tool_call_id) n += String(m.tool_call_id).length;
+    n += strBytes(m?.tool_call_id);
   }
   return n;
+}
+
+// Retained-size estimate for any content value. Two things this must get right,
+// both found by review of the first cut:
+//
+//  - EVERY string field counts, not just `.text`. A Responses `input_image` is
+//    normalized to `{type:'image_url', image_url:{url:'data:...;base64,...'}}`,
+//    which has no `.text` — so a multi-megabyte data URI was charged a flat 32
+//    bytes and the budget never fired on vision payloads (measured: 10 entries
+//    holding ~20MB of base64 accounted as 960 bytes, ~15000x under).
+//  - 2 bytes per character, not 1. V8 stores any non-Latin1 string as 2 bytes/char,
+//    so `.length` undercounts CJK by exactly 2x. Charging 2 everywhere overcounts
+//    pure ASCII by 2x, which is the safe direction for a memory bound.
+function strBytes(v, depth = 0) {
+  if (v == null) return 0;
+  if (typeof v === 'string') return v.length * 2;
+  if (typeof v === 'number' || typeof v === 'boolean') return 8;
+  if (depth > 4) return 32; // guard against a pathological nesting depth
+  if (Array.isArray(v)) {
+    let n = 0;
+    for (const item of v) n += 32 + strBytes(item, depth + 1);
+    return n;
+  }
+  if (typeof v === 'object') {
+    let n = 0;
+    for (const val of Object.values(v)) n += strBytes(val, depth + 1);
+    return n;
+  }
+  return 0;
 }
 
 // Map<responseId, { messages, callerKey, model, createdAt, lastAccess, bytes }>
@@ -104,6 +130,10 @@ function approxBytes(messages) {
 // refresh re-inserts, so the first key is always the LRU victim (O(1) eviction).
 const _entries = new Map();
 const _tenantCounts = new Map();
+// Per-tenant BYTE totals. The byte-eviction loop needs a byte-denominated fair
+// share; comparing an entry COUNT against MAX_ENTRIES/tenants let a byte-bound
+// writer look under-share forever and evict strangers (see the loop below).
+const _tenantBytes = new Map();
 
 const _stats = { stored: 0, hits: 0, misses: 0, expires: 0, evictions: 0, rejected: 0 };
 let _bytes = 0;   // running total of approxBytes across all entries
@@ -126,9 +156,10 @@ function tenantOf(callerKey) {
   return j < 0 ? key : key.slice(0, j);
 }
 
-function trackInsert(callerKey) {
+function trackInsert(callerKey, bytes = 0) {
   const t = tenantOf(callerKey);
   _tenantCounts.set(t, (_tenantCounts.get(t) || 0) + 1);
+  _tenantBytes.set(t, (_tenantBytes.get(t) || 0) + bytes);
 }
 
 function dropEntry(id) {
@@ -139,12 +170,15 @@ function dropEntry(id) {
   if (_bytes < 0) _bytes = 0;
   const t = tenantOf(entry.callerKey);
   const n = (_tenantCounts.get(t) || 1) - 1;
-  if (n > 0) _tenantCounts.set(t, n); else _tenantCounts.delete(t);
+  const b = (_tenantBytes.get(t) || 0) - (entry.bytes || 0);
+  if (n > 0) { _tenantCounts.set(t, n); _tenantBytes.set(t, b > 0 ? b : 0); }
+  else { _tenantCounts.delete(t); _tenantBytes.delete(t); }
   return true;
 }
 
-function oldestId(tenant = null) {
+function oldestId(tenant = null, exclude = null) {
   for (const [id, entry] of _entries) {
+    if (id === exclude) continue;
     if (!tenant || tenantOf(entry.callerKey) === tenant) return id;
   }
   return null;
@@ -191,6 +225,69 @@ function truncateMessages(messages) {
   return [...head, ...tail];
 }
 
+// No single conversation may claim more than this share of the whole budget.
+// Without a per-entry ceiling the eviction loop cannot converge fairly: a tenant
+// whose one entry alone exceeds the budget has nothing of its OWN left to evict,
+// so it falls through to the global scan and flushes strangers — which is exactly
+// the cross-tenant DoS the byte-denominated fair share is meant to prevent.
+const MAX_ENTRY_BYTES = Math.max(64 * 1024, Math.floor(MAX_BYTES / 4));
+
+/**
+ * Trim a conversation until it fits MAX_ENTRY_BYTES, dropping from the MIDDLE.
+ * The leading system block and the most recent turns are what a next turn needs;
+ * the middle is the cheapest thing to lose, and losing it is strictly better than
+ * either refusing the write or evicting other tenants to make room.
+ */
+function capEntryBytes(messages) {
+  if (approxBytes(messages) <= MAX_ENTRY_BYTES) return messages;
+  let lead = 0;
+  while (lead < messages.length && messages[lead]?.role === 'system') lead++;
+  const head = messages.slice(0, Math.min(lead, 8));
+  let tailStart = messages.length;
+  const out = [];
+  // Walk backwards adding recent turns while they fit.
+  let used = approxBytes(head);
+  while (tailStart > lead) {
+    const candidate = messages[tailStart - 1];
+    const cost = approxBytes([candidate]);
+    if (used + cost > MAX_ENTRY_BYTES && out.length) break;
+    used += cost;
+    out.unshift(candidate);
+    tailStart--;
+    if (used > MAX_ENTRY_BYTES) break;
+  }
+  const trimmed = [...head, ...out];
+  // Last resort: a conversation whose SINGLE message already exceeds the ceiling
+  // cannot be shrunk by dropping messages. Cut the text itself, otherwise the
+  // store's one promise — total bytes stay within the budget — is false whenever
+  // an operator configures a small budget (a 10MB request body, the server cap,
+  // lands as ~20MB accounted). The marker keeps the truncation visible to whoever
+  // reads the chained context instead of silently changing what the model saw.
+  if (approxBytes(trimmed) > MAX_ENTRY_BYTES) return trimContentToFit(trimmed);
+  return trimmed;
+}
+
+const TRUNCATION_MARKER = '\n\n[... truncated by the response store to stay within RESPONSE_STORE_MAX_BYTES ...]';
+
+function trimContentToFit(messages) {
+  const out = messages.map(m => ({ ...m }));
+  // Shrink from the LARGEST string field down until the entry fits.
+  let guard = 64;
+  while (approxBytes(out) > MAX_ENTRY_BYTES && guard-- > 0) {
+    let biggest = -1;
+    let biggestLen = 0;
+    for (let i = 0; i < out.length; i++) {
+      const c = out[i]?.content;
+      const len = typeof c === 'string' ? c.length : 0;
+      if (len > biggestLen) { biggestLen = len; biggest = i; }
+    }
+    if (biggest < 0 || biggestLen <= TRUNCATION_MARKER.length) break;
+    const keep = Math.max(1, Math.floor(biggestLen / 2));
+    out[biggest].content = out[biggest].content.slice(0, keep) + TRUNCATION_MARKER;
+  }
+  return out;
+}
+
 /**
  * Store the accumulated conversation under a response id.
  *
@@ -222,34 +319,49 @@ export function putResponse(responseId, messages, callerKey, opts = {}) {
 
   const now = Date.now();
   const existing = _entries.get(responseId);
-  const kept = truncateMessages(messages);
+  const kept = capEntryBytes(truncateMessages(messages));
   const bytes = approxBytes(kept);
   const createdAt = existing?.createdAt || now;
   const model = opts.model || existing?.model || null;
-  if (existing) dropEntry(responseId); else trackInsert(callerKey);
-  _entries.set(responseId, { messages: kept, callerKey, model, createdAt, lastAccess: now, bytes });
+  if (existing) dropEntry(responseId);
+  trackInsert(callerKey, bytes);
+  _entries.set(responseId, {
+    messages: kept, callerKey, model, createdAt, lastAccess: now, bytes,
+  });
   _bytes += bytes;
   _stats.stored++;
 
-  // Byte budget: entry/message counts bound cardinality, not memory. Evict LRU
-  // until the total fits. Same fair-share preference as the count path — a tenant
-  // over its slice pays for its own growth first — but never evict the entry just
-  // written (it is the caller's live conversation; dropping it would make the id
-  // it was handed unusable).
+  // Byte budget: entry/message counts bound cardinality, NOT memory, so evict
+  // until the byte total fits as well.
   //
-  // `_entries.size > 1` is what protects the entry just written: the set() above
-  // put it at the TAIL of the Map (most-recently-used), so oldestId() can only
-  // return it when it is the sole entry — and then this loop does not run at all.
-  // That matters because a single conversation may legitimately exceed the whole
-  // budget; the store still has to hand back a usable id rather than silently
-  // dropping what it just accepted. `guard` bounds the loop so a bookkeeping bug
-  // can never spin the request thread.
+  // The fairness test must be BYTE-denominated. The first cut reused the count
+  // test (`tenantCount >= MAX_ENTRIES / tenants`), which under any byte-bound
+  // workload leaves the writer far below its entry share — so `overShare` was
+  // always false, the loop fell through to the untenanted scan, and one caller
+  // storing a large conversation flushed every other tenant's sessions.
+  // Reproduced: 5 tenants x 5 conversations all readable, then a single 5MB write
+  // evicted 25/25 of them. That is a cross-tenant DoS the count-only store never
+  // had, so fairness here compares the tenant's BYTES against MAX_BYTES/tenants.
+  //
+  // `exclude: responseId` is load-bearing and NOT redundant with `size > 1`: the
+  // Map-tail argument only holds for the untenanted scan. oldestId(tenant) can
+  // return the entry just written when it is that tenant's oldest survivor, and
+  // then putResponse returned true while the id 404'd immediately after
+  // (reproduced with MAX=2, MAX_BYTES=200k). An earlier version dropped this
+  // guard as dead code because the mutation test only exercised the untenanted
+  // path.
   let guard = _entries.size + 1;
   while (_bytes > MAX_BYTES && _entries.size > 1 && guard-- > 0) {
     const tenant = tenantOf(callerKey);
-    const fairShare = Math.max(1, Math.floor(MAX_ENTRIES / Math.max(1, _tenantCounts.size)));
-    const overShare = (_tenantCounts.get(tenant) || 0) >= fairShare;
-    const victim = (overShare && oldestId(tenant)) || oldestId();
+    const byteShare = MAX_BYTES / Math.max(1, _tenantBytes.size);
+    const overShare = (_tenantBytes.get(tenant) || 0) > byteShare;
+    // An over-share tenant evicts its OWN oldest. If it has nothing of its own
+    // left, stop — accepting a temporary overage is correct, because flushing
+    // other tenants to make room for one caller is the DoS this guards against.
+    // MAX_ENTRY_BYTES bounds how large that overage can be.
+    const victim = overShare
+      ? oldestId(tenant, responseId)
+      : oldestId(null, responseId);
     if (!victim) break;
     dropEntry(victim);
     _stats.evictions++;
@@ -323,6 +435,7 @@ export function getResponseStoreStats() {
 export function resetResponseStore() {
   _entries.clear();
   _tenantCounts.clear();
+  _tenantBytes.clear();
   _bytes = 0;
   for (const k of Object.keys(_stats)) _stats[k] = 0;
 }

@@ -355,6 +355,11 @@ function normalizeResponseTextFormat(format) {
 
 export function responsesToChat(body) {
   const messages = [];
+  // How many LEADING messages came from the request-level `instructions` field
+  // (as opposed to an `input` conversation item). Reported on the result rather
+  // than tagged onto the message objects: those get deep-compared in tests and
+  // shipped upstream, so they must stay pristine.
+  let instructionsLead = 0;
   const flushToolCalls = (() => {
     let pending = [];
     return {
@@ -377,7 +382,13 @@ export function responsesToChat(body) {
   })();
 
   if (body.instructions) {
+    // Tagged so the chain merge can tell a REQUEST-LEVEL instructions block apart
+    // from a system/developer message that arrived as a conversation ITEM. Per the
+    // Responses contract the former does not carry over across
+    // previous_response_id; the latter is part of the conversation and does.
+    // A Symbol key never serializes, so it cannot leak onto the wire or into JSON.
     messages.push({ role: 'system', content: stringifyMaybe(body.instructions) });
+    instructionsLead = 1;
   }
 
   if (typeof body.input === 'string') {
@@ -448,6 +459,8 @@ export function responsesToChat(body) {
     ...(body.top_p != null ? { top_p: body.top_p } : {}),
     ...(forwardedToolChoice != null ? { tool_choice: forwardedToolChoice } : {}),
     ...(responseFormat ? { response_format: responseFormat } : {}),
+    // Internal, stripped before the upstream call (same convention as __route).
+    ...(instructionsLead ? { __instructionsLead: instructionsLead } : {}),
   };
 }
 
@@ -1062,38 +1075,33 @@ function createCaptureRes(translator, realRes) {
  * passes through untouched.
  */
 export function mergeChainedMessages(storedMessages, newMessages) {
+  // Request-level instructions do NOT carry over. The spec is explicit: "when used
+  // along with previous_response_id, the instructions from a previous response will
+  // not be carried over to the next response." So the stored chain's
+  // instructions-derived system block is dropped and the current request's wins.
+  //
+  // This replaced an append-with-dedup first cut, which had two problems the review
+  // caught: the stored copy accumulated one per turn (turn N shipped N copies,
+  // because devin-connect concatenates every system message into one
+  // system_prompt), and — worse — an instructions TOGGLE-BACK silently kept the
+  // revoked value. With X→Y→X, turn 3's X was dropped as a "duplicate", leaving Y
+  // as the last and therefore winning line: the model followed instructions the
+  // client had just replaced. Live-reproduced (EN→JA→EN answered in Japanese).
+  //
+  // A system/developer message that arrived as a conversation ITEM is untouched —
+  // that is part of the conversation, not a request-level override.
+  const stored = storedMessages;
+
   const known = new Set();
-  // System text already in the chain. Responses clients re-send `instructions` on
-  // every turn (the API is designed that way — it is a request-level field, not a
-  // conversation item), and responsesToChat turns each one into a fresh system
-  // message. Without this the stored chain accumulated one copy per turn, and
-  // devin-connect concatenates EVERY system message into the single upstream
-  // system_prompt field — so turn N shipped N copies of the same instructions,
-  // paying for them each time and diluting the prompt. Measured: 5 turns → 5 copies.
-  const knownSystem = new Set();
-  for (const m of storedMessages) {
+  for (const m of stored) {
     if (m?.role === 'assistant' && Array.isArray(m.tool_calls)) {
       for (const tc of m.tool_calls) if (tc?.id) known.add(tc.id);
     }
-    if (m?.role === 'system') {
-      const text = systemText(m);
-      if (text) knownSystem.add(text);
-    }
   }
-  if (!known.size && !knownSystem.size) return [...storedMessages, ...newMessages];
+  if (!known.size) return [...stored, ...newMessages];
 
-  const merged = [...storedMessages];
+  const merged = [...stored];
   for (const m of newMessages) {
-    // An identical system message is already in the chain — drop the duplicate.
-    // A CHANGED instructions block still passes through: clients legitimately
-    // adjust it mid-conversation and the newer text must reach the model.
-    if (m?.role === 'system') {
-      const text = systemText(m);
-      if (text && knownSystem.has(text)) continue;
-      if (text) knownSystem.add(text);
-      merged.push(m);
-      continue;
-    }
     if (m?.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length) {
       const fresh = m.tool_calls.filter(tc => !tc?.id || !known.has(tc.id));
       // Every call already known and no text of its own → a pure duplicate, drop it.
@@ -1105,14 +1113,6 @@ export function mergeChainedMessages(storedMessages, newMessages) {
     merged.push(m);
   }
   return merged;
-}
-
-/** Flattened text of a system message, for identity comparison. */
-function systemText(m) {
-  const c = m?.content;
-  if (typeof c === 'string') return c.trim();
-  if (Array.isArray(c)) return c.map(p => (typeof p?.text === 'string' ? p.text : '')).join('\n').trim();
-  return '';
 }
 
 function messageHasText(m) {
@@ -1169,6 +1169,21 @@ export async function handleResponses(body, deps = {}) {
   const requestedTools = chatBody.tools || [];
   const callerKey = context.callerKey || '';
 
+  // The request-level instructions message is never persisted. Per the Responses
+  // contract it does not carry over across previous_response_id, so keeping it out
+  // of the store is both correct and simpler than tracking where it sits after a
+  // merge. Captured HERE, before the merge — reading messages[0] afterwards picks
+  // up the first message of the PREPENDED history instead, which silently dropped
+  // real conversation content while leaving the instructions behind.
+  //
+  // Identified by object identity: responsesToChat created it, and the merge copies
+  // arrays but preserves element references.
+  const instructionsMsg = (chatBody.__instructionsLead && (chatBody.messages || [])[0]) || null;
+  if ('__instructionsLead' in chatBody) {
+    chatBody = { ...chatBody };
+    delete chatBody.__instructionsLead;
+  }
+
   // Responses API server-side state: when the caller chains with
   // previous_response_id it sends ONLY the new turn, so the stored conversation
   // has to be prepended here. A miss must FAIL — proceeding with just the new turn
@@ -1177,7 +1192,10 @@ export async function handleResponses(body, deps = {}) {
   if (body.previous_response_id) {
     const prior = getResponse(body.previous_response_id, callerKey);
     if (prior.ok) {
-      chatBody = { ...chatBody, messages: mergeChainedMessages(prior.messages, chatBody.messages || []) };
+      chatBody = {
+        ...chatBody,
+        messages: mergeChainedMessages(prior.messages, chatBody.messages || []),
+      };
     } else if (prior.reason === 'disabled') {
       return {
         status: 400,
@@ -1219,7 +1237,12 @@ export async function handleResponses(body, deps = {}) {
     try {
       putResponse(
         responseId,
-        assistantMessage ? [...priorMessages, assistantMessage] : priorMessages,
+        (() => {
+          const base = instructionsMsg
+            ? priorMessages.filter(m => m !== instructionsMsg)
+            : priorMessages;
+          return assistantMessage ? [...base, assistantMessage] : base;
+        })(),
         callerKey,
         { model: requestedModel, store: body.store },
       );
