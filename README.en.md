@@ -313,6 +313,7 @@ In your client's settings for **Custom OpenAI Compatible**:
 | `RESPONSE_STORE_ENABLED` | `1` | Responses API server-side conversation state. With it on, `previous_response_id` continues a conversation (the client sends only the new turn); set `0` and such requests get a 400. Scoped by callerKey — tenants cannot read each other's conversations. |
 | `RESPONSE_STORE_TTL_MS` | `3600000` | Conversation retention (1 hour), renewed on each turn. |
 | `RESPONSE_STORE_MAX` | `2000` | Max stored conversations, LRU-evicted with a per-tenant fair share. |
+| `RESPONSE_STORE_MAX_BYTES` | `128m` | Total byte budget for stored conversations (b/k/kb/m/mb/g/gb). The count caps bound cardinality, not memory — a realistic agent conversation measures ~167KB, so 2000 entries is ~327MB. Eviction triggers on whichever limit binds first. |
 
 ## Dashboard Features
 

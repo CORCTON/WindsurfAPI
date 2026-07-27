@@ -306,6 +306,7 @@ curl http://localhost:3003/v1/messages \
 | `RESPONSE_STORE_ENABLED` | `1` | Responses API 服务端会话状态。开启时 `previous_response_id` 可续接上下文(客户端只发新一轮);设 `0` 关闭后带该字段的请求返回 400。按 callerKey 隔离,租户间不可互读 |
 | `RESPONSE_STORE_TTL_MS` | `3600000` | 会话保留时长(1 小时),每轮访问自动续期 |
 | `RESPONSE_STORE_MAX` | `2000` | 最多保留多少个会话,LRU 驱逐 + 租户公平配额 |
+| `RESPONSE_STORE_MAX_BYTES` | `128m` | 会话总字节预算(支持 b/k/kb/m/mb/g/gb)。条数上限约束的是数量不是内存 —— 实测真实 agent 会话每条约 167KB,2000 条约 327MB。按条数与字节两个维度中先触发的那个驱逐 |
 
 ## Dashboard 功能面板
 

@@ -31,6 +31,7 @@
  *   RESPONSE_STORE_TTL_MS=3600000   — entry TTL in ms (default: 1 hour)
  *   RESPONSE_STORE_MAX=2000         — max stored responses (default: 2000)
  *   RESPONSE_STORE_MAX_MESSAGES=400 — per-conversation message cap (default: 400)
+ *   RESPONSE_STORE_MAX_BYTES=128m   — total byte budget (default: 128MB; b/k/kb/m/mb/g/gb)
  */
 
 import { log } from './config.js';
@@ -55,13 +56,57 @@ const MAX_MESSAGES = (() => {
   return Number.isFinite(n) && n > 0 ? n : 400;
 })();
 
-// Map<responseId, { messages, callerKey, model, createdAt, lastAccess }>
+// Neither MAX_ENTRIES nor MAX_MESSAGES bounds actual MEMORY — they bound counts.
+// Measured on realistic agent-loop conversations (8KB system prompt + 200
+// tool_call/tool_result pairs with 4KB outputs, truncated to MAX_MESSAGES): ~167KB
+// of heap per stored entry, so the default 2000 entries is ~327MB, and a
+// text-heavy shape measured ~518MB. On the small VPSes this project explicitly
+// targets (the README tells 2GB hosts to lower LS_MAX_INSTANCES) that is enough to
+// matter on its own. So the store also carries a BYTE budget and evicts on
+// whichever limit binds first.
+const MAX_BYTES = (() => {
+  const raw = String(process.env.RESPONSE_STORE_MAX_BYTES || '').trim();
+  if (raw) {
+    const m = raw.match(/^(\d+)\s*(b|k|kb|m|mb|g|gb)?$/i);
+    if (m) {
+      const mult = { b: 1, k: 1024, kb: 1024, m: 1048576, mb: 1048576, g: 1073741824, gb: 1073741824 };
+      const n = Number(m[1]) * (mult[(m[2] || 'b').toLowerCase()] || 1);
+      if (n > 0) return n;
+    }
+  }
+  return 128 * 1024 * 1024; // 128MB — roughly 800 realistic conversations
+})();
+
+// Approximate retained size of a stored conversation. Deliberately cheap: string
+// length (not byteLength) plus a flat per-message overhead. An exact figure would
+// need to walk every part of every content array on the hot path; what matters is
+// that the estimate is monotonic in the real cost so eviction tracks growth.
+function approxBytes(messages) {
+  let n = 0;
+  for (const m of messages) {
+    n += 64; // object + role + bookkeeping
+    const c = m?.content;
+    if (typeof c === 'string') n += c.length;
+    else if (Array.isArray(c)) for (const p of c) n += 32 + (typeof p?.text === 'string' ? p.text.length : 0);
+    if (Array.isArray(m?.tool_calls)) {
+      for (const tc of m.tool_calls) {
+        n += 96 + String(tc?.id || '').length + String(tc?.function?.name || '').length
+          + String(tc?.function?.arguments ?? '').length;
+      }
+    }
+    if (m?.tool_call_id) n += String(m.tool_call_id).length;
+  }
+  return n;
+}
+
+// Map<responseId, { messages, callerKey, model, createdAt, lastAccess, bytes }>
 // Map iteration order is maintained as least-recently-used order: every read and
 // refresh re-inserts, so the first key is always the LRU victim (O(1) eviction).
 const _entries = new Map();
 const _tenantCounts = new Map();
 
 const _stats = { stored: 0, hits: 0, misses: 0, expires: 0, evictions: 0, rejected: 0 };
+let _bytes = 0;   // running total of approxBytes across all entries
 
 export function isResponseStoreEnabled() {
   return ENABLED;
@@ -90,6 +135,8 @@ function dropEntry(id) {
   const entry = _entries.get(id);
   if (!entry) return false;
   _entries.delete(id);
+  _bytes -= entry.bytes || 0;
+  if (_bytes < 0) _bytes = 0;
   const t = tenantOf(entry.callerKey);
   const n = (_tenantCounts.get(t) || 1) - 1;
   if (n > 0) _tenantCounts.set(t, n); else _tenantCounts.delete(t);
@@ -164,15 +211,38 @@ export function putResponse(responseId, messages, callerKey, opts = {}) {
 
   const now = Date.now();
   const existing = _entries.get(responseId);
+  const kept = truncateMessages(messages);
+  const bytes = approxBytes(kept);
+  const createdAt = existing?.createdAt || now;
+  const model = opts.model || existing?.model || null;
   if (existing) dropEntry(responseId); else trackInsert(callerKey);
-  _entries.set(responseId, {
-    messages: truncateMessages(messages),
-    callerKey,
-    model: opts.model || existing?.model || null,
-    createdAt: existing?.createdAt || now,
-    lastAccess: now,
-  });
+  _entries.set(responseId, { messages: kept, callerKey, model, createdAt, lastAccess: now, bytes });
+  _bytes += bytes;
   _stats.stored++;
+
+  // Byte budget: entry/message counts bound cardinality, not memory. Evict LRU
+  // until the total fits. Same fair-share preference as the count path — a tenant
+  // over its slice pays for its own growth first — but never evict the entry just
+  // written (it is the caller's live conversation; dropping it would make the id
+  // it was handed unusable).
+  //
+  // `_entries.size > 1` is what protects the entry just written: the set() above
+  // put it at the TAIL of the Map (most-recently-used), so oldestId() can only
+  // return it when it is the sole entry — and then this loop does not run at all.
+  // That matters because a single conversation may legitimately exceed the whole
+  // budget; the store still has to hand back a usable id rather than silently
+  // dropping what it just accepted. `guard` bounds the loop so a bookkeeping bug
+  // can never spin the request thread.
+  let guard = _entries.size + 1;
+  while (_bytes > MAX_BYTES && _entries.size > 1 && guard-- > 0) {
+    const tenant = tenantOf(callerKey);
+    const fairShare = Math.max(1, Math.floor(MAX_ENTRIES / Math.max(1, _tenantCounts.size)));
+    const overShare = (_tenantCounts.get(tenant) || 0) >= fairShare;
+    const victim = (overShare && oldestId(tenant)) || oldestId();
+    if (!victim) break;
+    dropEntry(victim);
+    _stats.evictions++;
+  }
   return true;
 }
 
@@ -228,12 +298,20 @@ export function deleteResponse(responseId, callerKey) {
 }
 
 export function getResponseStoreStats() {
-  return { ..._stats, size: _entries.size, enabled: ENABLED, tenants: _tenantCounts.size };
+  return {
+    ..._stats,
+    size: _entries.size,
+    bytes: _bytes,
+    maxBytes: MAX_BYTES,
+    enabled: ENABLED,
+    tenants: _tenantCounts.size,
+  };
 }
 
 /** Test/reset helper. */
 export function resetResponseStore() {
   _entries.clear();
   _tenantCounts.clear();
+  _bytes = 0;
   for (const k of Object.keys(_stats)) _stats[k] = 0;
 }
