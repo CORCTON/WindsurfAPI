@@ -330,6 +330,11 @@ class GeminiStreamTranslator {
     // error chunk, or the `[DONE]` sentinel. finish() relies on this to tell a
     // normal completion apart from an abnormally cut-off stream.
     this.sawTerminalSignal = false;
+    // True when the ONLY finish frame seen was one chat.js fabricated to close a
+    // stream that died mid-answer. It suppresses the `[DONE]` shortcut above, since
+    // chat.js emits `[DONE]` on that path too — so both signals must be discounted
+    // together or the guard stays defeated.
+    this.sawSyntheticFinish = false;
   }
 
   // Write one Gemini frame (a GenerateContentResponse) in the active mode.
@@ -409,7 +414,15 @@ class GeminiStreamTranslator {
         for (const tc of delta.tool_calls) this.bufferToolCall(tc);
       }
       if (choice.finish_reason) {
-        this.sawTerminalSignal = true;
+        // A SYNTHETIC terminal chunk is not a terminal signal. chat.js closes a
+        // stream that died AFTER delivering content with a FABRICATED
+        // finish_reason:'stop' (injecting the error as a content delta would
+        // corrupt the assistant message). That satisfied this check and defeated
+        // the truncation guard in finish() — verified: a mid-stream death returned
+        // finishReason:'STOP' with no error frame, telling the client the answer
+        // was complete. Same guard as messages.js and responses.js.
+        if (chunk.__synthetic_finish) this.sawSyntheticFinish = true;
+        else this.sawTerminalSignal = true;
         this.finishReason = mapFinishReason(choice.finish_reason);
       }
     }
@@ -482,7 +495,12 @@ class GeminiStreamTranslator {
       for (const line of lines) {
         if (!line.startsWith('data: ')) continue;
         const payload = line.slice(6);
-        if (payload === '[DONE]') { this.sawTerminalSignal = true; continue; }
+        // `[DONE]` is the OpenAI stream's terminator, but it is NOT proof the turn
+        // completed: chat.js writes it on the truncated path too (right after the
+        // synthetic finish frame). Treating it as authoritative is the SECOND way
+        // the truncation guard was defeated — plugging only the finish-frame check
+        // above leaves this one open, which is why both are needed.
+        if (payload === '[DONE]') { if (!this.sawSyntheticFinish) this.sawTerminalSignal = true; continue; }
         try {
           this.processChunk(JSON.parse(payload));
         } catch (e) {

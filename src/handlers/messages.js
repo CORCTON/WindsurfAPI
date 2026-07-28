@@ -966,6 +966,11 @@ class AnthropicStreamTranslator {
     // frame. finish() uses this to tell a clean completion apart from an
     // abnormal cutoff (network drop / upstream abort / deadline) — see BUG1.
     this.sawTerminalSignal = false;
+    // True when the ONLY finish frame seen was one chat.js fabricated to close a
+    // stream that died mid-answer. It suppresses the `[DONE]` shortcut below, since
+    // chat.js emits `[DONE]` on that path too — so both signals must be discounted
+    // together or BUG1's guard stays defeated.
+    this.sawSyntheticFinish = false;
     this.pendingSseBuf = '';
     // Anthropic streams close a thinking block with a `signature_delta` carrying
     // the encrypted-thinking signature. Our upstream never produces one, so we
@@ -1168,7 +1173,15 @@ class AnthropicStreamTranslator {
         for (const tc of delta.tool_calls) this.emitToolCallDelta(tc);
       }
       if (choice.finish_reason) {
-        this.sawTerminalSignal = true;
+        // A SYNTHETIC terminal chunk is not a terminal signal. chat.js closes a
+        // stream that died AFTER delivering content with a FABRICATED
+        // finish_reason:'stop' (injecting the error as a content delta would
+        // corrupt the assistant message). That satisfied this check and defeated
+        // BUG1's guard below — verified: a mid-stream death reported
+        // stop_reason:'end_turn' with no error frame, telling Claude Code the
+        // truncated answer was complete.
+        if (chunk.__synthetic_finish) this.sawSyntheticFinish = true;
+        else this.sawTerminalSignal = true;
         // B5: shared map adds content_filter→refusal; stop_sequence back-fill
         // happens in finish() once the full emitted text tail is known.
         this.stopReason = mapStopReason(choice.finish_reason);
@@ -1279,10 +1292,12 @@ class AnthropicStreamTranslator {
         if (!line.startsWith('data: ')) continue;
         const payload = line.slice(6);
         if (payload === '[DONE]') {
-          // [DONE] is the OpenAI stream's authoritative terminator. Treat it as
-          // a clean end-of-stream signal (BUG1) even though it carries no
-          // finish_reason of its own.
-          this.sawTerminalSignal = true;
+          // [DONE] is the OpenAI stream's terminator, but it is NOT proof the turn
+          // completed: chat.js writes it on the truncated path too, right after the
+          // synthetic finish frame. Treating it as authoritative is the SECOND way
+          // BUG1's guard was defeated — plugging only the finish-frame check leaves
+          // this one open, which is why both are needed.
+          if (!this.sawSyntheticFinish) this.sawTerminalSignal = true;
           continue;
         }
         try {
