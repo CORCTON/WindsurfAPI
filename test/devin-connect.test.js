@@ -736,6 +736,21 @@ describe('resolveFinishReason — truncation from usage, not from the un-calibra
     assert.equal(resolveFinishReason(2, { completion_tokens: 30 }, 30, env), 'stop');
   });
 
+  it('an UNRELATED override does not disable the inference for other values', () => {
+    // Found by adversarial review of the first cut. The override test used
+    // `Object.hasOwn(map, n)` against the merged table, but the defaults already
+    // cover 0..6 — so pinning any single unrelated value made EVERY value read as
+    // "operator-calibrated" and silently switched the usage inference off wholesale.
+    // An operator pinning 7 has said nothing at all about 2 or 4.
+    const env = { DEVIN_CONNECT_STOP_REASON_MAP: '7=length' };
+    assert.equal(resolveFinishReason(2, { completion_tokens: 64 }, 64, env), 'length');
+    assert.equal(resolveFinishReason(4, { completion_tokens: 64 }, 64, env), 'length');
+    // Same for the BigInt form the wire actually decodes to.
+    assert.equal(resolveFinishReason(2n, { completion_tokens: 64 }, 64, env), 'length');
+    // And the pinned value itself still maps as the operator asked.
+    assert.equal(resolveFinishReason(7, { completion_tokens: 5 }, 4096, env), 'length');
+  });
+
   it('passes a null finish through as null (no finish signal seen)', () => {
     assert.equal(resolveFinishReason(null, { completion_tokens: 30 }, 30), null);
   });

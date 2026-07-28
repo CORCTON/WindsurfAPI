@@ -1734,19 +1734,32 @@ const STOP_REASON_DEFAULT = Object.freeze({
 
 let _stopReasonMapCache = null;
 let _stopReasonMapSrc = null;
-function stopReasonMap(env = process.env) {
+// Which integers the OPERATOR explicitly pinned, as opposed to the ones that
+// merely have a built-in default. resolveFinishReason needs this distinction: the
+// default table already contains 0..6, so testing membership there would treat
+// every value as "operator-calibrated" the moment ANY override is set.
+let _stopReasonOverridesCache = null;
+function stopReasonMapAndOverrides(env = process.env) {
   const raw = String(env.DEVIN_CONNECT_STOP_REASON_MAP || '').trim();
-  if (raw === _stopReasonMapSrc && _stopReasonMapCache) return _stopReasonMapCache;
+  if (raw === _stopReasonMapSrc && _stopReasonMapCache) {
+    return { map: _stopReasonMapCache, overrides: _stopReasonOverridesCache };
+  }
   _stopReasonMapSrc = raw;
   const map = { ...STOP_REASON_DEFAULT };
+  const overrides = new Set();
   const allowed = new Set(['stop', 'length', 'tool_calls', 'content_filter']);
   for (const pair of raw.split(',')) {
     const [k, v] = pair.split('=').map((s) => s.trim());
     const n = Number.parseInt(k, 10);
-    if (Number.isInteger(n) && n >= 0 && allowed.has(v)) map[n] = v;
+    if (Number.isInteger(n) && n >= 0 && allowed.has(v)) { map[n] = v; overrides.add(n); }
   }
   _stopReasonMapCache = map;
-  return map;
+  _stopReasonOverridesCache = overrides;
+  return { map, overrides };
+}
+
+function stopReasonMap(env = process.env) {
+  return stopReasonMapAndOverrides(env).map;
 }
 
 /**
@@ -1819,10 +1832,14 @@ export function mapFinishReason(finish, env = process.env) {
 export function resolveFinishReason(finish, usage, maxTokens, env = process.env) {
   const mapped = mapFinishReason(finish, env);
   // A calibrated override for THIS value takes precedence over the inference.
-  const overridden = finish != null
-    && Object.hasOwn(stopReasonMap(env), typeof finish === 'bigint' ? Number(finish) : finish)
-    && String(env.DEVIN_CONNECT_STOP_REASON_MAP || '').trim() !== '';
-  if (overridden) return mapped;
+  //
+  // It must consult the keys the operator actually PINNED, not the built-in table:
+  // the defaults already cover 0..6, so an `Object.hasOwn(map, n)` test made any
+  // single unrelated override (e.g. "7=length") read as "value 2 is calibrated" and
+  // silently disabled the usage-based truncation inference for every real turn.
+  const { overrides } = stopReasonMapAndOverrides(env);
+  const key = typeof finish === 'bigint' ? Number(finish) : finish;
+  if (finish != null && overrides.has(key)) return mapped;
   // Only a clean stop can be upgraded to 'length'. tool_calls / content_filter are
   // stronger signals about what the turn actually did and must not be overwritten.
   if (mapped !== 'stop') return mapped;
