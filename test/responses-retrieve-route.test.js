@@ -139,26 +139,59 @@ describe('GET /v1/responses/{id} routing', () => {
   });
 
   it('retrieves a response the same caller stored, end to end', async () => {
+    // CORRECTED. This case previously asserted the OPPOSITE — that a bodyless GET
+    // must 404 — and called that "the documented contract". It was not a contract,
+    // it was the bug: it made both endpoints dead on arrival for EVERY client shape.
+    // A client that can chain sends user / prompt_cache_key / safety_identifier, so
+    // its POST callerKey carries `:user:<hash>` while a bodyless GET derived
+    // `:client:<ip+ua>` — always a miss. A client sending none of them derived a
+    // matching key but failed hasPerUserScope — also a miss. Freezing that into an
+    // assertion is how the endpoint shipped unusable and stayed green.
     const port = await boot('roundtrip');
-    // Seed under the callerKey a keyed request with `user` derives. Deriving it here
-    // the way the router does keeps the test honest about the scoping contract.
     const { callerKeyFromRequest } = await import('../src/caller-key.js');
+    // Derive exactly what the ROUTER will derive for the GET below: same request
+    // shape, same identity vocabulary, read through the same extraction path.
     const callerKey = callerKeyFromRequest(
-      { headers: { 'user-agent': 'probe' }, socket: { remoteAddress: '127.0.0.1' } },
-      API_KEY, { user: 'alice' },
+      { headers: {}, socket: { remoteAddress: '127.0.0.1' } },
+      API_KEY, { prompt_cache_key: 'conv-1' },
     );
     store.putResponse('resp_routed', [
       { role: 'user', content: 'ping' },
       { role: 'assistant', content: 'pong' },
     ], callerKey, { model: 'claude-sonnet-4.6' });
 
-    // The GET carries no body, so it needs the same `user` signal in the callerKey.
-    // Without a body the router derives the ip+ua bucket instead, which is NOT
-    // trusted by default — so this must 404, and that is the documented contract.
-    const res = await request(port, '/v1/responses/resp_routed', 'GET', AUTH);
-    assert.equal(res.statusCode, 404,
-      'a bodyless GET derives the untrusted :client: bucket, so it cannot read a '
-      + ':user:-scoped response — the scoping gate holds even at the route layer');
+    const res = await request(port, '/v1/responses/resp_routed?prompt_cache_key=conv-1', 'GET', AUTH);
+    assert.equal(res.statusCode, 200,
+      'a caller must be able to retrieve its OWN stored response — otherwise the '
+      + 'endpoint is unusable by every client that can chain');
+    assert.equal(res.body.object, 'response');
+    assert.equal(res.body.output_text, 'pong');
+  });
+
+  it('a foreign identity param still cannot read it', async () => {
+    // The flip side: making the endpoint usable must not weaken the scope gate.
+    const port = await boot('foreign');
+    const { callerKeyFromRequest } = await import('../src/caller-key.js');
+    const mine = callerKeyFromRequest(
+      { headers: {}, socket: { remoteAddress: '127.0.0.1' } },
+      API_KEY, { prompt_cache_key: 'conv-mine' },
+    );
+    store.putResponse('resp_mine', [
+      { role: 'user', content: 'secret question' },
+      { role: 'assistant', content: 'secret answer' },
+    ], mine, { model: 'm' });
+
+    const res = await request(port, '/v1/responses/resp_mine?prompt_cache_key=conv-theirs', 'GET', AUTH);
+    assert.equal(res.statusCode, 404, 'another caller\'s scope must not resolve');
+    assert.equal(/secret answer/.test(res.raw), false, 'and must leak no content');
+  });
+
+  it('still 404s with no identity param at all', async () => {
+    // Unchanged behaviour for a caller that supplies nothing: the guessed
+    // `:client:` bucket is not a trustworthy scope in multi-tenant mode.
+    const port = await boot('noparam');
+    const res = await request(port, '/v1/responses/resp_whatever', 'GET', AUTH);
+    assert.equal(res.statusCode, 404);
   });
 });
 

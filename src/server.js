@@ -685,10 +685,32 @@ async function route(req, res) {
     const responseId = path.slice('/v1/responses/'.length);
     if (/^[A-Za-z0-9_-]{1,128}$/.test(responseId)) {
       const token = extractToken(req);
-      // No body on GET/DELETE, so the callerKey comes from the API key + the
-      // ip/ua fingerprint — exactly what a chained POST with no `user` derives, so
-      // a client that can chain can also retrieve.
-      const callerKey = callerKeyFromRequest(req, token, null);
+      // Identity for a BODYLESS request.
+      //
+      // The original comment here claimed the ip/ua fingerprint was "exactly what a
+      // chained POST with no `user` derives, so a client that can chain can also
+      // retrieve". That was false, and it made both endpoints dead on arrival: any
+      // client that CAN chain sends `user` / `prompt_cache_key` /
+      // `safety_identifier`, so its POST callerKey carries a `:user:<hash>` segment
+      // while a bodyless GET derives `:client:<ip+ua>` — a different key, so the
+      // lookup always 404'd. And a client that sends none of them derives a
+      // matching key but fails hasPerUserScope, so it 404'd too. Measured: every
+      // client shape 404'd, with the record provably present under the POST
+      // identity. Not even WINDSURFAPI_SINGLE_TENANT_CACHE=1 helped — mismatched
+      // identity is the prior problem.
+      //
+      // The Responses retrieval API has no request body, so the identity signal
+      // rides the query string (`?user=` / `?prompt_cache_key=` /
+      // `?safety_identifier=`), which is the same vocabulary the POST body uses and
+      // is read through the SAME extraction path — so a caller reproduces its own
+      // scope exactly. Absent those params the behaviour is unchanged from before.
+      const q = new URL(req.url, 'http://localhost').searchParams;
+      const idParams = {};
+      for (const k of ['user', 'prompt_cache_key', 'safety_identifier']) {
+        const v = q.get(k);
+        if (v) idParams[k] = v;
+      }
+      const callerKey = callerKeyFromRequest(req, token, Object.keys(idParams).length ? idParams : null);
       const result = (method === 'GET' ? handleGetResponse : handleDeleteResponse)(
         responseId, { context: { callerKey } },
       );
