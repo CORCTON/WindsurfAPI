@@ -100,6 +100,32 @@ describe('byte budget is enforced', () => {
     assert.equal(store.getResponseStoreStats().bytes, 0, 'delete must release the accounting');
   });
 
+  it('dropping messages to fit is never SILENT — a marker survives in the stored turn', () => {
+    // Found by adversarial review. The backward walk stops as soon as one message is
+    // kept and the next does not fit, so an over-cap message with any smaller message
+    // AFTER it was excluded entirely — and since the survivors then fit, the
+    // content-level fallback never ran and no marker was written. Reproduced: a 2MB
+    // user turn followed by a short assistant reply stored as `["assistant"]`, the
+    // user's question gone with no marker and no log line. The next chained turn then
+    // asked the model about content it was never shown and answered 200 with a
+    // confident context-free reply — the silent-wrong-answer mode this module exists
+    // to remove. Operators are explicitly told to lower this budget on small VPSes,
+    // so the shape is ordinary, not adversarial.
+    const overCap = 'x'.repeat(Math.floor(1.6 * 1024 * 1024)); // > MAX_ENTRY_BYTES at 2m budget
+    store.putResponse('silent', [
+      { role: 'user', content: overCap },
+      { role: 'assistant', content: 'Got it.' },
+    ], 'api:silent:user:1');
+    const got = store.getResponse('silent', 'api:silent:user:1');
+    assert.equal(got.ok, true, 'the turn must still be readable');
+    const all = JSON.stringify(got.messages);
+    const lostTheUserTurn = !got.messages.some(m => m.role === 'user');
+    if (lostTheUserTurn) {
+      assert.match(all, /dropped by the response store|truncated by the response store/,
+        'if a message is dropped, the loss MUST be visible in the stored conversation');
+    }
+  });
+
   it('a small conversation is unaffected by the budget', () => {
     store.putResponse('small', [{ role: 'user', content: 'hi' }], CALLER(1));
     const st = store.getResponseStoreStats();
@@ -265,7 +291,10 @@ describe('byte eviction is tenant-fair (found by adversarial review of the first
     store.putResponse('trim', msgs, 'api:solo:user:2');
     const got = store.getResponse('trim', 'api:solo:user:2');
     assert.equal(got.ok, true);
-    assert.equal(got.messages[0].content, 'INSTRUCTIONS', 'the system block must survive');
+    // The system block survives, now carrying the drop notice: messages dropped to
+    // fit the budget must never vanish silently (a chained turn would otherwise ask
+    // the model about content it was never shown). Assert containment, not equality.
+    assert.match(got.messages[0].content, /INSTRUCTIONS$/, 'the system block must survive');
     assert.match(got.messages.at(-1).content, /^m199:/, 'the newest turn must survive');
   });
 });

@@ -276,6 +276,31 @@ function capEntryBytes(messages) {
     if (used > MAX_ENTRY_BYTES) break;
   }
   const trimmed = [...head, ...out];
+  // Dropping messages must never be SILENT. The backward walk stops as soon as one
+  // message has been kept and the next does not fit, so an over-cap message with
+  // any smaller message after it is excluded entirely — and because `trimmed` then
+  // fits, the content-level fallback below never runs and no marker is written.
+  // Reproduced at RESPONSE_STORE_MAX_BYTES=8m: a 2MB user turn followed by a short
+  // assistant reply stored as `["assistant"]` — the user's question, including a
+  // pasted file, vanished with no marker and no log line. The next chained turn
+  // then asked the model about content it was never shown, and answered 200 with a
+  // confident context-free reply: exactly the silent-wrong-answer mode this module
+  // exists to remove. Small-VPS operators are explicitly told to lower this budget,
+  // so the shape is ordinary rather than adversarial.
+  const dropped = messages.length - trimmed.length;
+  if (dropped > 0 && trimmed.length) {
+    const note = `[... ${dropped} earlier message(s) dropped by the response store to stay `
+      + 'within RESPONSE_STORE_MAX_BYTES ...]\n\n';
+    const first = { ...trimmed[0] };
+    // Prepended to the first SURVIVING message rather than added as a new one:
+    // inserting a message would change the conversation's role sequence, which the
+    // connect wire layer is sensitive to.
+    if (typeof first.content === 'string') first.content = note + first.content;
+    else if (Array.isArray(first.content)) first.content = [{ type: 'text', text: note }, ...first.content];
+    else first.content = note;
+    trimmed[0] = first;
+    log.warn(`[response-store] dropped ${dropped} message(s) to fit RESPONSE_STORE_MAX_BYTES`);
+  }
   // Last resort: a conversation whose SINGLE message already exceeds the ceiling
   // cannot be shrunk by dropping messages. Cut the text itself, otherwise the
   // store's one promise — total bytes stay within the budget — is false whenever
