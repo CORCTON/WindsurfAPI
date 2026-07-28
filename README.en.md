@@ -21,7 +21,7 @@
 Turns [Windsurf](https://windsurf.com) (formerly Codeium, now Devin Desktop)'s AI models into **three standard, compatible APIs**:
 
 - `POST /v1/chat/completions` — **OpenAI Compatible** for any OpenAI SDK.
-- `POST /v1/responses` — **OpenAI Responses Compatible** (plus `GET` / `DELETE /v1/responses/{id}` to retrieve or drop a stored response).
+- `POST /v1/responses` — **OpenAI Responses Compatible** (plus `GET` / `DELETE /v1/responses/{id}` to retrieve or drop a stored response — these need an identity param, see below).
 - `POST /v1/messages` — **Anthropic Compatible** for direct connection with Claude Code / Cline / Cursor.
 - `POST /v1beta/models/*` — **Gemini Compatible** for direct Gemini SDK use.
 
@@ -310,7 +310,7 @@ In your client's settings for **Custom OpenAI Compatible**:
 | `STICKY_SESSION_ENABLED` | `0` | Set to `1` to pin each conversation to one upstream account. Strongly recommended on DEVIN_CONNECT: upstream prompt caches are per-account and a cache write costs ~10x a read, so without pinning every turn rotates accounts and re-writes the whole context. Requires a per-user signal on the caller (`user` / `safety_identifier` / `prompt_cache_key` / Claude Code `metadata.user_id`); single-user self-hosts without one set `WINDSURFAPI_SINGLE_TENANT_CACHE=1`. Observe via the `sticky` field of `/dashboard/api/connect-metrics`. |
 | `STICKY_SESSION_TTL_MS` | `1800000` | Binding TTL (30 min); active conversations auto-renew each turn. |
 | `STICKY_SESSION_MAX` | `10000` | Binding table cap, LRU-evicted. |
-| `RESPONSE_STORE_ENABLED` | `1` | Responses API server-side conversation state. With it on, `previous_response_id` continues a conversation (the client sends only the new turn); set `0` and such requests get a 400, as do `GET`/`DELETE /v1/responses/{id}`. Scoped by callerKey — tenants cannot read each other's conversations. Retrieval and deletion use the same scope as chaining: another caller's id always 404s, without revealing whether it exists. |
+| `RESPONSE_STORE_ENABLED` | `1` | Responses API server-side conversation state. With it on, `previous_response_id` continues a conversation (the client sends only the new turn); set `0` and such requests get a 400, as do `GET`/`DELETE /v1/responses/{id}`. Scoped by callerKey — tenants cannot read each other's conversations. Retrieval and deletion use the same scope as chaining: another caller's id always 404s, without revealing whether it exists. **Retrieval/deletion carry no request body, so the identity signal rides the query string**: `GET /v1/responses/{id}?prompt_cache_key=<the value you sent on POST>` (`user` / `safety_identifier` work too) — it must match the value used when the response was created, otherwise 404. |
 | `RESPONSE_STORE_TTL_MS` | `3600000` | Conversation retention (1 hour), renewed on each turn. |
 | `RESPONSE_STORE_MAX` | `2000` | Max stored conversations, LRU-evicted with a per-tenant fair share. |
 | `RESPONSE_STORE_MAX_BYTES` | `128m` | Total byte budget for stored conversations (b/k/kb/m/mb/g/gb). The count caps bound cardinality, not memory — a realistic agent conversation measures ~167KB, so 2000 entries is ~327MB. Eviction triggers on whichever limit binds first. |
