@@ -128,10 +128,59 @@ describe('Responses stream: turns that DID terminate are unchanged', () => {
       'content_filter');
   });
 
-  it('a real truncated turn is also kept out of the store', async () => {
+  it('a LEGITIMATELY truncated turn stays chainable — same as the non-streaming path', async () => {
+    // Corrected from an earlier assertion that required the opposite. A turn ending
+    // with a real finish_reason of 'length' IS a complete, client-delivered turn:
+    // the model stopped for a reason the client can see and act on, and OpenAI
+    // permits chaining from it. The non-streaming path always committed those, so
+    // excluding them here split the two paths' behaviour for the identical
+    // finish_reason — this repo's recurring "fix covered only some paths" trap.
+    // Only an ABORTED turn (no real terminal chunk at all) is withheld.
     const { responseId } = await runStream(streamThat(['cut off'], 'length'));
+    assert.equal(store.getResponse(responseId, CALLER).ok, true,
+      'a length-truncated reply is still a complete turn the client received');
+  });
+});
+
+describe('a SYNTHETIC terminal chunk must not satisfy the truncation guard', () => {
+  // The blocker this file originally missed. When a Cascade stream dies AFTER
+  // delivering content, chat.js closes it with a FABRICATED finish_reason:'stop'
+  // (injecting an error as a content delta would corrupt the assistant message).
+  // That satisfied "did a terminal chunk arrive", so the guard was defeated on the
+  // DEFAULT backend: a half answer closed as response.completed and entered the
+  // store as the next turn's context. The connect path was covered only because it
+  // raises STREAM_TRUNCATED instead. Live-reproduced on three real failure shapes
+  // (HTTP/2 stream cancel, provider deadline, ECONNRESET).
+  const dyingStream = (synthetic) => async () => ({
+    status: 200, stream: true,
+    handler: async (res) => {
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: 'The capital of France is Par' } }] })}\n\n`);
+      res.write(`data: ${JSON.stringify({
+        choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+        ...(synthetic ? { __synthetic_finish: true } : {}),
+      })}\n\n`);
+      res.write('data: [DONE]\n\n');
+      res.end();
+    },
+  });
+
+  it('closes as incomplete, not completed', async () => {
+    const { out } = await runStream(dyingStream(true));
+    assert.equal(lastEvent(out), 'response.incomplete',
+      'a fabricated close must not read as a real completion');
+  });
+
+  it('keeps the half answer out of the response store', async () => {
+    const { responseId } = await runStream(dyingStream(true));
     assert.equal(store.getResponse(responseId, CALLER).ok, false,
-      'a length-truncated reply is not a complete turn either');
+      'the half answer must not become the next turn\'s context');
+  });
+
+  it('a REAL terminal chunk with the same finish_reason still completes and commits', async () => {
+    // The other half of the contract: the marker must be the only difference.
+    const { out, responseId } = await runStream(dyingStream(false));
+    assert.equal(lastEvent(out), 'response.completed');
+    assert.equal(store.getResponse(responseId, CALLER).ok, true);
   });
 });
 

@@ -673,9 +673,17 @@ class ResponsesStreamTranslator {
       // stream always closed as 'completed'. An agent then accepted a half answer as
       // a finished one — the non-stream path on the identical request reported
       // incomplete/max_output_tokens. Live-reproduced.
+      // A SYNTHETIC terminal chunk does not count as one. When a Cascade stream
+      // dies after already delivering content, chat.js closes it with a
+      // fabricated finish_reason:'stop' (injecting an error into the content
+      // would corrupt the assistant message). That satisfied the check below, so
+      // the truncation guard was defeated on the DEFAULT backend: a half answer
+      // closed as `response.completed` and entered the store as the next turn's
+      // context. Live-reproduced on three real failure shapes (HTTP/2 stream
+      // cancel, provider deadline, ECONNRESET).
       if (choice.finish_reason) {
         this.streamFinishReason = choice.finish_reason;
-        this.sawTerminalChunk = true;
+        if (!chunk.__synthetic_finish) this.sawTerminalChunk = true;
       }
       const delta = choice.delta || {};
       if (delta.reasoning_content) this.emitReasoningDelta(delta.reasoning_content);
@@ -960,6 +968,11 @@ class ResponsesStreamTranslator {
     const truncated = reason === 'length' || reason === 'content_filter' || aborted;
     const status = truncated ? 'incomplete' : 'completed';
     this.truncated = truncated;
+    // Exposed SEPARATELY from `truncated` because the store gate needs exactly
+    // this narrower question: was the turn cut off without the upstream ever
+    // saying so? A legitimate 'length' / 'content_filter' turn is `truncated` but
+    // NOT `aborted`, and it stays chainable — matching the non-streaming path.
+    this.aborted = aborted;
     this.send(truncated ? 'response.incomplete' : 'response.completed', {
       response: {
         ...this.responseBase(status, this.outputItems.filter(Boolean)),
@@ -1408,10 +1421,21 @@ export async function handleResponses(body, deps = {}) {
         // errored) would poison the next request's context with a truncated
         // assistant reply the client never received.
         //
-        // `!translator.truncated` covers the case `failed` cannot see: a stream that
-        // ended with no terminal chunk at all raises no error, so it reached here
-        // looking clean and its half answer was stored as the next turn's context.
-        if (translator.finished && !translator.failed && !translator.truncated) {
+        // The gate is `aborted`, NOT `truncated`. Those are different things and
+        // conflating them broke chaining for legitimate truncation: a turn that
+        // ended with a real finish_reason of 'length' / 'content_filter' IS a
+        // complete, client-delivered turn — the model stopped for a reason the
+        // client can see and act on, and OpenAI lets it be chained from. The
+        // non-streaming path always committed those, so gating the streaming path
+        // on `truncated` split the two paths' behaviour for the identical
+        // finish_reason (verified: streaming length → not chainable, non-streaming
+        // length → chainable). That is this repo's recurring "fix covered only some
+        // paths" trap.
+        //
+        // `aborted` is the case `failed` cannot see: a stream that ended with no
+        // (real) terminal chunk at all raises no error, so it reached here looking
+        // clean and its half answer was stored as the next turn's context.
+        if (translator.finished && !translator.failed && !translator.aborted) {
           commit({
             role: 'assistant',
             content: translator.text || '',

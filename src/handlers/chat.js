@@ -508,7 +508,27 @@ export function normalizeOpenAIErrorBody(body, status) {
   return body;
 }
 
-export function finishPartialStreamAfterError({ id, created, model, send, res }) {
+/**
+ * Close a stream that already delivered content and THEN failed.
+ *
+ * The `finish_reason:'stop'` here is SYNTHETIC — the upstream never sent one, it
+ * died mid-answer. Injecting "[Error: ...]" as a content delta instead would
+ * corrupt the assistant message (clients render it verbatim as model output), so
+ * a clean close is the right wire shape for a direct OpenAI client.
+ *
+ * But the internal translators must be able to tell this apart from a real
+ * completion. The /v1/responses translator keys its truncation detection on
+ * "did a terminal chunk arrive", and a synthetic terminal chunk satisfied that
+ * check — so a half answer closed as `response.completed` AND entered the
+ * response store as the next turn's context, on the DEFAULT (Cascade) backend.
+ * The connect path was covered because it raises STREAM_TRUNCATED instead; this
+ * path had no such signal.
+ *
+ * `__synthetic_finish` carries that signal. It is emitted ONLY on the internal
+ * translator routes (messages / gemini / responses), so the wire a direct
+ * `/v1/chat/completions` client sees is byte-identical to before.
+ */
+export function finishPartialStreamAfterError({ id, created, model, send, res, internalRoute = false }) {
   if (typeof send === 'function') {
     send({
       id,
@@ -516,6 +536,7 @@ export function finishPartialStreamAfterError({ id, created, model, send, res })
       created,
       model,
       choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+      ...(internalRoute ? { __synthetic_finish: true } : {}),
     });
   }
   if (res && !res.writableEnded) res.write('data: [DONE]\n\n');
@@ -5699,7 +5720,7 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             // output). Close cleanly with a plain stop — the caller saw
             // whatever partial content we produced. Error details only
             // go to the server log.
-            finishPartialStreamAfterError({ id, created, model, send, res });
+            finishPartialStreamAfterError({ id, created, model, send, res, internalRoute: !isOpenAIClient });
             log.warn(`Stream: partial response delivered then failed (${errMsg})`);
           } else {
             const errType = allInternal
