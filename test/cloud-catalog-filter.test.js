@@ -8,6 +8,9 @@ import {
   addAccountByKey,
   configureBindHost,
   getAvailableModelsForAccount,
+  getDroughtSummary,
+  isDroughtMode,
+  isModelBlockedByDrought,
   isModelAllowedForAccount,
   removeAccount,
   setAccountStatus,
@@ -20,6 +23,7 @@ import {
   MODEL_TIER_ACCESS,
   filterModelKeysByCloudCatalog,
   listModels,
+  mergeCloudCatalogSnapshot,
   mergeCloudModels,
   setActiveCloudCatalogAccounts,
 } from '../src/models.js';
@@ -56,14 +60,32 @@ function localReq(path) {
 
 function syncAllowed(keys = [ALLOWED_KEY], accountId = ACCOUNT_A) {
   setActiveCloudCatalogAccounts([accountId]);
-  mergeCloudModels(
-    keys.map((key) => ({ modelUid: MODELS[key].modelUid })),
-    { accountId },
-  );
+  const configs = keys.map((key) => ({ modelUid: MODELS[key].modelUid }));
+  confirmCloudCatalog(configs, accountId);
 }
 
 function cascadeKeys(keys) {
   return keys.filter((key) => MODELS[key]?.backend !== 'special_agent');
+}
+
+function fullStaticCloudConfigs() {
+  const seen = new Set();
+  const configs = [];
+  for (const model of Object.values(MODELS)) {
+    if (model?.deprecated || model?.backend === 'special_agent' || typeof model?.modelUid !== 'string') continue;
+    const normalized = model.modelUid.trim().toLowerCase();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    configs.push({ modelUid: model.modelUid });
+  }
+  return configs;
+}
+
+function confirmCloudCatalog(configs, accountId) {
+  // Direct model-layer calls represent two separate sync rounds. Production
+  // schedules the second round after the confirmation delay.
+  mergeCloudModels(configs, { accountId });
+  mergeCloudModels(configs, { accountId });
 }
 
 beforeEach(() => {
@@ -190,10 +212,8 @@ describe('upstream account cloud catalog filtering', () => {
 
   it('matches cloud model UIDs case-insensitively', () => {
     setActiveCloudCatalogAccounts([ACCOUNT_A]);
-    mergeCloudModels(
-      [{ modelUid: MODELS[ALLOWED_KEY].modelUid.toLowerCase() }],
-      { accountId: ACCOUNT_A },
-    );
+    const configs = [{ modelUid: MODELS[ALLOWED_KEY].modelUid.toLowerCase() }];
+    confirmCloudCatalog(configs, ACCOUNT_A);
 
     assert.deepEqual(
       cascadeKeys(handleModels({}).data.map((model) => model._windsurf_id)),
@@ -214,11 +234,12 @@ describe('upstream account cloud catalog filtering', () => {
     const uid = 'MODEL_CLOUD_CATALOG_TEST';
     const key = 'model-cloud-catalog-test';
     setActiveCloudCatalogAccounts([ACCOUNT_A]);
-    mergeCloudModels([{
+    const configs = [{
       modelUid: uid,
       provider: 'MODEL_PROVIDER_ANTHROPIC',
       creditMultiplier: 2,
-    }], { accountId: ACCOUNT_A });
+    }];
+    confirmCloudCatalog(configs, ACCOUNT_A);
 
     const models = handleModels({}).data;
     assert.deepEqual(cascadeKeys(models.map((model) => model._windsurf_id)), [key]);
@@ -227,14 +248,10 @@ describe('upstream account cloud catalog filtering', () => {
 
   it('unions model listings while enforcing each account catalog during routing', () => {
     setActiveCloudCatalogAccounts([ACCOUNT_A, ACCOUNT_B]);
-    mergeCloudModels(
-      [{ modelUid: MODELS[ALLOWED_KEY].modelUid }],
-      { accountId: ACCOUNT_A },
-    );
-    mergeCloudModels(
-      [{ modelUid: MODELS[SECOND_ALLOWED_KEY].modelUid }],
-      { accountId: ACCOUNT_B },
-    );
+    const configsA = [{ modelUid: MODELS[ALLOWED_KEY].modelUid }];
+    const configsB = [{ modelUid: MODELS[SECOND_ALLOWED_KEY].modelUid }];
+    confirmCloudCatalog(configsA, ACCOUNT_A);
+    confirmCloudCatalog(configsB, ACCOUNT_B);
 
     assert.deepEqual(
       cascadeKeys(handleModels({}).data.map((model) => model._windsurf_id)).sort(),
@@ -259,10 +276,8 @@ describe('upstream account cloud catalog filtering', () => {
   it('fails global listings open until every active account has a usable catalog', () => {
     const baseline = handleModels({}).data.map((model) => model.id);
     setActiveCloudCatalogAccounts([ACCOUNT_A, ACCOUNT_B]);
-    mergeCloudModels(
-      [{ modelUid: MODELS[ALLOWED_KEY].modelUid }],
-      { accountId: ACCOUNT_A },
-    );
+    const configs = [{ modelUid: MODELS[ALLOWED_KEY].modelUid }];
+    mergeCloudModels(configs, { accountId: ACCOUNT_A });
 
     assert.deepEqual(handleModels({}).data.map((model) => model.id), baseline);
   });
@@ -272,8 +287,13 @@ describe('upstream account cloud catalog filtering', () => {
     const apiKeyA = `catalog-sync-${runId}-a`;
     const apiKeyB = `catalog-sync-${runId}-b`;
     const requestedKeys = [];
+    const scheduledRetries = [];
     __setModelCatalogDeps({
       disableConnectSync: true,
+      scheduleCatalogRetry: (retry) => {
+        scheduledRetries.push(retry);
+        return () => {};
+      },
       getCascadeModelConfigs: async (apiKey) => {
         requestedKeys.push(apiKey);
         const modelKey = apiKey === apiKeyA ? ALLOWED_KEY : SECOND_ALLOWED_KEY;
@@ -289,8 +309,11 @@ describe('upstream account cloud catalog filtering', () => {
     accountB.tier = 'pro';
     accountB.tierManual = true;
     await __waitForModelCatalogSync();
+    assert.equal(scheduledRetries.length, 2);
+    for (const retry of scheduledRetries.splice(0)) retry();
+    await __waitForModelCatalogSync();
 
-    assert.deepEqual(requestedKeys.sort(), [apiKeyA, apiKeyB].sort());
+    assert.deepEqual(new Set(requestedKeys), new Set([apiKeyA, apiKeyB]));
     assert.equal(isModelAllowedForAccount(accountA, ALLOWED_KEY), true);
     assert.equal(isModelAllowedForAccount(accountA, SECOND_ALLOWED_KEY), false);
     assert.equal(isModelAllowedForAccount(accountB, ALLOWED_KEY), false);
@@ -304,6 +327,158 @@ describe('upstream account cloud catalog filtering', () => {
     );
   });
 
+  it('confirms an anomalously small first snapshot only after a delayed sync round', async () => {
+    const runId = Date.now().toString(36);
+    const apiKey = `catalog-partial-${runId}`;
+    let requests = 0;
+    let scheduledRetry;
+    let retryDelay;
+    const partial = [{ modelUid: MODELS[SECOND_ALLOWED_KEY].modelUid }];
+    __setModelCatalogDeps({
+      disableConnectSync: true,
+      scheduleCatalogRetry: (retry, delay) => {
+        scheduledRetry = retry;
+        retryDelay = delay;
+        return () => {};
+      },
+      getCascadeModelConfigs: async () => {
+        requests += 1;
+        return { configs: partial };
+      },
+    });
+
+    const account = addAccountByKey(apiKey, 'catalog-partial');
+    createdAccountIds.push(account.id);
+    account.tier = 'pro';
+    account.tierManual = true;
+    await __waitForModelCatalogSync();
+
+    assert.equal(requests, 1, 'one sync round must issue only one catalog request');
+    assert.equal(retryDelay, 30_000);
+    assert.equal(typeof scheduledRetry, 'function');
+    assert.equal(isModelAllowedForAccount(account, ALLOWED_KEY), true);
+
+    trySyncModelCatalog();
+    await __waitForModelCatalogSync();
+    assert.equal(
+      requests,
+      1,
+      'ordinary sync triggers must not bypass the delayed confirmation round',
+    );
+
+    scheduledRetry();
+    await __waitForModelCatalogSync();
+
+    assert.equal(requests, 2);
+    assert.equal(isModelAllowedForAccount(account, ALLOWED_KEY), false);
+    assert.equal(isModelAllowedForAccount(account, SECOND_ALLOWED_KEY), true);
+  });
+
+  it('does not keep polling when the delayed confirmation returns a different candidate', async () => {
+    const runId = Date.now().toString(36);
+    const apiKey = `catalog-changing-${runId}`;
+    const scheduledRetries = [];
+    let requests = 0;
+    __setModelCatalogDeps({
+      disableConnectSync: true,
+      scheduleCatalogRetry: (retry) => {
+        scheduledRetries.push(retry);
+        return () => {};
+      },
+      getCascadeModelConfigs: async () => {
+        requests += 1;
+        const modelKey = requests === 1 ? ALLOWED_KEY : SECOND_ALLOWED_KEY;
+        return { configs: [{ modelUid: MODELS[modelKey].modelUid }] };
+      },
+    });
+
+    const account = addAccountByKey(apiKey, 'catalog-changing');
+    createdAccountIds.push(account.id);
+    account.tier = 'pro';
+    account.tierManual = true;
+    await __waitForModelCatalogSync();
+
+    assert.equal(scheduledRetries.length, 1);
+    scheduledRetries.shift()();
+    await __waitForModelCatalogSync();
+
+    assert.equal(requests, 2);
+    assert.equal(scheduledRetries.length, 0);
+    assert.equal(isModelAllowedForAccount(account, ALLOWED_KEY), true);
+    assert.equal(isModelAllowedForAccount(account, SECOND_ALLOWED_KEY), true);
+
+    setAccountStatus(account.id, 'disabled');
+    setAccountStatus(account.id, 'active');
+    await __waitForModelCatalogSync();
+
+    assert.equal(requests, 3);
+    assert.equal(
+      scheduledRetries.length,
+      1,
+      'reactivation must start a new delayed confirmation after stale pending state is cleared',
+    );
+    assert.equal(isModelAllowedForAccount(account, ALLOWED_KEY), true);
+    assert.equal(isModelAllowedForAccount(account, SECOND_ALLOWED_KEY), true);
+  });
+
+  it('keeps the last accepted snapshot until a large shrink is confirmed', () => {
+    setActiveCloudCatalogAccounts([ACCOUNT_A]);
+    mergeCloudModels(fullStaticCloudConfigs(), { accountId: ACCOUNT_A });
+
+    const partial = [{ modelUid: MODELS[SECOND_ALLOWED_KEY].modelUid }];
+    // The first shrink is quarantined and preserves the last-known-good catalog.
+    const firstAdded = mergeCloudModels(partial, { accountId: ACCOUNT_A });
+
+    assert.equal(firstAdded, 0);
+    assert.ok(
+      handleModels({}).data.some((model) => model._windsurf_id === ALLOWED_KEY),
+      'an unconfirmed shrink must preserve the last accepted snapshot',
+    );
+
+    // A matching snapshot from a later sync round confirms the smaller catalog.
+    mergeCloudModels(partial, { accountId: ACCOUNT_A });
+    assert.deepEqual(
+      cascadeKeys(handleModels({}).data.map((model) => model._windsurf_id)),
+      [SECOND_ALLOWED_KEY],
+    );
+  });
+
+  it('accepts a confirmed small allowlist and fails drought restriction open when no free model remains', async () => {
+    const runId = Date.now().toString(36);
+    const apiKey = `catalog-stable-small-${runId}`;
+    let requests = 0;
+    let scheduledRetry;
+    __setModelCatalogDeps({
+      disableConnectSync: true,
+      scheduleCatalogRetry: (retry) => {
+        scheduledRetry = retry;
+        return () => {};
+      },
+      getCascadeModelConfigs: async () => {
+        requests += 1;
+        return { configs: [{ modelUid: MODELS[SECOND_ALLOWED_KEY].modelUid }] };
+      },
+    });
+
+    const account = addAccountByKey(apiKey, 'catalog-stable-small');
+    createdAccountIds.push(account.id);
+    account.tier = 'pro';
+    account.tierManual = true;
+    account.credits = { weeklyPercent: 0, dailyPercent: 0 };
+    await __waitForModelCatalogSync();
+    scheduledRetry();
+    await __waitForModelCatalogSync();
+
+    assert.equal(requests, 2);
+    assert.equal(isModelAllowedForAccount(account, SECOND_ALLOWED_KEY), true);
+    assert.equal(isModelAllowedForAccount(account, ALLOWED_KEY), false);
+    assert.equal(isDroughtMode(), true);
+    assert.equal(isModelBlockedByDrought(SECOND_ALLOWED_KEY), false);
+    const summary = getDroughtSummary();
+    assert.deepEqual(summary.freeTierModels, []);
+    assert.equal(summary.restrictionFailOpen, true);
+  });
+
   it('leaves a malformed catalog response retryable and accepts the next valid response', async () => {
     const runId = Date.now().toString(36);
     const apiKey = `catalog-retry-${runId}`;
@@ -313,7 +488,7 @@ describe('upstream account cloud catalog filtering', () => {
       getCascadeModelConfigs: async () => {
         requests += 1;
         if (requests === 1) return {};
-        return { configs: [{ modelUid: MODELS[ALLOWED_KEY].modelUid }] };
+        return { configs: fullStaticCloudConfigs() };
       },
     });
 
@@ -324,10 +499,7 @@ describe('upstream account cloud catalog filtering', () => {
     await __waitForModelCatalogSync();
 
     assert.equal(requests, 2);
-    assert.deepEqual(
-      cascadeKeys(handleModels({}).data.map((model) => model._windsurf_id)),
-      [ALLOWED_KEY],
-    );
+    assert.equal(isModelAllowedForAccount(account, ALLOWED_KEY), true);
   });
 
   it('treats a valid empty catalog as synchronized instead of retrying it', async () => {
@@ -349,5 +521,12 @@ describe('upstream account cloud catalog filtering', () => {
     await __waitForModelCatalogSync();
 
     assert.equal(requests, 1);
+  });
+
+  it('labels a valid empty catalog as no_filter', () => {
+    const snapshot = mergeCloudCatalogSnapshot([], { accountId: ACCOUNT_A });
+
+    assert.equal(snapshot.accepted, true);
+    assert.equal(snapshot.reason, 'no_filter');
   });
 });

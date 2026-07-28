@@ -26,7 +26,7 @@ import {
   filterModelKeysByCloudCatalog,
   isModelAllowedByCloudCatalog,
   clearCloudModelCatalogs,
-  mergeCloudModels,
+  mergeCloudCatalogSnapshot,
   removeCloudModelCatalog,
   setActiveCloudCatalogAccounts,
 } from './models.js';
@@ -199,6 +199,10 @@ export function isModelBlockedByDrought(modelKey) {
   if (!isDroughtRestrictEnabled()) return false;
   if (!isDroughtMode()) return false;
   const freeModels = new Set(getTierModels('free'));
+  // A restricted catalog may contain no free-tier models. In that case the
+  // drought restriction cannot select a usable fallback, so leave the
+  // account catalog as the authoritative policy.
+  if (freeModels.size === 0) return false;
   return !freeModels.has(modelKey);
 }
 
@@ -218,15 +222,19 @@ export function getDroughtSummary() {
       lowestDaily = lowestDaily == null ? c.dailyPercent : Math.min(lowestDaily, c.dailyPercent);
     }
   }
+  const drought = isDroughtMode();
+  const restrictEnabled = isDroughtRestrictEnabled();
+  const freeTierModels = getTierModels('free');
   return {
-    drought: isDroughtMode(),
+    drought,
     threshold: getDroughtThresholdPercent(),
     activeAccounts: eligible.length,
     knownAccounts,
     lowestWeeklyPercent: lowestWeekly,
     lowestDailyPercent: lowestDaily,
-    restrictEnabled: isDroughtRestrictEnabled(),
-    freeTierModels: getTierModels('free'),
+    restrictEnabled,
+    freeTierModels,
+    restrictionFailOpen: drought && restrictEnabled && freeTierModels.length === 0,
   };
 }
 
@@ -659,6 +667,9 @@ export function __maybeRecoverErrorAccount(account, now = Date.now()) {
 // mixed pools must not reuse the first active account's policy for every route.
 const _modelCatalogSyncedKeys = new Map(); // account id → apiKey used for sync
 const _modelCatalogSyncPromises = new Map(); // account id → { apiKey, promise }
+const _modelCatalogRetryCancels = new Map(); // account id → cancel delayed confirmation
+const _modelCatalogConfirmationAttemptKeys = new Map(); // account id → apiKey being confirmed
+const MODEL_CATALOG_CONFIRM_RETRY_MS = 30_000;
 let _connectCatalogSynced = false;
 let _connectCatalogSyncPromise = null;
 let _modelCatalogDeps = null;
@@ -674,9 +685,53 @@ export async function __waitForModelCatalogSync() {
   );
 }
 
+function cancelModelCatalogRetry(accountId) {
+  const cancel = _modelCatalogRetryCancels.get(accountId);
+  _modelCatalogRetryCancels.delete(accountId);
+  if (cancel) cancel();
+}
+
+// This is one delayed confirmation, not periodic catalog refresh. Ordinary
+// sync triggers are coalesced while the timer is pending, and a mismatched
+// confirmation does not self-schedule another polling cycle.
+function scheduleModelCatalogRetry(accountId, apiKey) {
+  if (_modelCatalogRetryCancels.has(accountId)) return;
+  const retry = () => {
+    _modelCatalogRetryCancels.delete(accountId);
+    const account = accounts.find(a => (
+      a.id === accountId
+      && a.status === 'active'
+      && a.apiKey === apiKey
+    ));
+    if (!account) return;
+    _modelCatalogConfirmationAttemptKeys.set(accountId, apiKey);
+    trySyncModelCatalog();
+    if (!_modelCatalogSyncPromises.has(accountId)) {
+      _modelCatalogConfirmationAttemptKeys.delete(accountId);
+    }
+  };
+
+  if (_modelCatalogDeps?.scheduleCatalogRetry) {
+    const cancel = _modelCatalogDeps.scheduleCatalogRetry(
+      retry,
+      MODEL_CATALOG_CONFIRM_RETRY_MS,
+    );
+    _modelCatalogRetryCancels.set(accountId, typeof cancel === 'function' ? cancel : () => {});
+    return;
+  }
+
+  const timer = setTimeout(retry, MODEL_CATALOG_CONFIRM_RETRY_MS);
+  timer.unref?.();
+  _modelCatalogRetryCancels.set(accountId, () => clearTimeout(timer));
+}
+
 export function __resetModelCatalogState() {
+  for (const accountId of [..._modelCatalogRetryCancels.keys()]) {
+    cancelModelCatalogRetry(accountId);
+  }
   _modelCatalogSyncedKeys.clear();
   _modelCatalogSyncPromises.clear();
+  _modelCatalogConfirmationAttemptKeys.clear();
   _connectCatalogSynced = false;
   _connectCatalogSyncPromise = null;
   clearCloudModelCatalogs();
@@ -695,11 +750,18 @@ function reconcileModelCatalogAccounts() {
     _modelCatalogSyncedKeys.delete(accountId);
     removeCloudModelCatalog(accountId);
   }
+  for (const accountId of [..._modelCatalogRetryCancels.keys()]) {
+    if (activeIds.has(accountId)) continue;
+    cancelModelCatalogRetry(accountId);
+    removeCloudModelCatalog(accountId);
+  }
   return active;
 }
 
 function invalidateModelCatalogForAccount(accountId) {
   _modelCatalogSyncedKeys.delete(accountId);
+  _modelCatalogConfirmationAttemptKeys.delete(accountId);
+  cancelModelCatalogRetry(accountId);
   removeCloudModelCatalog(accountId);
 }
 
@@ -727,6 +789,8 @@ function trySyncConnectCatalog(acct) {
 }
 
 async function fetchAndMergeModelCatalog(accountId, apiKey) {
+  const confirmationAttempt = _modelCatalogConfirmationAttemptKeys.get(accountId) === apiKey;
+  _modelCatalogConfirmationAttemptKeys.delete(accountId);
   const acct = accounts.find(a => (
     a.id === accountId
     && a.status === 'active'
@@ -746,16 +810,30 @@ async function fetchAndMergeModelCatalog(accountId, apiKey) {
       && a.apiKey === apiKey
     ));
     if (!current) return false;
-    if (!Array.isArray(result?.configs)) {
-      mergeCloudModels([], { accountId });
-      log.warn(`Model catalog returned malformed configs for ${safeAccountRef(acct)}`);
+
+    const snapshot = mergeCloudCatalogSnapshot(result?.configs, { accountId });
+    if (!snapshot.accepted) {
+      if (snapshot.reason === 'malformed') {
+        cancelModelCatalogRetry(accountId);
+        log.warn(`Model catalog returned malformed configs for ${safeAccountRef(acct)}`);
+        return false;
+      }
+      if (!confirmationAttempt) scheduleModelCatalogRetry(accountId, apiKey);
+      const baseline = snapshot.baselineSource === 'last_accepted'
+        ? `the last accepted ${snapshot.baselineCount}`
+        : `the static baseline of ${snapshot.baselineCount}`;
+      const nextStep = confirmationAttempt
+        ? 'the delayed confirmation differed, so the candidate remains quarantined'
+        : `retrying once in ${MODEL_CATALOG_CONFIRM_RETRY_MS / 1000}s`;
+      log.warn(`Model catalog for ${safeAccountRef(acct)} returned ${snapshot.receivedCount} unique models versus ${baseline}; preserving the current fail-open/last-known-good view and ${nextStep}`);
       return false;
     }
+
+    cancelModelCatalogRetry(accountId);
     const configs = result.configs;
-    const added = mergeCloudModels(configs, { accountId });
     const visible = listModels().length;
     _modelCatalogSyncedKeys.set(accountId, apiKey);
-    log.info(`Model catalog for ${safeAccountRef(acct)}: ${configs.length} cloud models, ${added} new entries merged, ${visible} pool models visible`);
+    log.info(`Model catalog for ${safeAccountRef(acct)}: ${configs.length} cloud models, ${snapshot.added} new entries merged, ${visible} pool models visible`);
     // The connect namespace remains process-wide and has its own catalog source.
     // Preserve the existing one-time sync instead of fetching it once per account.
     trySyncConnectCatalog(acct);
@@ -775,6 +853,7 @@ export function trySyncModelCatalog() {
   const active = reconcileModelCatalogAccounts();
   for (const acct of active) {
     if (_modelCatalogSyncedKeys.get(acct.id) === acct.apiKey) continue;
+    if (_modelCatalogRetryCancels.has(acct.id)) continue;
     if (_modelCatalogSyncedKeys.has(acct.id)) {
       invalidateModelCatalogForAccount(acct.id);
     }

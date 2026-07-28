@@ -607,10 +607,19 @@ export function registerDiscoveredFreeModel(key) {
 const DEFAULT_CLOUD_CATALOG_ACCOUNT = Symbol('default-cloud-catalog-account');
 const _cloudCatalogUidsByAccount = new Map();
 const _activeCloudCatalogAccounts = new Set();
+const _pendingCloudCatalogUidsByAccount = new Map();
+const CLOUD_CATALOG_CONFIRM_RATIO = 0.5;
 
 function normalizeCloudCatalogUid(uid) {
   return typeof uid === 'string' ? uid.trim().toLowerCase() : '';
 }
+
+const STATIC_CLOUD_CATALOG_UID_COUNT = new Set(
+  Object.values(MODELS)
+    .filter(model => !model?.deprecated && model?.backend !== 'special_agent')
+    .map(model => normalizeCloudCatalogUid(model?.modelUid))
+    .filter(Boolean),
+).size;
 
 function cloudCatalogAccountKey(accountId) {
   if (accountId === undefined || accountId === null || accountId === '') {
@@ -627,21 +636,31 @@ function cloudCatalogAccountKey(accountId) {
  * hidden before its own upstream response arrives.
  */
 export function setActiveCloudCatalogAccounts(accountIds) {
-  _activeCloudCatalogAccounts.clear();
+  const nextActiveAccounts = new Set();
   for (const accountId of accountIds || []) {
     if (accountId === undefined || accountId === null || accountId === '') continue;
-    _activeCloudCatalogAccounts.add(String(accountId));
+    nextActiveAccounts.add(String(accountId));
   }
+  for (const accountId of _activeCloudCatalogAccounts) {
+    if (nextActiveAccounts.has(accountId)) continue;
+    _cloudCatalogUidsByAccount.delete(accountId);
+    _pendingCloudCatalogUidsByAccount.delete(accountId);
+  }
+  _activeCloudCatalogAccounts.clear();
+  for (const accountId of nextActiveAccounts) _activeCloudCatalogAccounts.add(accountId);
 }
 
 /** Remove one account's catalog when it leaves the active pool or its key changes. */
 export function removeCloudModelCatalog(accountId) {
-  _cloudCatalogUidsByAccount.delete(cloudCatalogAccountKey(accountId));
+  const accountKey = cloudCatalogAccountKey(accountId);
+  _cloudCatalogUidsByAccount.delete(accountKey);
+  _pendingCloudCatalogUidsByAccount.delete(accountKey);
 }
 
 /** Clear all in-memory catalog state. Primarily useful for deterministic tests. */
 export function clearCloudModelCatalogs() {
   _cloudCatalogUidsByAccount.clear();
+  _pendingCloudCatalogUidsByAccount.clear();
   _activeCloudCatalogAccounts.clear();
 }
 
@@ -755,14 +774,10 @@ export function listModels(opts = {}) {
     }));
 }
 
-/**
- * Merge live model configs from GetCascadeModelConfigs into the catalog.
- * Called for each active account after a successful cloud fetch.
- * Only adds NEW models not already in the catalog (doesn't overwrite enums).
- */
-export function mergeCloudModels(configs, { accountId = null } = {}) {
+function applyCloudModels(configs, { accountId = null } = {}) {
   const catalogAccountKey = cloudCatalogAccountKey(accountId);
   const safeConfigs = Array.isArray(configs) ? configs : [];
+  _pendingCloudCatalogUidsByAccount.delete(catalogAccountKey);
 
   // Replace this account's policy snapshot atomically. An empty/invalid
   // response removes it so filtering remains fail-open for that account.
@@ -811,4 +826,99 @@ export function mergeCloudModels(configs, { accountId = null } = {}) {
     added++;
   }
   return added;
+}
+
+/**
+ * Merge live model configs from GetCascadeModelConfigs into the catalog.
+ * Account-scoped snapshots pass through the shrink-confirmation guard. The
+ * default legacy catalog remains a direct merge for compatibility.
+ * Only adds NEW models not already in the catalog (doesn't overwrite enums).
+ */
+export function mergeCloudModels(configs, { accountId = null } = {}) {
+  if (accountId === undefined || accountId === null || accountId === '') {
+    return applyCloudModels(configs, { accountId });
+  }
+  return mergeCloudCatalogSnapshot(configs, { accountId }).added;
+}
+
+function cloudCatalogUidSet(configs) {
+  const uids = new Set();
+  for (const model of configs || []) {
+    const uid = normalizeCloudCatalogUid(model?.modelUid);
+    if (uid) uids.add(uid);
+  }
+  return uids;
+}
+
+function cloudCatalogSetsEqual(left, right) {
+  if (!left || left.size !== right.size) return false;
+  for (const uid of left) {
+    if (!right.has(uid)) return false;
+  }
+  return true;
+}
+
+/**
+ * Validate and merge one fetched account catalog snapshot.
+ *
+ * A non-empty snapshot that is less than half the account's last accepted
+ * snapshot, or the static catalog when no account snapshot exists yet, is
+ * quarantined until the same UID set is returned in a later sync round.
+ */
+export function mergeCloudCatalogSnapshot(configs, { accountId = null } = {}) {
+  const accountKey = cloudCatalogAccountKey(accountId);
+  if (!Array.isArray(configs)) {
+    _pendingCloudCatalogUidsByAccount.delete(accountKey);
+    applyCloudModels([], { accountId });
+    return {
+      accepted: false,
+      added: 0,
+      reason: 'malformed',
+      receivedCount: 0,
+      baselineCount: 0,
+    };
+  }
+
+  const nextUids = cloudCatalogUidSet(configs);
+  if (nextUids.size === 0) {
+    _pendingCloudCatalogUidsByAccount.delete(accountKey);
+    return {
+      accepted: true,
+      added: applyCloudModels(configs, { accountId }),
+      reason: 'no_filter',
+      receivedCount: 0,
+      baselineCount: 0,
+    };
+  }
+
+  const currentUids = _cloudCatalogUidsByAccount.get(accountKey);
+  const baselineCount = currentUids?.size || STATIC_CLOUD_CATALOG_UID_COUNT;
+  const baselineSource = currentUids?.size ? 'last_accepted' : 'static';
+  const confirmationThreshold = Math.ceil(baselineCount * CLOUD_CATALOG_CONFIRM_RATIO);
+  const needsConfirmation = nextUids.size < confirmationThreshold;
+
+  if (needsConfirmation) {
+    const pendingUids = _pendingCloudCatalogUidsByAccount.get(accountKey);
+    if (!cloudCatalogSetsEqual(pendingUids, nextUids)) {
+      _pendingCloudCatalogUidsByAccount.set(accountKey, nextUids);
+      return {
+        accepted: false,
+        added: 0,
+        reason: 'confirmation_required',
+        receivedCount: nextUids.size,
+        baselineCount,
+        baselineSource,
+      };
+    }
+  }
+
+  _pendingCloudCatalogUidsByAccount.delete(accountKey);
+  return {
+    accepted: true,
+    added: applyCloudModels(configs, { accountId }),
+    reason: needsConfirmation ? 'confirmed_small' : 'accepted',
+    receivedCount: nextUids.size,
+    baselineCount,
+    baselineSource,
+  };
 }
