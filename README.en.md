@@ -284,7 +284,7 @@ In your client's settings for **Custom OpenAI Compatible**:
 | `DEFAULT_MODEL` | `claude-4.5-sonnet-thinking` | The model to use if `model` is not specified. |
 | `MAX_TOKENS` | `8192` | Default maximum number of response tokens. |
 | `LOG_LEVEL` | `info` | debug / info / warn / error |
-| `WINDSURFAPI_IGNORE_CLOUD_FILTER` | `0` | After per-account cloud catalogs sync, pool listings show their union and routing enforces each selected account's catalog. Set to `1` to restore the full static catalog. Missing, empty, or failed catalog syncs fail open. |
+| `WINDSURFAPI_IGNORE_CLOUD_FILTER` | `0` | On the Cascade transport, after per-account cloud catalogs sync, pool listings show their union and routing enforces each selected account's catalog. Set to `1` to restore the full static catalog. Missing, empty, or failed catalog syncs fail open. `DEVIN_CONNECT` uses its separate selector catalog. |
 | `LS_BINARY_PATH` | `/opt/windsurf/language_server_linux_x64` | Path to the LS binary. |
 | `LS_PORT` | `42100` | LS gRPC port. |
 | `LS_DATA_DIR` | Linux: `/opt/windsurf/data`; macOS: `~/.windsurf/data` | Per-proxy LS data directory root. |
@@ -333,7 +333,7 @@ Open `http://YOUR_IP:3003/dashboard`:
 
 ## Supported Models
 
-100+ static models in the main catalog plus dynamic cloud-side models added at startup via `mergeCloudModels`. After per-account cloud catalogs sync, `GET /v1/models` and the Dashboard show the union available across active accounts, while routing applies the selected account's own catalog. The full static catalog remains available on the [GitHub Pages model catalog](https://dwgx.github.io/WindsurfAPI/#models) (auto-generated from `src/models.js`).
+100+ static models in the main catalog plus dynamic cloud-side models added at startup via `mergeCloudModels`. On the Cascade transport, after per-account cloud catalogs sync, `GET /v1/models` and the Dashboard show the union available across active accounts, while routing applies the selected account's own catalog. `DEVIN_CONNECT` remains governed by its separate selector catalog. The full static catalog remains available on the [GitHub Pages model catalog](https://dwgx.github.io/WindsurfAPI/#models) (auto-generated from `src/models.js`).
 
 <details>
 <summary><b>Claude (Anthropic)</b> — 21 models</summary>

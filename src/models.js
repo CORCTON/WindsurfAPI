@@ -687,6 +687,11 @@ function applicableCloudCatalogUids(accountId) {
 /** Whether one model key is permitted by the relevant upstream account catalog. */
 export function isModelAllowedByCloudCatalog(key, env = process.env, accountId = null) {
   if (env.WINDSURFAPI_IGNORE_CLOUD_FILTER === '1') return true;
+  // DEVIN_CONNECT uses a separate selector namespace and catalog source.
+  // Applying GetCascadeModelConfigs here can turn a valid Connect-only
+  // allowlist (for example swe-1-6-slow) into an empty model view because the
+  // selector has no equivalent entry in the Cascade MODELS table.
+  if (getBackendSwitch('devinConnect', env)) return true;
   const catalogUids = applicableCloudCatalogUids(accountId);
   if (!catalogUids) return true;
   const model = MODELS[key];
@@ -753,10 +758,11 @@ function isSpecialAgentCatalogEnabled() {
 /** List all models in OpenAI /v1/models format. Hides deprecated models. */
 export function listModels(opts = {}) {
   const ts = Math.floor(Date.now() / 1000);
+  const env = opts.env ?? process.env;
   const specialAgentEnabled = opts.specialAgentEnabled ?? isSpecialAgentCatalogEnabled();
   const includeDisabledSpecialAgent = opts.includeDisabledSpecialAgent
     ?? process.env.WINDSURFAPI_SHOW_DISABLED_SPECIAL_AGENT_MODELS === '1';
-  return filterModelKeysByCloudCatalog()
+  return filterModelKeysByCloudCatalog(Object.keys(MODELS), env)
     .map((id) => [id, MODELS[id]])
     .filter(([, info]) => !info.deprecated)
     .filter(([, info]) => info.backend !== 'special_agent' || specialAgentEnabled || includeDisabledSpecialAgent)

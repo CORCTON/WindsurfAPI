@@ -275,7 +275,7 @@ curl http://localhost:3003/v1/messages \
 | `DEFAULT_MODEL` | `claude-4.5-sonnet-thinking` | 不传 model 用哪个 |
 | `MAX_TOKENS` | `8192` | 默认最大回复 token 数 |
 | `LOG_LEVEL` | `info` | debug / info / warn / error |
-| `WINDSURFAPI_IGNORE_CLOUD_FILTER` | `0` | 各账号云端 catalog 同步后，账号池列表展示活跃账号目录的并集，路由则校验所选账号自己的目录；设为 `1` 恢复完整静态 catalog。目录缺失、为空或同步失败时保持 fail-open |
+| `WINDSURFAPI_IGNORE_CLOUD_FILTER` | `0` | Cascade 路径下，各账号云端 catalog 同步后，账号池列表展示活跃账号目录的并集，路由则校验所选账号自己的目录；设为 `1` 恢复完整静态 catalog。目录缺失、为空或同步失败时保持 fail-open；`DEVIN_CONNECT` 使用独立 selector catalog |
 | `LS_BINARY_PATH` | `/opt/windsurf/language_server_linux_x64` | LS 二进制位置 |
 | `LS_DATA_DIR` | Linux: `/opt/windsurf/data`；macOS: `~/.windsurf/data` | 每个 proxy 独立的 LS 数据根目录 |
 | `LS_PORT` | `42100` | LS gRPC 端口 |
@@ -326,7 +326,7 @@ curl http://localhost:3003/v1/messages \
 
 ## 支持的模型
 
-主线 100+ 个静态模型 + Windsurf 雲端動態下發（`mergeCloudModels` 啟動時拉取最新）。各账号云端 catalog 同步后，`GET /v1/models` 和 Dashboard 展示活跃账号目录的并集，路由则校验所选账号自己的目录；静态完整列表仍可查看 [GitHub Pages 模型清单](https://dwgx.github.io/WindsurfAPI/#models)（同步生成於 `src/models.js`）。
+主线 100+ 个静态模型 + Windsurf 雲端動態下發（`mergeCloudModels` 啟動時拉取最新）。Cascade 路径下，各账号云端 catalog 同步后，`GET /v1/models` 和 Dashboard 展示活跃账号目录的并集，路由则校验所选账号自己的目录；`DEVIN_CONNECT` 继续使用独立 selector catalog；静态完整列表仍可查看 [GitHub Pages 模型清单](https://dwgx.github.io/WindsurfAPI/#models)（同步生成於 `src/models.js`）。
 
 <details>
 <summary><b>Claude（Anthropic）</b> — 21 个</summary>

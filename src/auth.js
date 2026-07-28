@@ -683,6 +683,9 @@ export async function __waitForModelCatalogSync() {
   await Promise.allSettled(
     [..._modelCatalogSyncPromises.values()].map(({ promise }) => promise),
   );
+  if (_connectCatalogSyncPromise) {
+    await Promise.allSettled([_connectCatalogSyncPromise]);
+  }
 }
 
 function cancelModelCatalogRetry(accountId) {
@@ -797,6 +800,10 @@ async function fetchAndMergeModelCatalog(accountId, apiKey) {
     && a.apiKey === apiKey
   ));
   if (!acct) return false;
+  // The Connect selector catalog has its own RPC and namespace. Start that
+  // synchronization independently so a quarantined or malformed Cascade
+  // snapshot cannot delay Connect model discovery.
+  trySyncConnectCatalog(acct);
   try {
     const { getCascadeModelConfigs } = _modelCatalogDeps?.getCascadeModelConfigs
       ? { getCascadeModelConfigs: _modelCatalogDeps.getCascadeModelConfigs }
@@ -834,9 +841,6 @@ async function fetchAndMergeModelCatalog(accountId, apiKey) {
     const visible = listModels().length;
     _modelCatalogSyncedKeys.set(accountId, apiKey);
     log.info(`Model catalog for ${safeAccountRef(acct)}: ${configs.length} cloud models, ${snapshot.added} new entries merged, ${visible} pool models visible`);
-    // The connect namespace remains process-wide and has its own catalog source.
-    // Preserve the existing one-time sync instead of fetching it once per account.
-    trySyncConnectCatalog(acct);
     return true;
   } catch (e) {
     log.warn(`Model catalog fetch failed for ${safeAccountRef(acct)}: ${e.message}`);
