@@ -47,6 +47,12 @@ const _counters = {
   // as a health event only — never an errorCount eviction (same treatment as
   // CONTENT_BLOCKED). A spike here means callers are sending bad requests.
   upstream_error: 0,
+  // upstream socket ended mid-answer with no end-of-stream frame → the reply was
+  // TRUNCATED. A transport fault (ECONNRESET class), not an account fault, so it
+  // is a health event only — never an errorCount eviction. A spike here means the
+  // network path to the upstream is dropping connections, and callers are seeing
+  // `response.incomplete` / retried turns rather than silent half answers.
+  stream_truncated: 0,
   // liveness probe pre-emptively recovered a dying token
   liveness_recovered: 0,
   // router-model (adaptive/arena-*) AssignModel resolution failed → fell back

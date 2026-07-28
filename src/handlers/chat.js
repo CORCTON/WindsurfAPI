@@ -1968,6 +1968,21 @@ export function finalizeConnectAccount(acct, { model, selector = null, startTime
       reportInternalError(apiKey);
       bumpConnect('upstream_internal');
     }
+    else if (err.code === 'STREAM_TRUNCATED') {
+      // The socket ended mid-answer without the mandatory end-of-stream frame.
+      // This is a TRANSPORT fault (same class as ECONNRESET), not an account
+      // fault: the session token is alive and the account is healthy. Without
+      // this branch it fell through to `reportError`, which charges the error
+      // budget — so a flaky network path or an upstream that drops connections
+      // would flip a perfectly good account to status='error' after
+      // errorStreakThreshold hits, with persisted exponential backoff. That is
+      // exactly the failure mode the CONTENT_BLOCKED / UPSTREAM_ERROR exemptions
+      // above were added to remove. Record it as a health-window event so a
+      // genuinely sick account is still de-prioritized by selection, but skip the
+      // errorCount eviction.
+      reportInternalError(apiKey);
+      bumpConnect('stream_truncated');
+    }
     // UPSTREAM_ERROR carries the gRPC `internal` class, which classifyUpstreamError
     // documents as "PERMANENT client mistakes (short fingerprint, gzipped request
     // body) — fails identically every retry". That is a fault in the REQUEST, not in

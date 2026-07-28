@@ -46,7 +46,13 @@ afterEach(() => { while (created.length) removeAccount(created.pop()); });
 describe('request-side failures never evict the account', () => {
   // A healthy peer must exist, otherwise the last-account exemption masks the
   // eviction and the test would pass for the wrong reason.
-  const REQUEST_SIDE = ['UPSTREAM_ERROR', 'CONTENT_BLOCKED', 'MODEL_BLOCKED'];
+  // STREAM_TRUNCATED joined this list when the truncation detection shipped: the
+  // socket ending mid-answer with no end-of-stream frame is a TRANSPORT fault
+  // (ECONNRESET class), not an account fault. Without an explicit branch it fell
+  // through to the generic reportError — so a flaky network path to the upstream
+  // would evict healthy accounts three truncations at a time, reproducing the exact
+  // bug the CONTENT_BLOCKED / UPSTREAM_ERROR exemptions above were added to remove.
+  const REQUEST_SIDE = ['UPSTREAM_ERROR', 'CONTENT_BLOCKED', 'MODEL_BLOCKED', 'STREAM_TRUNCATED'];
 
   for (const code of REQUEST_SIDE) {
     it(`${code} x3 keeps the account in rotation (fault is in the request)`, () => {
