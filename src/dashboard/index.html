@@ -9127,7 +9127,9 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
         known: d.knownAccounts,
         active: d.activeAccounts,
       });
-      msg.textContent = I18n.t('drought.body') || msg.textContent;
+      msg.textContent = d.restrictionFailOpen
+        ? I18n.t('drought.restrictionFailOpen')
+        : (I18n.t('drought.body') || msg.textContent);
       detail.textContent = summary;
     } catch (e) {
       // no /drought endpoint on older backends — silently hide.

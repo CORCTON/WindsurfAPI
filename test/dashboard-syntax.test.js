@@ -51,6 +51,20 @@ test('dashboard batch login history uses each result proxy instead of an undefin
   assert.doesNotMatch(html, /proxy:\s*this\.getWindsurfProxyLabel\(proxy\),\s*\r?\n\s*status:\s*item\.success/);
 });
 
+test('dashboard drought banners expose restriction fail-open state', () => {
+  const html = readFileSync(join(root, 'src/dashboard/index.html'), 'utf8');
+  const sketch = readFileSync(join(root, 'src/dashboard/index-sketch.html'), 'utf8');
+  const en = JSON.parse(readFileSync(join(root, 'src/dashboard/i18n/en.json'), 'utf8'));
+  const zh = JSON.parse(readFileSync(join(root, 'src/dashboard/i18n/zh-CN.json'), 'utf8'));
+
+  assert.match(html, /d\.restrictionFailOpen/);
+  assert.match(html, /I18n\.t\('drought\.restrictionFailOpen'\)/);
+  assert.match(sketch, /d\.restrictionFailOpen/);
+  assert.match(sketch, /id="drought-fail-open-message"/);
+  assert.equal(typeof en.drought.restrictionFailOpen, 'string');
+  assert.equal(typeof zh.drought.restrictionFailOpen, 'string');
+});
+
 test('dashboard proxy and abnormal-account tables use paged account summaries', () => {
   const html = readFileSync(join(root, 'src/dashboard/index.html'), 'utf8');
   assert.match(html, /id="proxy-accounts-pagination"/);

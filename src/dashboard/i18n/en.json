@@ -784,6 +784,7 @@
   "drought": {
     "title": "Quota drought:",
     "body": "Every active account is below the weekly quota threshold — add accounts or wait for reset",
+    "restrictionFailOpen": "No free model is available for the active accounts, so low-quota protection will not block paid models; models unsupported by an account are still hidden and blocked",
     "detail": "min weekly={{weekly}}% · min daily={{daily}}% · {{known}}/{{active}} accounts known"
   },
   "tooltip": {
