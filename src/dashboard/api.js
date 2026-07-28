@@ -36,7 +36,7 @@ import { getClineCompatStats } from '../handlers/cline-compat.js';
 import { getCcCompatStats } from '../handlers/cc-compat.js';
 import { getLogs, subscribeToLogs, unsubscribeFromLogs } from './logger.js';
 import { getProxyConfig, getProxyConfigMasked, setGlobalProxy, setAccountProxy, removeProxy, getEffectiveProxy } from './proxy-config.js';
-import { MODELS, MODEL_TIER_ACCESS as _TIER_TABLE, getTierModels as _getTierModels } from '../models.js';
+import { MODELS, MODEL_TIER_ACCESS as _TIER_TABLE, getTierModels as _getTierModels, filterModelKeysByCloudCatalog } from '../models.js';
 import { windsurfLogin, refreshFirebaseToken, reRegisterWithCodeium } from './windsurf-login.js';
 import { getModelAccessConfig, setModelAccessMode, setModelAccessList, addModelToList, removeModelFromList, setDefaultModel } from './model-access.js';
 import { checkMessageRateLimit } from '../windsurf-api.js';
@@ -1185,7 +1185,7 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
       pro: _TIER_TABLE.pro,
       unknown: _TIER_TABLE.unknown,
       expired: _TIER_TABLE.expired,
-      allModels: Object.keys(MODELS),
+      allModels: filterModelKeysByCloudCatalog(),
     });
   }
 
@@ -1759,10 +1759,15 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
 
   // ─── Models list ──────────────────────────────────────
   if (subpath === '/models' && method === 'GET') {
-    const models = Object.entries(MODELS).map(([id, info]) => ({
-      id, name: info.name, provider: info.provider,
-      credit: typeof info.credit === 'number' ? info.credit : null,
-    }));
+    const models = filterModelKeysByCloudCatalog().map((id) => {
+      const info = MODELS[id];
+      return {
+        id,
+        name: info.name,
+        provider: info.provider,
+        credit: typeof info.credit === 'number' ? info.credit : null,
+      };
+    });
     return json(res, 200, { models });
   }
 

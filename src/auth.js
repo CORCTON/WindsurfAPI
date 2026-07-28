@@ -18,7 +18,18 @@ import { config, log } from './config.js';
 import { safeAccountRef } from './log-safety.js';
 import { renameSyncWithRetry, writeFileSyncDurable } from './fs-atomic.js';
 import { getEffectiveProxy } from './dashboard/proxy-config.js';
-import { getTierModels, getModelKeysByEnum, MODELS, registerDiscoveredFreeModel } from './models.js';
+import {
+  getTierModels,
+  getModelKeysByEnum,
+  MODELS,
+  registerDiscoveredFreeModel,
+  filterModelKeysByCloudCatalog,
+  isModelAllowedByCloudCatalog,
+  clearCloudModelCatalogs,
+  mergeCloudModels,
+  removeCloudModelCatalog,
+  setActiveCloudCatalogAccounts,
+} from './models.js';
 import { FREE_REACHABLE_SELECTORS } from './devin-connect-models.js';
 import { getLsAdmissionStatus, getLsMaintenanceRequests } from './langserver.js';
 import { bumpConnect } from './devin-connect-metrics.js';
@@ -644,65 +655,134 @@ export function __maybeRecoverErrorAccount(account, now = Date.now()) {
 
 // ─── Dynamic model catalog from cloud ─────────────────────
 
-// Tracks whether the cloud model catalog has been successfully merged at
-// least once since startup. When false, trySyncModelCatalog() will fire
-// off a fetch whenever an account becomes active — covering the case where
-// the startup fetch was skipped because no active account existed yet.
-let _modelCatalogSynced = false;
-// Coalesces concurrent calls so multiple simultaneous status transitions
-// (e.g. bulk-add accounts) only trigger one fetch.
-let _modelCatalogSyncPromise = null;
+// Per-account synchronization state. Catalog responses are account-scoped, so
+// mixed pools must not reuse the first active account's policy for every route.
+const _modelCatalogSyncedKeys = new Map(); // account id → apiKey used for sync
+const _modelCatalogSyncPromises = new Map(); // account id → { apiKey, promise }
+let _connectCatalogSynced = false;
+let _connectCatalogSyncPromise = null;
+let _modelCatalogDeps = null;
 
-async function fetchAndMergeModelCatalog() {
-  // Use the first active account to fetch the catalog.
-  const acct = accounts.find(a => a.status === 'active' && a.apiKey);
-  if (!acct) {
-    log.debug('No active account for model catalog fetch');
-    return false;
+/** Test seams for deterministic catalog synchronization without network calls. */
+export function __setModelCatalogDeps(deps) {
+  _modelCatalogDeps = deps;
+}
+
+export async function __waitForModelCatalogSync() {
+  await Promise.allSettled(
+    [..._modelCatalogSyncPromises.values()].map(({ promise }) => promise),
+  );
+}
+
+export function __resetModelCatalogState() {
+  _modelCatalogSyncedKeys.clear();
+  _modelCatalogSyncPromises.clear();
+  _connectCatalogSynced = false;
+  _connectCatalogSyncPromise = null;
+  clearCloudModelCatalogs();
+}
+
+function activeModelCatalogAccounts() {
+  return accounts.filter(a => a.status === 'active' && a.apiKey);
+}
+
+function reconcileModelCatalogAccounts() {
+  const active = activeModelCatalogAccounts();
+  const activeIds = new Set(active.map(a => a.id));
+  setActiveCloudCatalogAccounts(activeIds);
+  for (const accountId of _modelCatalogSyncedKeys.keys()) {
+    if (activeIds.has(accountId)) continue;
+    _modelCatalogSyncedKeys.delete(accountId);
+    removeCloudModelCatalog(accountId);
   }
-  try {
-    const { getCascadeModelConfigs } = await import('./windsurf-api.js');
-    const { mergeCloudModels } = await import('./models.js');
-    const proxy = getEffectiveProxy(acct.id) || null;
-    const { configs } = await getCascadeModelConfigs(acct.apiKey, proxy);
-    const added = mergeCloudModels(configs);
-    _modelCatalogSynced = true;
-    log.info(`Model catalog: ${configs.length} cloud models, ${added} new entries merged`);
-    // Also refresh the DEVIN_CONNECT selector catalog (audit 2026-07-12): the
-    // committed snapshot never live-synced, so upstream-added selectors
-    // (qwen-3/glm-5/kimi/deepseek/minimax) were 400'd by the strict gate despite
-    // being runnable. GetCliModelConfigs is the connect-namespace source (distinct
-    // from Cascade's GetCascadeModelConfigs above). Best-effort + isolated: a
-    // connect-catalog failure must not fail the Cascade merge (already succeeded).
+  return active;
+}
+
+function invalidateModelCatalogForAccount(accountId) {
+  _modelCatalogSyncedKeys.delete(accountId);
+  removeCloudModelCatalog(accountId);
+}
+
+function trySyncConnectCatalog(acct) {
+  if (_modelCatalogDeps?.disableConnectSync) return;
+  if (_connectCatalogSynced || _connectCatalogSyncPromise) return;
+  _connectCatalogSyncPromise = (async () => {
     try {
-      const { fetchCatalog } = await import('./devin-connect-catalog.js');
-      const { setLiveCatalogSelectors } = await import('./devin-connect-models.js');
+      const { fetchCatalog } = _modelCatalogDeps?.fetchConnectCatalog
+        ? { fetchCatalog: _modelCatalogDeps.fetchConnectCatalog }
+        : await import('./devin-connect-catalog.js');
+      const { setLiveCatalogSelectors } = _modelCatalogDeps?.setLiveCatalogSelectors
+        ? { setLiveCatalogSelectors: _modelCatalogDeps.setLiveCatalogSelectors }
+        : await import('./devin-connect-models.js');
       const connectModels = await fetchCatalog({ token: acct.apiKey });
       setLiveCatalogSelectors(connectModels);
+      _connectCatalogSynced = true;
       log.info(`DEVIN_CONNECT live catalog: ${connectModels.length} selectors merged into resolver`);
-    } catch (ce) {
-      log.warn(`DEVIN_CONNECT catalog sync failed (snapshot fallback stays in effect): ${ce.message}`);
+    } catch (e) {
+      log.warn(`DEVIN_CONNECT catalog sync failed (snapshot fallback stays in effect): ${e.message}`);
     }
+  })().finally(() => {
+    _connectCatalogSyncPromise = null;
+  });
+}
+
+async function fetchAndMergeModelCatalog(accountId, apiKey) {
+  const acct = accounts.find(a => (
+    a.id === accountId
+    && a.status === 'active'
+    && a.apiKey === apiKey
+  ));
+  if (!acct) return false;
+  try {
+    const { getCascadeModelConfigs } = _modelCatalogDeps?.getCascadeModelConfigs
+      ? { getCascadeModelConfigs: _modelCatalogDeps.getCascadeModelConfigs }
+      : await import('./windsurf-api.js');
+    const { listModels } = await import('./models.js');
+    const proxy = getEffectiveProxy(acct.id) || null;
+    const { configs } = await getCascadeModelConfigs(acct.apiKey, proxy);
+    const current = accounts.find(a => (
+      a.id === accountId
+      && a.status === 'active'
+      && a.apiKey === apiKey
+    ));
+    if (!current) return false;
+    const added = mergeCloudModels(configs, { accountId });
+    _modelCatalogSyncedKeys.set(accountId, apiKey);
+    const visible = listModels().length;
+    log.info(`Model catalog for ${safeAccountRef(acct)}: ${configs.length} cloud models, ${added} new entries merged, ${visible} pool models visible`);
+    // The connect namespace remains process-wide and has its own catalog source.
+    // Preserve the existing one-time sync instead of fetching it once per account.
+    trySyncConnectCatalog(acct);
     return true;
   } catch (e) {
-    log.warn(`Model catalog fetch failed: ${e.message}`);
+    log.warn(`Model catalog fetch failed for ${safeAccountRef(acct)}: ${e.message}`);
     return false;
   }
 }
 
 /**
- * Fire-and-forget: trigger a cloud model catalog sync if one hasn't succeeded
- * yet and at least one active account exists. Safe to call from any account
- * status transition path — coalesces concurrent calls into a single fetch.
+ * Fire-and-forget: synchronize every active account whose current API key has
+ * not produced a catalog yet. Per-account promises coalesce concurrent status
+ * transitions without blocking unrelated accounts.
  */
 export function trySyncModelCatalog() {
-  if (_modelCatalogSynced) return;
-  if (_modelCatalogSyncPromise) return;
-  const acct = accounts.find(a => a.status === 'active' && a.apiKey);
-  if (!acct) return;
-  _modelCatalogSyncPromise = fetchAndMergeModelCatalog()
-    .catch(e => log.warn(`trySyncModelCatalog: ${e.message}`))
-    .finally(() => { _modelCatalogSyncPromise = null; });
+  const active = reconcileModelCatalogAccounts();
+  for (const acct of active) {
+    if (_modelCatalogSyncedKeys.get(acct.id) === acct.apiKey) continue;
+    if (_modelCatalogSyncedKeys.has(acct.id)) {
+      invalidateModelCatalogForAccount(acct.id);
+    }
+    const inFlight = _modelCatalogSyncPromises.get(acct.id);
+    if (inFlight?.apiKey === acct.apiKey) continue;
+    const apiKey = acct.apiKey;
+    const promise = fetchAndMergeModelCatalog(acct.id, apiKey)
+      .catch(e => log.warn(`trySyncModelCatalog: ${e.message}`))
+      .finally(() => {
+        const current = _modelCatalogSyncPromises.get(acct.id);
+        if (current?.promise === promise) _modelCatalogSyncPromises.delete(acct.id);
+      });
+    _modelCatalogSyncPromises.set(acct.id, { apiKey, promise });
+  }
 }
 
 async function registerWithCodeium(idToken) {
@@ -812,7 +892,9 @@ export async function addAccountByEmail(email, password) {
   const existingByEmail = accounts.find(a => String(a.email || '').trim().toLowerCase() === emailKey);
   const account = existingByEmail || addAccountByKey(result.apiKey, label);
   if (existingByEmail) {
+    const apiKeyChanged = account.apiKey !== result.apiKey;
     account.apiKey = result.apiKey;
+    if (apiKeyChanged) invalidateModelCatalogForAccount(account.id);
     if (account.status === 'error') account.status = 'active';
     account.errorCount = 0;
   }
@@ -875,6 +957,10 @@ export function setAccountBlockedModels(id, blockedModels) {
  * at selector time even though `account.capabilities` already says yes.
  */
 export function isModelAllowedForAccount(account, modelKey) {
+  // The candidate account's upstream catalog is the outermost gate.
+  // Entitlements and manual tier overrides may narrow or widen within that
+  // catalog, but must never re-enable a model omitted for this account.
+  if (!isModelAllowedByCloudCatalog(modelKey, process.env, account.id)) return false;
   const blocked = account.blockedModels || [];
   if (blocked.includes(modelKey)) return false;
   // tierManual is the operator escape hatch: when set, trust the manual
@@ -890,7 +976,7 @@ export function isModelAllowedForAccount(account, modelKey) {
       return cap.ok === true;
     }
   }
-  const tierModels = getTierModels(account.tier || 'unknown');
+  const tierModels = getTierModels(account.tier || 'unknown', account.id);
   return tierModels.includes(modelKey);
 }
 
@@ -923,7 +1009,7 @@ export function hasConnectEntitledAccount(selector) {
 /** List of model keys this account is currently allowed to call. */
 export function getAvailableModelsForAccount(account) {
   const blocked = new Set(account.blockedModels || []);
-  const tierModels = getTierModels(account.tier || 'unknown');
+  const tierModels = getTierModels(account.tier || 'unknown', account.id);
   // Manual tier override or no GetUserStatus yet → tier static table.
   if (account.tierManual || !account.userStatusLastFetched || !account.capabilities) {
     return tierModels.filter(m => !blocked.has(m));
@@ -933,6 +1019,7 @@ export function getAvailableModelsForAccount(account) {
   const allowed = [];
   for (const [key, info] of Object.entries(MODELS)) {
     if (blocked.has(key)) continue;
+    if (!isModelAllowedByCloudCatalog(key, process.env, account.id)) continue;
     if (info.enumValue && info.enumValue > 0) {
       const cap = account.capabilities[key];
       if (cap?.reason === 'user_status' && cap.ok === true) allowed.push(key);
@@ -953,7 +1040,7 @@ export function setAccountStatus(id, status) {
   if (status === 'active') account.errorCount = 0;
   saveAccounts();
   log.info(`Account ${id} status set to ${status}`);
-  if (status === 'active') trySyncModelCatalog();
+  trySyncModelCatalog();
   return true;
 }
 
@@ -1008,9 +1095,14 @@ export function setAccountTier(id, tier) {
 export function setAccountTokens(id, { apiKey, refreshToken, idToken } = {}) {
   const account = accounts.find(a => a.id === id);
   if (!account) return false;
+  const apiKeyChanged = apiKey != null && account.apiKey !== apiKey;
   if (apiKey != null) account.apiKey = apiKey;
   if (refreshToken != null) account.refreshToken = refreshToken;
   if (idToken != null) account.idToken = idToken;
+  if (apiKeyChanged) {
+    invalidateModelCatalogForAccount(account.id);
+    trySyncModelCatalog();
+  }
   saveAccounts();
   return true;
 }
@@ -1126,13 +1218,16 @@ export async function reLoginAccount(id, { force = false } = {}) {
       const { windsurfLogin } = _reloginDeps || await import('./dashboard/windsurf-login.js');
       const result = await windsurfLogin(account.email, password, proxy);
       if (!result?.apiKey) throw new Error('login returned no apiKey');
+      const apiKeyChanged = account.apiKey !== result.apiKey;
       account.apiKey = result.apiKey;
+      if (apiKeyChanged) invalidateModelCatalogForAccount(account.id);
       if (result.refreshToken) account.refreshToken = result.refreshToken;
       account.status = 'active';
       account.errorCount = 0;
       account._errorAt = 0;
       account._reloginAt = Date.now();
       saveAccounts();
+      trySyncModelCatalog();
       log.info(`re-login OK: ${safeAccountRef(account)} → fresh session token`);
       bumpConnect('relogin_ok');
       return result.apiKey;
@@ -1184,6 +1279,7 @@ export async function probeAndRecoverConnectAccount(id, { signal } = {}) {
       account.errorCount = 0;
       account._errorAt = 0;
       saveAccounts();
+      trySyncModelCatalog();
       log.info(`liveness probe: ${safeAccountRef(account)} recovered to active`);
     }
     return { alive: true };
@@ -1209,6 +1305,8 @@ export function removeAccount(id) {
   if (idx === -1) return false;
   const account = accounts[idx];
   accounts.splice(idx, 1);
+  invalidateModelCatalogForAccount(id);
+  trySyncModelCatalog();
   saveAccounts();
   // Drop any Cascade conversations owned by this key so future requests
   // don't try to resume on an account that no longer exists.
@@ -2193,6 +2291,7 @@ export function reportError(apiKey, { windowMs = getBreakerTunable('errorWindowM
     // known-bad key (reportBanSignal already saves on its flip; this mirrors
     // it). Only saves when the status actually changes, not on every error.
     saveAccounts();
+    trySyncModelCatalog();
     log.warn(`Account ${safeAccountRef(account)} disabled after ${account.errorCount} errors in ${Math.round(windowMs / 60000)}m`);
   }
 }
@@ -2353,6 +2452,7 @@ export function reportBanSignal(apiKey, message, { windowMs = 30 * 60 * 1000 } =
     account.bannedAt = now;
     account.bannedReason = account._banSignalLastMessage;
     saveAccounts();
+    trySyncModelCatalog();
     log.error(`Account ${safeAccountRef(account)} marked BANNED after ${account._banSignalCount} ban-shaped errors`);
     // Drop any cascade-pool entries owned by this key.
     import('./conversation-pool.js').then(m => m.invalidateFor({ apiKey })).catch(() => {});
@@ -2487,7 +2587,7 @@ function accountUserStatusSummary(userStatus) {
 function publicAccount(a, now, { view = 'full' } = {}) {
   const rpmLimit = rpmLimitFor(a);
   const rpmUsed = pruneRpmHistory(a, now);
-  const tierModels = getTierModels(a.tier || 'unknown');
+  const tierModels = getTierModels(a.tier || 'unknown', a.id);
   const cr = a.credits || null;
   const base = {
     id: a.id,
@@ -3024,7 +3124,11 @@ async function _probeAccountImpl(account, { allowLsStart = true, canary } = {}) 
   // and haven't been classified yet. This discovers models available to free
   // accounts beyond the hardcoded FREE_TIER_MODELS list.
   if (runCanary) try {
-    const allModels = Object.keys(MODELS);
+    const allModels = filterModelKeysByCloudCatalog(
+      Object.keys(MODELS),
+      process.env,
+      account.id,
+    );
     const alreadyProbed = new Set([
       ...PROBE_CANARIES,
       ...Object.keys(account.capabilities || {}),
@@ -3388,6 +3492,8 @@ async function refreshAllFirebaseTokens({ skipBusy = false } = {}) {
       if (apiKey && apiKey !== a.apiKey) {
         log.info(`Firebase refresh: ${safeAccountRef(a)} got new API key`);
         a.apiKey = apiKey;
+        invalidateModelCatalogForAccount(a.id);
+        trySyncModelCatalog();
       }
       a._refreshFailStreak = 0;
       saveAccounts();
@@ -3403,6 +3509,7 @@ async function refreshAllFirebaseTokens({ skipBusy = false } = {}) {
         a.status = 'error';
         a.erroredAt = Date.now();
         saveAccounts();
+        trySyncModelCatalog();
         log.warn(`Account ${safeAccountRef(a)} downgraded to error after ${a._refreshFailStreak} consecutive Firebase refresh failures`);
       }
     }
@@ -3473,7 +3580,7 @@ export async function initAuth() {
 
   // Fetch live model catalog from cloud and merge into hardcoded catalog.
   // Fire-and-forget — the hardcoded catalog is sufficient until this completes.
-  // trySyncModelCatalog also fires again when the first account becomes active.
+  // trySyncModelCatalog also fires whenever an account becomes active.
   trySyncModelCatalog();
 
   // Periodic Firebase token refresh (every 50 min). Firebase ID tokens expire
