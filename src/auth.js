@@ -739,16 +739,22 @@ async function fetchAndMergeModelCatalog(accountId, apiKey) {
       : await import('./windsurf-api.js');
     const { listModels } = await import('./models.js');
     const proxy = getEffectiveProxy(acct.id) || null;
-    const { configs } = await getCascadeModelConfigs(acct.apiKey, proxy);
+    const result = await getCascadeModelConfigs(acct.apiKey, proxy);
     const current = accounts.find(a => (
       a.id === accountId
       && a.status === 'active'
       && a.apiKey === apiKey
     ));
     if (!current) return false;
+    if (!Array.isArray(result?.configs)) {
+      mergeCloudModels([], { accountId });
+      log.warn(`Model catalog returned malformed configs for ${safeAccountRef(acct)}`);
+      return false;
+    }
+    const configs = result.configs;
     const added = mergeCloudModels(configs, { accountId });
-    _modelCatalogSyncedKeys.set(accountId, apiKey);
     const visible = listModels().length;
+    _modelCatalogSyncedKeys.set(accountId, apiKey);
     log.info(`Model catalog for ${safeAccountRef(acct)}: ${configs.length} cloud models, ${added} new entries merged, ${visible} pool models visible`);
     // The connect namespace remains process-wide and has its own catalog source.
     // Preserve the existing one-time sync instead of fetching it once per account.

@@ -761,16 +761,16 @@ export function listModels(opts = {}) {
  * Only adds NEW models not already in the catalog (doesn't overwrite enums).
  */
 export function mergeCloudModels(configs, { accountId = null } = {}) {
-  if (!Array.isArray(configs)) return 0;
+  const catalogAccountKey = cloudCatalogAccountKey(accountId);
+  const safeConfigs = Array.isArray(configs) ? configs : [];
 
   // Replace this account's policy snapshot atomically. An empty/invalid
   // response removes it so filtering remains fail-open for that account.
   const nextCloudCatalogUids = new Set();
-  for (const model of configs) {
+  for (const model of safeConfigs) {
     const uid = normalizeCloudCatalogUid(model?.modelUid);
     if (uid) nextCloudCatalogUids.add(uid);
   }
-  const catalogAccountKey = cloudCatalogAccountKey(accountId);
   if (nextCloudCatalogUids.size > 0) {
     _cloudCatalogUidsByAccount.set(catalogAccountKey, nextCloudCatalogUids);
   } else {
@@ -788,7 +788,7 @@ export function mergeCloudModels(configs, { accountId = null } = {}) {
     MODEL_PROVIDER_MOONSHOT: 'moonshot',
   };
 
-  for (const m of configs) {
+  for (const m of safeConfigs) {
     const uid = typeof m?.modelUid === 'string' ? m.modelUid.trim() : '';
     if (!uid) continue;
     // Already in catalog?

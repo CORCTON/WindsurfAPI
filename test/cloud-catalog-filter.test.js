@@ -11,6 +11,7 @@ import {
   isModelAllowedForAccount,
   removeAccount,
   setAccountStatus,
+  trySyncModelCatalog,
 } from '../src/auth.js';
 import { handleDashboardApi } from '../src/dashboard/api.js';
 import { handleModels } from '../src/handlers/models.js';
@@ -178,6 +179,15 @@ describe('upstream account cloud catalog filtering', () => {
     assert.deepEqual(handleModels({}).data.map((model) => model.id), baseline);
   });
 
+  it('clears a stale catalog when mergeCloudModels receives a non-array', () => {
+    const baseline = handleModels({}).data.map((model) => model.id);
+    syncAllowed();
+
+    mergeCloudModels({ malformed: true }, { accountId: ACCOUNT_A });
+
+    assert.deepEqual(handleModels({}).data.map((model) => model.id), baseline);
+  });
+
   it('matches cloud model UIDs case-insensitively', () => {
     setActiveCloudCatalogAccounts([ACCOUNT_A]);
     mergeCloudModels(
@@ -292,5 +302,52 @@ describe('upstream account cloud catalog filtering', () => {
       [ALLOWED_KEY],
       'inactive account catalogs must not remain in the pool listing',
     );
+  });
+
+  it('leaves a malformed catalog response retryable and accepts the next valid response', async () => {
+    const runId = Date.now().toString(36);
+    const apiKey = `catalog-retry-${runId}`;
+    let requests = 0;
+    __setModelCatalogDeps({
+      disableConnectSync: true,
+      getCascadeModelConfigs: async () => {
+        requests += 1;
+        if (requests === 1) return {};
+        return { configs: [{ modelUid: MODELS[ALLOWED_KEY].modelUid }] };
+      },
+    });
+
+    const account = addAccountByKey(apiKey, 'catalog-retry');
+    createdAccountIds.push(account.id);
+    await __waitForModelCatalogSync();
+    trySyncModelCatalog();
+    await __waitForModelCatalogSync();
+
+    assert.equal(requests, 2);
+    assert.deepEqual(
+      cascadeKeys(handleModels({}).data.map((model) => model._windsurf_id)),
+      [ALLOWED_KEY],
+    );
+  });
+
+  it('treats a valid empty catalog as synchronized instead of retrying it', async () => {
+    const runId = Date.now().toString(36);
+    const apiKey = `catalog-empty-${runId}`;
+    let requests = 0;
+    __setModelCatalogDeps({
+      disableConnectSync: true,
+      getCascadeModelConfigs: async () => {
+        requests += 1;
+        return { configs: [] };
+      },
+    });
+
+    const account = addAccountByKey(apiKey, 'catalog-empty');
+    createdAccountIds.push(account.id);
+    await __waitForModelCatalogSync();
+    trySyncModelCatalog();
+    await __waitForModelCatalogSync();
+
+    assert.equal(requests, 1);
   });
 });
