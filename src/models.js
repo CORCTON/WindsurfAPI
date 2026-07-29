@@ -684,6 +684,15 @@ function applicableCloudCatalogUids(accountId) {
   return fallback?.size ? fallback : null;
 }
 
+function isModelAllowedByCatalogUids(key, catalogUids) {
+  if (!catalogUids) return true;
+  const model = MODELS[key];
+  if (!model) return false;
+  if (model.backend === 'special_agent') return true;
+  const uid = normalizeCloudCatalogUid(model.modelUid);
+  return uid !== '' && catalogUids.has(uid);
+}
+
 /** Whether one model key is permitted by the relevant upstream account catalog. */
 export function isModelAllowedByCloudCatalog(key, env = process.env, accountId = null) {
   if (env.WINDSURFAPI_IGNORE_CLOUD_FILTER === '1') return true;
@@ -693,12 +702,7 @@ export function isModelAllowedByCloudCatalog(key, env = process.env, accountId =
   // selector has no equivalent entry in the Cascade MODELS table.
   if (getBackendSwitch('devinConnect', env)) return true;
   const catalogUids = applicableCloudCatalogUids(accountId);
-  if (!catalogUids) return true;
-  const model = MODELS[key];
-  if (!model) return false;
-  if (model.backend === 'special_agent') return true;
-  const uid = normalizeCloudCatalogUid(model.modelUid);
-  return uid !== '' && catalogUids.has(uid);
+  return isModelAllowedByCatalogUids(key, catalogUids);
 }
 
 /**
@@ -714,7 +718,11 @@ export function filterModelKeysByCloudCatalog(
   accountId = null,
 ) {
   const input = Array.from(keys || []);
-  return input.filter((key) => isModelAllowedByCloudCatalog(key, env, accountId));
+  if (env.WINDSURFAPI_IGNORE_CLOUD_FILTER === '1') return input;
+  if (getBackendSwitch('devinConnect', env)) return input;
+  const catalogUids = applicableCloudCatalogUids(accountId);
+  if (!catalogUids) return input;
+  return input.filter((key) => isModelAllowedByCatalogUids(key, catalogUids));
 }
 
 function baseTierModels(tier) {
