@@ -438,6 +438,26 @@
       "mergedAt": "2026-07-26",
       "title": "fix(chat): DEVIN_CONNECT 路径补上 sticky 绑定 — 缓存亲和此前完全失效",
       "summary": "第二次出手直接到 S 级。setStickyBinding 只在两处 Cascade 成功路径被调用,DEVIN_CONNECT 路径只查不写 —— connect 部署开 STICKY_SESSION_ENABLED=1 完全空转(23 次请求 23 CHECK/23 MISS/0 SET),随后 getApiKey 候选排序以 lastUsed 升序收尾,把同一会话每轮主动派给不同账号。而上游 prompt cache 按账号隔离、写入约为读取 10 倍单价:换号 = 每轮重付整个累积上下文。用付费账号做了三账号交叉实测(tag4 write / tag5 read)钉死机制,修复后同一长对话 write 恒为本轮增量、read 随上下文线性攒到 17 万 token。最见功力的是 modelKey=null 键域细节:connect 取号恒传 null,绑定必须同域写入,否则查询静默不命中退化回空转 —— 他不但踩对了还为这个失败模式加了回归守卫。与 #226 pair-chain 互补成完整闭环:session_id 稳定 + 账号稳定,缓存才真正续得上。合并时 master 侧同步补了 sticky 快路径 excludeKeys、per-user-scope 门禁与 connect-metrics 观测(2f8bce0/f2c938e/3419854)。"
+    },
+    {
+      "login": "andya1lan",
+      "githubId": 58987282,
+      "pr": 232,
+      "weight": "A",
+      "weightLabel": "按账号隔离上游模型目录 · 并集发现 + 账号维度路由",
+      "mergedAt": "2026-07-29",
+      "title": "feat(models): enforce per-account upstream cloud catalogs",
+      "summary": "首贡就交了一个跨三条暴露路径的架构级修复。静态模型表此前被 /v1/models、Dashboard、路由各自独立暴露,受限上游目录的部署会宣传自己账号用不了的模型 —— 用户点了就报错。他在 issue #231 里先把方案空间穷举掉:手工白名单会与上游漂移;只用第一个活跃账号会把一个账号的目录套到别人身上;取交集会隐藏至少一个账号能用的模型。最后落在\"池级列表用活跃账号目录的并集、路由校验所选账号自己的目录\"这个分层上,这个取舍是对的,也是整个 PR 最值钱的部分。初版有两处 fail-open 没覆盖:干旱白名单被 catalog 过滤成空后 isModelBlockedByDrought 对每个模型都返回 true(干旱一激活即全站中断),以及上游\"部分但非空\"响应被当权威目录(实测 pro 账号从 130 个模型塌到 6 个)。两轮修复都精准命中,而且干旱那条他给出的办法比评审建议的更好 —— 先算 catalog ∩ free-tier,交集非空时照旧限制、为空时只让低配额保护 fail-open,保住了干旱本来的用途而不是简单绕过。缩小检查用 last-known-good + 单轮 30s 延迟确认,并在注释里明写这不是常规定时刷新。另外主动做了两件超出要求的事:Dashboard 两个界面加 restrictionFailOpen 告警(fail-open 是\"安全但可能违反预期\"的状态,让运维方看见它是对的),以及把\"无账号事件时的上游 catalog 变更检测\"明确划为 out-of-scope 并另开 #234。合并前对抗验证重点查了新增的 quarantine 定时器 —— unref、可取消、removeAccount 时清 attempt key 并取消,生命周期闭合,未发现新引入缺陷;connect 路径走独立 selector 命名空间门禁,没踩本仓库\"修复只覆盖部分协议路由\"的老陷阱。未到 S 是因为初版漏了那两个 fail-open 场景,且描述里一度有一条\"该失败在 master 上也复现\"的不准确声明(后经核实 master 上 9/9 通过,作者已撤回并说明是本地代理网络所致)。"
+    },
+    {
+      "login": "andya1lan",
+      "githubId": 58987282,
+      "pr": 233,
+      "weight": "B+",
+      "weightLabel": "CI x64 runner 迁移 · 揪出我们连漏四个版本的构建缺口",
+      "mergedAt": "2026-07-29",
+      "title": "fix(ci): migrate macOS x64 release runner to macos-26-intel",
+      "summary": "四行改动,价值全在诊断。GitHub 已于 2025-12-04 下线 macos-13 runner 镜像,而 release.yml 的 x64 job 一直写着 runs-on: macos-13 —— v3.9.1 到 v3.9.4 的 x64 job 终态**全部是 cancelled 而非排队**,也就是连续四个版本都没有 macOS x64 二进制发出去。而我们这边一直把 GitHub UI 上的 queued 按 workflow 注释里\"x64 可能排几小时\"的说法解释,没去看终态,四次都判断成\"非阻塞、不用管\"。他附了 GitHub changelog 与 actions/runner-images README 两条官方依据,标签选择(macos-26-intel)也与官方当前 x64 标签一致,并保留了 x64 不进 release needs 的非阻塞语义。这条的分量不在代码量,而在于它是外部贡献者替维护方发现的自身发布链缺口 —— 与 lovivi #204 那种\"十行精准方言修复\"同档但更靠上,因为它纠正的是一个已经影响了四个已发布版本的事实。"
     }
   ]
 }
