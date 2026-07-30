@@ -8,8 +8,12 @@ import { getBackendSwitch } from '../runtime-config.js';
 // The MODELS table stays full for the Cascade transport; this is a per-transport
 // view, not a catalog edit. Non-connect deployments see the full list unchanged.
 export function handleModels(env = process.env) {
-  let data = listModels();
-  if (getBackendSwitch('devinConnect', env)) {
+  const effectiveEnv = env === process.env ? env : { ...process.env, ...env };
+  // listModels receives the same effective environment used for transport
+  // selection so a DEVIN_CONNECT request is never pre-filtered by the
+  // unrelated Cascade cloud catalog.
+  let data = listModels({ env: effectiveEnv });
+  if (getBackendSwitch('devinConnect', effectiveEnv)) {
     // Existence = snapshot ∪ live (same source of truth as resolveConnectSelector,
     // audit 2026-07-12). Before this, the filter only consulted the frozen
     // CATALOG_SELECTORS snapshot, so live-synced selectors were dropped here even

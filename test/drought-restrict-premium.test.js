@@ -106,6 +106,7 @@ describe('getDroughtSummary includes restriction state (v2.0.58)', () => {
     mk('a', { weeklyPercent: 50, dailyPercent: 50 });
     const s = getDroughtSummary();
     assert.equal(typeof s.restrictEnabled, 'boolean');
+    assert.equal(s.restrictionFailOpen, false);
     assert.ok(Array.isArray(s.freeTierModels));
     assert.ok(s.freeTierModels.includes('gemini-2.5-flash'),
       `freeTierModels should include gemini-2.5-flash, got ${JSON.stringify(s.freeTierModels)}`);

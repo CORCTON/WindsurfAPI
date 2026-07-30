@@ -1746,6 +1746,7 @@ window._firebaseOAuth = async function(provider) {
     <div id="drought-banner" style="display:none;margin:10px 0 16px;padding:14px 18px;border:1.5px dashed #d97706;background:#fff7e6;border-radius:8px;color:#874d00">
       <strong data-zh="配额预警 ·" data-en="Quota drought ·">配额预警 ·</strong>
       <span id="drought-message" data-zh="所有账号本周配额都低于阈值，建议补账号或等待重置" data-en="every account's weekly quota is under the threshold; add accounts or wait for reset">所有账号本周配额都低于阈值，建议补账号或等待重置</span>
+      <span id="drought-fail-open-message" style="display:none" data-zh="当前可用账号中没有免费模型，因此低配额保护不会阻止付费模型；账号本身不支持的模型仍会被隐藏和拦截" data-en="no free model is available for the active accounts, so low-quota protection will not block paid models; models unsupported by an account are still hidden and blocked">当前可用账号中没有免费模型，因此低配额保护不会阻止付费模型；账号本身不支持的模型仍会被隐藏和拦截</span>
       <span id="drought-detail" class="text-mute" style="margin-left:8px;font-size:12px"></span>
     </div>
 
@@ -2696,12 +2697,18 @@ const App = {
 
   async loadDrought() {
     const banner = document.getElementById('drought-banner');
+    const msg = document.getElementById('drought-message');
+    const failOpenMsg = document.getElementById('drought-fail-open-message');
     const detail = document.getElementById('drought-detail');
     if (!banner) return;
     try {
       const d = await this.api('GET', '/drought');
       if (!d?.drought) { banner.style.display = 'none'; return; }
       banner.style.display = '';
+      if (msg && failOpenMsg) {
+        msg.style.display = d.restrictionFailOpen ? 'none' : '';
+        failOpenMsg.style.display = d.restrictionFailOpen ? '' : 'none';
+      }
       if (detail) {
         const lw = d.lowestWeeklyPercent;
         const ld = d.lowestDailyPercent;

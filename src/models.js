@@ -599,9 +599,141 @@ export function registerDiscoveredFreeModel(key) {
   if (MODELS[key] && !FREE_TIER_BASE.includes(key)) _discoveredFreeModels.add(key);
 }
 
+// ─── Cloud catalog filter ─────────────────────────────────
+// GetCascadeModelConfigs is fetched with one upstream account. Keep each
+// account's response separate: the pool-wide catalog is their union, while
+// routing checks the catalog for the candidate account only. Special-agent
+// backends keep their own catalog and are not governed by this response.
+const DEFAULT_CLOUD_CATALOG_ACCOUNT = Symbol('default-cloud-catalog-account');
+const _cloudCatalogUidsByAccount = new Map();
+const _activeCloudCatalogAccounts = new Set();
+const _pendingCloudCatalogUidsByAccount = new Map();
+const CLOUD_CATALOG_CONFIRM_RATIO = 0.5;
+
+function normalizeCloudCatalogUid(uid) {
+  return typeof uid === 'string' ? uid.trim().toLowerCase() : '';
+}
+
+const STATIC_CLOUD_CATALOG_UID_COUNT = new Set(
+  Object.values(MODELS)
+    .filter(model => !model?.deprecated && model?.backend !== 'special_agent')
+    .map(model => normalizeCloudCatalogUid(model?.modelUid))
+    .filter(Boolean),
+).size;
+
+function cloudCatalogAccountKey(accountId) {
+  if (accountId === undefined || accountId === null || accountId === '') {
+    return DEFAULT_CLOUD_CATALOG_ACCOUNT;
+  }
+  return String(accountId);
+}
+
+/**
+ * Set the accounts that currently contribute to pool-wide model listings.
+ *
+ * A listing fails open until every active account has a usable catalog. This
+ * prevents a newly-added or temporarily-unsynced account from having models
+ * hidden before its own upstream response arrives.
+ */
+export function setActiveCloudCatalogAccounts(accountIds) {
+  const nextActiveAccounts = new Set();
+  for (const accountId of accountIds || []) {
+    if (accountId === undefined || accountId === null || accountId === '') continue;
+    nextActiveAccounts.add(String(accountId));
+  }
+  for (const accountId of _activeCloudCatalogAccounts) {
+    if (nextActiveAccounts.has(accountId)) continue;
+    _cloudCatalogUidsByAccount.delete(accountId);
+    _pendingCloudCatalogUidsByAccount.delete(accountId);
+  }
+  _activeCloudCatalogAccounts.clear();
+  for (const accountId of nextActiveAccounts) _activeCloudCatalogAccounts.add(accountId);
+}
+
+/** Remove one account's catalog when it leaves the active pool or its key changes. */
+export function removeCloudModelCatalog(accountId) {
+  const accountKey = cloudCatalogAccountKey(accountId);
+  _cloudCatalogUidsByAccount.delete(accountKey);
+  _pendingCloudCatalogUidsByAccount.delete(accountKey);
+}
+
+/** Clear all in-memory catalog state. Primarily useful for deterministic tests. */
+export function clearCloudModelCatalogs() {
+  _cloudCatalogUidsByAccount.clear();
+  _pendingCloudCatalogUidsByAccount.clear();
+  _activeCloudCatalogAccounts.clear();
+}
+
+function applicableCloudCatalogUids(accountId) {
+  if (accountId !== undefined && accountId !== null && accountId !== '') {
+    const catalog = _cloudCatalogUidsByAccount.get(cloudCatalogAccountKey(accountId));
+    return catalog?.size ? catalog : null;
+  }
+
+  if (_activeCloudCatalogAccounts.size > 0) {
+    const union = new Set();
+    for (const activeAccountId of _activeCloudCatalogAccounts) {
+      const catalog = _cloudCatalogUidsByAccount.get(activeAccountId);
+      if (!catalog?.size) return null;
+      for (const uid of catalog) union.add(uid);
+    }
+    return union;
+  }
+
+  const fallback = _cloudCatalogUidsByAccount.get(DEFAULT_CLOUD_CATALOG_ACCOUNT);
+  return fallback?.size ? fallback : null;
+}
+
+function isModelAllowedByCatalogUids(key, catalogUids) {
+  if (!catalogUids) return true;
+  const model = MODELS[key];
+  if (!model) return false;
+  if (model.backend === 'special_agent') return true;
+  const uid = normalizeCloudCatalogUid(model.modelUid);
+  return uid !== '' && catalogUids.has(uid);
+}
+
+/** Whether one model key is permitted by the relevant upstream account catalog. */
+export function isModelAllowedByCloudCatalog(key, env = process.env, accountId = null) {
+  if (env.WINDSURFAPI_IGNORE_CLOUD_FILTER === '1') return true;
+  // DEVIN_CONNECT uses a separate selector namespace and catalog source.
+  // Applying GetCascadeModelConfigs here can turn a valid Connect-only
+  // allowlist (for example swe-1-6-slow) into an empty model view because the
+  // selector has no equivalent entry in the Cascade MODELS table.
+  if (getBackendSwitch('devinConnect', env)) return true;
+  const catalogUids = applicableCloudCatalogUids(accountId);
+  return isModelAllowedByCatalogUids(key, catalogUids);
+}
+
+/**
+ * Return model keys allowed by an account catalog or by the active pool union.
+ *
+ * Passing accountId applies only that account's response. Omitting it applies
+ * the union used by pool-wide model listings. Before every relevant catalog is
+ * usable (or when explicitly disabled), this fails open.
+ */
+export function filterModelKeysByCloudCatalog(
+  keys = Object.keys(MODELS),
+  env = process.env,
+  accountId = null,
+) {
+  const input = Array.from(keys || []);
+  if (env.WINDSURFAPI_IGNORE_CLOUD_FILTER === '1') return input;
+  if (getBackendSwitch('devinConnect', env)) return input;
+  const catalogUids = applicableCloudCatalogUids(accountId);
+  if (!catalogUids) return input;
+  return input.filter((key) => isModelAllowedByCatalogUids(key, catalogUids));
+}
+
+function baseTierModels(tier) {
+  if (tier === 'free') return [...FREE_TIER_BASE, ..._discoveredFreeModels];
+  if (tier === 'expired') return [];
+  return Object.keys(MODELS);
+}
+
 export const MODEL_TIER_ACCESS = {
-  get pro() { return Object.keys(MODELS); },
-  get free() { return [...FREE_TIER_BASE, ..._discoveredFreeModels]; },
+  get pro() { return filterModelKeysByCloudCatalog(baseTierModels('pro')); },
+  get free() { return filterModelKeysByCloudCatalog(baseTierModels('free')); },
   // Optimistic: a freshly-added account whose probe hasn't completed yet
   // gets the FULL pro catalog, not just gemini-2.5-flash. Otherwise the
   // chat.js anyEligible check (line ~1141) immediately 403s any non-free
@@ -611,13 +743,14 @@ export const MODEL_TIER_ACCESS = {
   // upstream with a real entitlement error from the LS, which is a more
   // accurate failure than the misleading "model not in account pool" we
   // were emitting. Reported in QQ group, 2026-04-30.
-  get unknown() { return Object.keys(MODELS); },
+  get unknown() { return filterModelKeysByCloudCatalog(baseTierModels('unknown')); },
   expired: [],
 };
 
 /** Models a given tier is entitled to. */
-export function getTierModels(tier) {
-  return MODEL_TIER_ACCESS[tier] || MODEL_TIER_ACCESS.unknown;
+export function getTierModels(tier, accountId = null, env = process.env) {
+  const resolvedTier = ['pro', 'free', 'unknown', 'expired'].includes(tier) ? tier : 'unknown';
+  return filterModelKeysByCloudCatalog(baseTierModels(resolvedTier), env, accountId);
 }
 
 function isSpecialAgentCatalogEnabled() {
@@ -633,10 +766,12 @@ function isSpecialAgentCatalogEnabled() {
 /** List all models in OpenAI /v1/models format. Hides deprecated models. */
 export function listModels(opts = {}) {
   const ts = Math.floor(Date.now() / 1000);
+  const env = opts.env ?? process.env;
   const specialAgentEnabled = opts.specialAgentEnabled ?? isSpecialAgentCatalogEnabled();
   const includeDisabledSpecialAgent = opts.includeDisabledSpecialAgent
     ?? process.env.WINDSURFAPI_SHOW_DISABLED_SPECIAL_AGENT_MODELS === '1';
-  return Object.entries(MODELS)
+  return filterModelKeysByCloudCatalog(Object.keys(MODELS), env)
+    .map((id) => [id, MODELS[id]])
     .filter(([, info]) => !info.deprecated)
     .filter(([, info]) => info.backend !== 'special_agent' || specialAgentEnabled || includeDisabledSpecialAgent)
     .map(([id, info]) => ({
@@ -653,13 +788,24 @@ export function listModels(opts = {}) {
     }));
 }
 
-/**
- * Merge live model configs from GetCascadeModelConfigs into the catalog.
- * Called once at startup after the first successful cloud fetch.
- * Only adds NEW models not already in the catalog (doesn't overwrite enums).
- */
-export function mergeCloudModels(configs) {
-  if (!Array.isArray(configs)) return 0;
+function applyCloudModels(configs, { accountId = null } = {}) {
+  const catalogAccountKey = cloudCatalogAccountKey(accountId);
+  const safeConfigs = Array.isArray(configs) ? configs : [];
+  _pendingCloudCatalogUidsByAccount.delete(catalogAccountKey);
+
+  // Replace this account's policy snapshot atomically. An empty/invalid
+  // response removes it so filtering remains fail-open for that account.
+  const nextCloudCatalogUids = new Set();
+  for (const model of safeConfigs) {
+    const uid = normalizeCloudCatalogUid(model?.modelUid);
+    if (uid) nextCloudCatalogUids.add(uid);
+  }
+  if (nextCloudCatalogUids.size > 0) {
+    _cloudCatalogUidsByAccount.set(catalogAccountKey, nextCloudCatalogUids);
+  } else {
+    _cloudCatalogUidsByAccount.delete(catalogAccountKey);
+  }
+
   let added = 0;
   const providerMap = {
     MODEL_PROVIDER_ANTHROPIC: 'anthropic',
@@ -671,8 +817,8 @@ export function mergeCloudModels(configs) {
     MODEL_PROVIDER_MOONSHOT: 'moonshot',
   };
 
-  for (const m of configs) {
-    const uid = m.modelUid;
+  for (const m of safeConfigs) {
+    const uid = typeof m?.modelUid === 'string' ? m.modelUid.trim() : '';
     if (!uid) continue;
     // Already in catalog?
     if (_lookup.has(uid) || _lookup.has(uid.toLowerCase())) continue;
@@ -694,4 +840,99 @@ export function mergeCloudModels(configs) {
     added++;
   }
   return added;
+}
+
+/**
+ * Merge live model configs from GetCascadeModelConfigs into the catalog.
+ * Account-scoped snapshots pass through the shrink-confirmation guard. The
+ * default legacy catalog remains a direct merge for compatibility.
+ * Only adds NEW models not already in the catalog (doesn't overwrite enums).
+ */
+export function mergeCloudModels(configs, { accountId = null } = {}) {
+  if (accountId === undefined || accountId === null || accountId === '') {
+    return applyCloudModels(configs, { accountId });
+  }
+  return mergeCloudCatalogSnapshot(configs, { accountId }).added;
+}
+
+function cloudCatalogUidSet(configs) {
+  const uids = new Set();
+  for (const model of configs || []) {
+    const uid = normalizeCloudCatalogUid(model?.modelUid);
+    if (uid) uids.add(uid);
+  }
+  return uids;
+}
+
+function cloudCatalogSetsEqual(left, right) {
+  if (!left || left.size !== right.size) return false;
+  for (const uid of left) {
+    if (!right.has(uid)) return false;
+  }
+  return true;
+}
+
+/**
+ * Validate and merge one fetched account catalog snapshot.
+ *
+ * A non-empty snapshot that is less than half the account's last accepted
+ * snapshot, or the static catalog when no account snapshot exists yet, is
+ * quarantined until the same UID set is returned in a later sync round.
+ */
+export function mergeCloudCatalogSnapshot(configs, { accountId = null } = {}) {
+  const accountKey = cloudCatalogAccountKey(accountId);
+  if (!Array.isArray(configs)) {
+    _pendingCloudCatalogUidsByAccount.delete(accountKey);
+    applyCloudModels([], { accountId });
+    return {
+      accepted: false,
+      added: 0,
+      reason: 'malformed',
+      receivedCount: 0,
+      baselineCount: 0,
+    };
+  }
+
+  const nextUids = cloudCatalogUidSet(configs);
+  if (nextUids.size === 0) {
+    _pendingCloudCatalogUidsByAccount.delete(accountKey);
+    return {
+      accepted: true,
+      added: applyCloudModels(configs, { accountId }),
+      reason: 'no_filter',
+      receivedCount: 0,
+      baselineCount: 0,
+    };
+  }
+
+  const currentUids = _cloudCatalogUidsByAccount.get(accountKey);
+  const baselineCount = currentUids?.size || STATIC_CLOUD_CATALOG_UID_COUNT;
+  const baselineSource = currentUids?.size ? 'last_accepted' : 'static';
+  const confirmationThreshold = Math.ceil(baselineCount * CLOUD_CATALOG_CONFIRM_RATIO);
+  const needsConfirmation = nextUids.size < confirmationThreshold;
+
+  if (needsConfirmation) {
+    const pendingUids = _pendingCloudCatalogUidsByAccount.get(accountKey);
+    if (!cloudCatalogSetsEqual(pendingUids, nextUids)) {
+      _pendingCloudCatalogUidsByAccount.set(accountKey, nextUids);
+      return {
+        accepted: false,
+        added: 0,
+        reason: 'confirmation_required',
+        receivedCount: nextUids.size,
+        baselineCount,
+        baselineSource,
+      };
+    }
+  }
+
+  _pendingCloudCatalogUidsByAccount.delete(accountKey);
+  return {
+    accepted: true,
+    added: applyCloudModels(configs, { accountId }),
+    reason: needsConfirmation ? 'confirmed_small' : 'accepted',
+    receivedCount: nextUids.size,
+    baselineCount,
+    baselineSource,
+  };
 }
