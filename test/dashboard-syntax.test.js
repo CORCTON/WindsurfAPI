@@ -73,16 +73,38 @@ test('dashboard proxy and abnormal-account tables use paged account summaries', 
   assert.match(html, /setBansPage\(page\)/);
   assert.match(html, /this\.accountsListUrl\(\{\s*page:\s*this\.proxyPage,\s*pageSize:\s*this\.proxyPageSize/s);
   assert.match(html, /filter:\s*'flagged'/);
-  assert.doesNotMatch(html, /pageSize=1000/);
-  assert.doesNotMatch(html, /pageSize=500/);
+  // These two used to read `doesNotMatch(html, /pageSize=1000/)` — TAUTOLOGIES.
+  // index.html never writes the page size in the query-string form `pageSize=N`; it
+  // builds it as an object property (`pageSize: this.proxyPageSize`), so no page-size
+  // regression could ever make those regexes match. Worse, the thing they existed to
+  // prevent — a 1000-row page load — IS present as `pageSize: '1000'`, and they sat
+  // green over it. The intent was right; the form could not detect anything.
+  //
+  // Bite the real shape instead: the LIST paths must page through the bound
+  // properties, and the one legitimate bulk read (the CSV export at ~6301, which
+  // deliberately exceeds the 200 clamp) must stay the ONLY hardcoded large size.
+  const bigPageSites = [...html.matchAll(/pageSize:\s*'?(\d+)'?/g)]
+    .map(m => Number(m[1]))
+    .filter(n => n > 200);
+  assert.equal(bigPageSites.length, 1,
+    `only the CSV export may hardcode a page size above 200; found ${bigPageSites.length} `
+    + `site(s): ${bigPageSites.join(', ')}. A list view must page via this.*PageSize.`);
+  assert.match(html, /view: 'summary', page: '1', pageSize: '1000'/,
+    'and that one site is the export — if it moved, re-point this guard rather than widening it');
 });
 
 test('dashboard sketch proxy and abnormal-account tables use lightweight summaries', () => {
   const html = readFileSync(join(root, 'src/dashboard/index-sketch.html'), 'utf8');
   assert.match(html, /\/accounts\?view=summary&pageSize=200/);
   assert.match(html, /\/accounts\?view=summary&filter=flagged&pageSize=200/);
-  assert.doesNotMatch(html, /pageSize=1000/);
-  assert.doesNotMatch(html, /pageSize=500/);
+  // index-sketch.html DOES use the query-string form, so here the literal check is
+  // live rather than tautological (mutating `pageSize=200` to `pageSize=1000` fails
+  // the two assertions above). Keep an explicit upper bound on every occurrence so a
+  // new call site cannot reintroduce a heavy default.
+  const sizes = [...html.matchAll(/pageSize=(\d+)/g)].map(m => Number(m[1]));
+  assert.ok(sizes.length > 0, 'the sketch UI builds page size into the query string');
+  assert.deepEqual(sizes.filter(n => n > 200), [],
+    `sketch list views must stay at or below 200 rows per request; found ${sizes.join(', ')}`);
 });
 
 test('dashboard Quick Login uses the Windsurf sign-in + token flow (no dead Firebase popup)', () => {

@@ -210,36 +210,94 @@ describe('DELETE /v1/responses/{id} routing', () => {
   });
 
   it('deletes a response owned by the derived caller identity', async () => {
+    // REWRITTEN. The previous version wrapped its assertions in
+    // `if (res.statusCode === 200) {...} else { assert 404 }` and set
+    // WINDSURFAPI_SINGLE_TENANT_CACHE at runtime — but chat.js freezes that env into
+    // a module-level const at IMPORT time, so the flag never took effect and the fork
+    // ALWAYS took the 404 branch. The happy path was never executed: mutating the
+    // endpoint to `if (true) return responseNotFound(...)` — i.e. DELETE completely
+    // dead — left this suite 11/11 green. A test with a conditional assertion proves
+    // whichever branch it happens to take, which is the one thing a guard must not do.
+    //
+    // Use an explicit identity header instead, so the happy path is unconditional and
+    // does not depend on import-time env state.
     const port = await boot('del-ok');
-    // Seed under exactly the identity a bodyless keyed DELETE derives, so the happy
-    // path is covered at the route layer too. WINDSURFAPI_SINGLE_TENANT_CACHE makes
-    // the ip+ua bucket trustworthy, which is the documented single-user self-host mode.
-    const prev = process.env.WINDSURFAPI_SINGLE_TENANT_CACHE;
-    process.env.WINDSURFAPI_SINGLE_TENANT_CACHE = '1';
-    try {
+    const { callerKeyFromRequest } = await import('../src/caller-key.js');
+    const callerKey = callerKeyFromRequest(
+      { headers: {}, socket: { remoteAddress: '127.0.0.1' } }, API_KEY, { user: 'deleter' },
+    );
+    store.putResponse('resp_todelete', [
+      { role: 'user', content: 'x' },
+      { role: 'assistant', content: 'y' },
+    ], callerKey, { model: 'm' });
+
+    const res = await request(port, '/v1/responses/resp_todelete', 'DELETE',
+      { ...AUTH, 'x-response-user': 'deleter' });
+    assert.equal(res.statusCode, 200, 'the owner must be able to delete its own response');
+    assert.equal(res.body.object, 'response.deleted');
+    assert.equal(res.body.deleted, true);
+    assert.equal(store.getResponse('resp_todelete', callerKey).ok, false,
+      'and it must really be gone from the store');
+  });
+});
+
+// Real HTTP for the header identity channel.
+//
+// This exists because the contract suite guarded it with `assert.match(src,
+// /x-response-/)` — a source grep, which matches any surviving mention of the string.
+// Measured: dropping the underscore→hyphen conversion in the header-name derivation
+// left prompt_cache_key / safety_identifier / conversation_id / session_id all
+// returning 404 while every retrieval test stayed green. Only a request that actually
+// SENDS the header can tell "works" from "the string is still in the file".
+describe('every documented identity signal resolves over real HTTP', () => {
+  // header name ↔ the POST body shape that must derive the SAME callerKey
+  const SIGNALS = [
+    ['x-response-user', { user: 'alice@example.com' }],
+    ['x-response-prompt-cache-key', { prompt_cache_key: 'conv-1' }],
+    ['x-response-safety-identifier', { safety_identifier: 'sid-1' }],
+    ['x-response-conversation', { conversation: 'cv-1' }],
+    ['x-response-conversation-id', { metadata: { conversation_id: 'mc-1' } }],
+    ['x-response-session-id', { metadata: { session_id: 'ms-1' } }],
+  ];
+
+  for (const [header, body] of SIGNALS) {
+    it(`${header} retrieves the caller's own response`, async () => {
+      const port = await boot(`hdr-${header.slice(12)}`);
       const { callerKeyFromRequest } = await import('../src/caller-key.js');
+      // Derive with the same request shape the server will see for the GET below.
       const callerKey = callerKeyFromRequest(
-        { headers: {}, socket: { remoteAddress: '127.0.0.1' } }, API_KEY, null,
+        { headers: {}, socket: { remoteAddress: '127.0.0.1' } }, API_KEY, body,
       );
-      store.putResponse('resp_todelete', [
-        { role: 'user', content: 'x' },
-        { role: 'assistant', content: 'y' },
-      ], callerKey);
-      const res = await request(port, '/v1/responses/resp_todelete', 'DELETE', AUTH);
-      // hasPerUserScope reads the env live, so the single-tenant opt-in applies.
-      if (res.statusCode === 200) {
-        assert.equal(res.body.object, 'response.deleted');
-        assert.equal(res.body.deleted, true);
-        assert.equal(store.getResponse('resp_todelete', callerKey).ok, false);
-      } else {
-        // The callerKey the server derives depends on its own XFF/ua handling; if it
-        // differs the endpoint must still fail CLOSED, never delete a foreign id.
-        assert.equal(res.statusCode, 404);
-        assert.equal(store.getResponse('resp_todelete', callerKey).ok, true);
-      }
-    } finally {
-      if (prev === undefined) delete process.env.WINDSURFAPI_SINGLE_TENANT_CACHE;
-      else process.env.WINDSURFAPI_SINGLE_TENANT_CACHE = prev;
-    }
+      const id = `resp_${header.replace(/[^a-z]/g, '')}`;
+      store.putResponse(id, [
+        { role: 'user', content: 'q' },
+        { role: 'assistant', content: 'the answer' },
+      ], callerKey, { model: 'm' });
+
+      const value = body.metadata
+        ? Object.values(body.metadata)[0]
+        : Object.values(body)[0];
+      const res = await request(port, `/v1/responses/${id}`, 'GET', { ...AUTH, [header]: value });
+      assert.equal(res.statusCode, 200,
+        `${header} must reproduce the POST-side scope — otherwise a client using this `
+        + 'signal cannot read the response it just created');
+      assert.equal(res.body.output_text, 'the answer');
+    });
+  }
+
+  it('a wrong header value still 404s (the scope gate is not weakened)', async () => {
+    const port = await boot('hdr-wrong');
+    const { callerKeyFromRequest } = await import('../src/caller-key.js');
+    const mine = callerKeyFromRequest(
+      { headers: {}, socket: { remoteAddress: '127.0.0.1' } }, API_KEY, { prompt_cache_key: 'mine' },
+    );
+    store.putResponse('resp_hdrscope', [
+      { role: 'user', content: 'q' },
+      { role: 'assistant', content: 'secret answer' },
+    ], mine, { model: 'm' });
+    const res = await request(port, '/v1/responses/resp_hdrscope', 'GET',
+      { ...AUTH, 'x-response-prompt-cache-key': 'theirs' });
+    assert.equal(res.statusCode, 404);
+    assert.equal(/secret answer/.test(res.raw), false);
   });
 });

@@ -270,6 +270,27 @@ describe('byte eviction is tenant-fair (found by adversarial review of the first
       'and it must still be readable — trimmed, not rejected');
   });
 
+  it('a hog cannot blow the budget when other tenants already hold entries', () => {
+    // The case above writes into an EMPTY store, where the global LRU scan has nothing
+    // to reclaim — so `bytes <= maxBytes` holds for reasons unrelated to the per-entry
+    // ceiling, and the comment's claim ("stops a hog from flushing strangers") is not
+    // actually exercised. Seed other tenants first so the scan HAS victims available;
+    // that is the state the ceiling exists for.
+    //
+    // Measured with the ceiling removed (MAX_ENTRY_BYTES = MAX_SAFE_INTEGER): 5 tenants
+    // holding ~125KB each plus one 2MB write reached 5,444,688 bytes against a
+    // 2,097,152 budget — 2.6x over.
+    for (let t = 0; t < 5; t++) {
+      store.putResponse(`neighbour${t}`, [{ role: 'user', content: 'n'.repeat(62_500) }],
+        `api:neigh${t}:user:1`);
+    }
+    store.putResponse('hog', [{ role: 'user', content: 'h'.repeat(2 * 1024 * 1024) }],
+      'api:hog:user:1');
+    const st = store.getResponseStoreStats();
+    assert.ok(st.bytes <= st.maxBytes,
+      `the per-entry ceiling must hold with neighbours present (${st.bytes} vs ${st.maxBytes})`);
+  });
+
   it('a single oversized MESSAGE is truncated in place, with a visible marker', () => {
     // Dropping messages cannot shrink a conversation that is one giant message, so
     // the content itself is cut. The marker keeps that visible to whoever reads the

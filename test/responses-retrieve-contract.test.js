@@ -122,10 +122,17 @@ describe('identity signal does not travel where logs will capture it', () => {
   // query param carrying that value contradicts the repo's own rule.
   const serverSrc = readFileSync(new URL('../src/server.js', import.meta.url), 'utf8');
 
-  it('the router reads identity from headers', () => {
-    assert.match(serverSrc, /x-response-/,
-      'the bodyless retrieval identity must be available via headers');
-  });
+  // NOTE: the two source greps that used to live here were NOT guards.
+  // `assert.match(serverSrc, /x-response-/)` matches any surviving mention of the
+  // string, and `serverSrc.includes("'conversation_id'")` can be satisfied by a
+  // prose comment. Measured: breaking the header-name derivation (dropping the
+  // underscore→hyphen conversion) left 4 of the 6 documented signals returning 404
+  // while all 35 retrieval tests stayed green. A source grep cannot tell "the
+  // feature works" from "the string is still there".
+  //
+  // The real guard now lives in responses-retrieve-route.test.js, which SENDS every
+  // header over real HTTP. What remains here is the one thing a behavioural test
+  // cannot express: the standing reason headers are the primary channel.
 
   it('the TLS front end still logs the whole URL — so the header path is load-bearing', () => {
     // If this ever stops being true the query fallback becomes harmless, but while it
@@ -135,14 +142,28 @@ describe('identity signal does not travel where logs will capture it', () => {
       'https-proxy logs the full URL; identity in the query string would be captured');
   });
 
-  it('covers the SAME scope vocabulary the POST body accepts', () => {
-    // v3.9.4 whitelisted 3 of the 6 signals extractBodyCallerSubKey honours, so
-    // clients using the other 3 still could not retrieve their own responses — the
-    // very failure that fix was made to remove, repeated at smaller scale.
-    for (const key of ['prompt_cache_key', 'safety_identifier', 'conversation',
-      'conversation_id', 'session_id']) {
-      assert.ok(serverSrc.includes(`'${key}'`),
-        `${key} is a POST-side scope signal, so retrieval must accept it too`);
-    }
+  it('the POST-side scope vocabulary has not grown past what retrieval accepts', () => {
+    // Not a substitute for the HTTP tests — this catches the DIVERGENCE case they
+    // cannot see: someone adds a 7th signal to extractBodyCallerSubKey, retrieval
+    // silently does not accept it, and clients using it cannot read their own
+    // responses. That is exactly how v3.9.4 shipped (3 of 6 supported).
+    const ckSrc = readFileSync(new URL('../src/caller-key.js', import.meta.url), 'utf8');
+    const postSignals = new Set([
+      ...[...ckSrc.matchAll(/usableSignal\(body\??\.?(?:\?\.)?([a-z_]+)\)/g)].map(m => m[1]),
+      ...[...ckSrc.matchAll(/metadata\?\.([a-z_]+)/g)].map(m => m[1]),
+    ]);
+    postSignals.delete('metadata');
+    assert.ok(postSignals.size >= 5,
+      `expected the real POST scope vocabulary, parsed: ${[...postSignals].join(', ')}`);
+    // Every one of them must appear in the router's pick() list.
+    const pickList = (serverSrc.match(/for \(const k of \[([^\]]+)\]\) \{\s*const v = pick\(k\)/) || [, ''])[1];
+    const routerAccepts = new Set([
+      ...[...pickList.matchAll(/'([a-z_]+)'/g)].map(m => m[1]),
+      ...[...serverSrc.matchAll(/pick\('([a-z_]+)'\)/g)].map(m => m[1]),
+    ]);
+    const missing = [...postSignals].filter(s => !routerAccepts.has(s));
+    assert.deepEqual(missing, [],
+      'these signals scope a POST but cannot be replayed on GET/DELETE, so a client '
+      + `using them cannot retrieve its own response: ${missing.join(', ')}`);
   });
 });
