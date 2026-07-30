@@ -141,14 +141,14 @@ jobs:
           path: dist-macos/windsurfapi-macos-arm64
           if-no-files-found: error
 
-  # macos-13 (Intel) runner pool is shrinking as GitHub migrates to ARM.
-  # x64 can queue for hours — it is NOT in the release `needs` so it never
+  # Use an explicit Intel label so the x64 build does not move to ARM.
+  # It is NOT in the release `needs`, so a failed or delayed x64 build never
   # blocks the release. If it finishes in time its artifact is picked up;
   # otherwise the release ships without the x64 binary.
   macos-exe-x64:
     name: macOS single-binary (x64 — non-blocking)
     needs: test
-    runs-on: macos-13
+    runs-on: macos-26-intel
     continue-on-error: true
     timeout-minutes: 45
     permissions:
@@ -341,7 +341,7 @@ jobs:
           name: windsurfapi-macos-arm64
           path: dist-macos
 
-      - name: Download macOS x64 binary (optional — macos-13 runner may be slow)
+      - name: Download macOS x64 binary (optional)
         uses: actions/download-artifact@v4
         continue-on-error: true
         with:
