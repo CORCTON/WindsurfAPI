@@ -53,6 +53,12 @@ const _counters = {
   // network path to the upstream is dropping connections, and callers are seeing
   // `response.incomplete` / retried turns rather than silent half answers.
   stream_truncated: 0,
+  // upstream stall / transport / configuration faults (idle TIMEOUT, absolute
+  // DEADLINE_EXCEEDED, NO_TOKEN). Health events only — never an errorCount
+  // eviction, since none of them says the ACCOUNT is unhealthy. A spike here means
+  // the upstream is stalling or the deployment is misconfigured, not that the pool
+  // is dying.
+  transport_fault: 0,
   // liveness probe pre-emptively recovered a dying token
   liveness_recovered: 0,
   // router-model (adaptive/arena-*) AssignModel resolution failed → fell back

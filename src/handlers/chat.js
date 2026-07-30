@@ -1884,6 +1884,15 @@ function isAbortError(err) {
 
 // Pair with acquireConnectAccount on every exit path. Records billing/stats and
 // returns the account to the pool. `err` null ⇒ success.
+// Upstream-stall / transport / configuration faults: NOT account health problems.
+// They are recorded as health-window events (so a genuinely sick account is still
+// de-prioritized by selection) but never charge the errorCount budget that evicts
+// an account. Kept as a named set rather than more `else if` arms so
+// test/connect-error-blame.test.js can assert the whole classification from source
+// — the `else reportError` fallthrough is silent, and every code that landed there
+// by accident (STREAM_TRUNCATED, then these three) evicted healthy accounts.
+const TRANSPORT_FAULT_CODES = new Set(['TIMEOUT', 'DEADLINE_EXCEEDED', 'NO_TOKEN']);
+
 export function finalizeConnectAccount(acct, { model, selector = null, startTime, err }) {
   if (!acct) {
     // env-token path: still record the request for dashboard totals.
@@ -2019,6 +2028,26 @@ export function finalizeConnectAccount(acct, { model, selector = null, startTime
     else if (err.code === 'UPSTREAM_ERROR') {
       reportInternalError(apiKey);
       bumpConnect('upstream_error');
+    }
+    else if (TRANSPORT_FAULT_CODES.has(err.code)) {
+      // Upstream stall / transport faults, by the same reasoning as
+      // STREAM_TRUNCATED above. These reached the `else` below and charged the
+      // error budget, so a stalling upstream evicted healthy accounts three
+      // timeouts at a time:
+      //   TIMEOUT            — idle timeout, no data for the idle window. This
+      //                        file's own comment calls it "often a transient
+      //                        upstream stall worth a same-token replay".
+      //   DEADLINE_EXCEEDED  — the absolute wall-clock cap. The upstream hung;
+      //                        the account is fine.
+      //   NO_TOKEN           — no session token was configured for this call.
+      //                        A CONFIGURATION fault, so charging the account's
+      //                        health for it is doubly wrong — and it would fire
+      //                        on every request until the config is fixed.
+      // Measured before this branch: 3 calls of each flipped a healthy account to
+      // status='error' with errorCount=3 (peer seeded so lastAccountExempt could
+      // not mask it).
+      reportInternalError(apiKey);
+      bumpConnect('transport_fault');
     }
     else reportError(apiKey);
   } else {
