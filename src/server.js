@@ -699,18 +699,43 @@ async function route(req, res) {
       // identity. Not even WINDSURFAPI_SINGLE_TENANT_CACHE=1 helped — mismatched
       // identity is the prior problem.
       //
-      // The Responses retrieval API has no request body, so the identity signal
-      // rides the query string (`?user=` / `?prompt_cache_key=` /
-      // `?safety_identifier=`), which is the same vocabulary the POST body uses and
-      // is read through the SAME extraction path — so a caller reproduces its own
-      // scope exactly. Absent those params the behaviour is unchanged from before.
+      // The Responses retrieval API has no request body, so the identity signal has
+      // to ride somewhere else. It goes in a HEADER, not the query string.
+      //
+      // Query params were the first cut and they leak PII: `user` is, per this
+      // repo's own note at caller-key.js:107, "often an end-user email or stable
+      // account id (PII)" that must not be logged — and the bundled TLS front end
+      // logs the full URL verbatim (https-proxy.js:20 prints `${method} ${url}`),
+      // as does essentially every reverse proxy, CDN, and browser history. Putting
+      // the exact value that module refuses to log into the URL contradicts the
+      // policy the same repo states.
+      //
+      // Headers carry it without that exposure. The vocabulary mirrors the POST
+      // body's ENTIRE scope vocabulary — extractBodyCallerSubKey also honours
+      // conversation / metadata.conversation_id / metadata.session_id, and omitting
+      // those left clients using them unable to retrieve their own responses (the
+      // same "covered only some of the cases" miss this fix was made to remove).
+      // Read through the SAME extraction path, so a caller reproduces its scope
+      // exactly. Absent every signal, behaviour is unchanged.
+      const h = req.headers || {};
       const q = new URL(req.url, 'http://localhost').searchParams;
-      const idParams = {};
-      for (const k of ['user', 'prompt_cache_key', 'safety_identifier']) {
-        const v = q.get(k);
-        if (v) idParams[k] = v;
+      // Header first; query kept as a documented fallback for clients that cannot
+      // set headers, with the PII caveat spelled out in the README.
+      const pick = (name) => h[`x-response-${name.replace(/_/g, '-')}`] || q.get(name) || '';
+      const ident = {};
+      for (const k of ['user', 'prompt_cache_key', 'safety_identifier', 'conversation']) {
+        const v = pick(k);
+        if (v) ident[k] = v;
       }
-      const callerKey = callerKeyFromRequest(req, token, Object.keys(idParams).length ? idParams : null);
+      const convId = pick('conversation_id');
+      const sessId = pick('session_id');
+      if (convId || sessId) {
+        ident.metadata = {
+          ...(convId ? { conversation_id: convId } : {}),
+          ...(sessId ? { session_id: sessId } : {}),
+        };
+      }
+      const callerKey = callerKeyFromRequest(req, token, Object.keys(ident).length ? ident : null);
       const result = (method === 'GET' ? handleGetResponse : handleDeleteResponse)(
         responseId, { context: { callerKey } },
       );

@@ -367,10 +367,15 @@ export function putResponse(responseId, messages, callerKey, opts = {}) {
   const bytes = approxBytes(kept);
   const createdAt = existing?.createdAt || now;
   const model = opts.model || existing?.model || null;
+  // The turn's terminal status, so a later retrieval reports what the CREATING
+  // request reported. Without it GET had to hardcode 'completed' and contradicted
+  // POST for the same id whenever the turn ended as `incomplete`.
+  const status = opts.status || existing?.status || 'completed';
+  const incompleteReason = opts.incompleteReason ?? existing?.incompleteReason ?? null;
   if (existing) dropEntry(responseId);
   trackInsert(callerKey, bytes);
   _entries.set(responseId, {
-    messages: kept, callerKey, model, createdAt, lastAccess: now, bytes,
+    messages: kept, callerKey, model, status, incompleteReason, createdAt, lastAccess: now, bytes,
   });
   _bytes += bytes;
   _stats.stored++;
@@ -466,7 +471,14 @@ export function getResponse(responseId, callerKey) {
   _entries.delete(responseId);
   _entries.set(responseId, entry);
   _stats.hits++;
-  return { ok: true, messages: entry.messages, model: entry.model, createdAt: entry.createdAt };
+  return {
+    ok: true,
+    messages: entry.messages,
+    model: entry.model,
+    createdAt: entry.createdAt,
+    status: entry.status,
+    incompleteReason: entry.incompleteReason,
+  };
 }
 
 /** Explicit deletion (DELETE /v1/responses/{id}). Scoped like the lookup. */

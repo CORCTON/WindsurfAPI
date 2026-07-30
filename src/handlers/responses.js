@@ -1173,18 +1173,45 @@ function messageHasText(m) {
  */
 function storedResponseBody(responseId, entry) {
   const assistant = [...entry.messages].reverse().find(m => m?.role === 'assistant') || null;
+  // The store holds Chat-shaped messages, whose content may be a PARTS ARRAY (the
+  // Responses `input` items are normalized that way). Passing an array straight into
+  // output_text produced a structurally invalid body — `text` held an array instead
+  // of a string. Flatten to the text parts, which is what a Responses client reads.
+  const rawContent = assistant?.content;
+  const text = typeof rawContent === 'string'
+    ? rawContent
+    : Array.isArray(rawContent)
+      ? rawContent.map(p => (typeof p === 'string' ? p : (p?.text || ''))).filter(Boolean).join('')
+      : '';
+  // Strip the store's own trim bookkeeping. capEntryBytes prepends a notice to the
+  // first surviving message when it drops earlier ones, and when that survivor IS
+  // the assistant turn, the notice was served back as if the MODEL had written it —
+  // gateway-internal text masquerading as the answer. It stays in the CHAINED
+  // context (where it is a useful signal to the next turn) but must not be presented
+  // to the client as model output.
+  const answer = text.replace(/^\[\.\.\. \d+ earlier message\(s\) dropped by the response store[^\]]*\]\n\n/, '');
   const output = [];
-  if (assistant?.content) output.push(textMessageItem(genMessageId(), assistant.content));
+  if (answer) output.push(textMessageItem(genMessageId(), answer));
   for (const tc of assistant?.tool_calls || []) output.push(functionCallItem(tc));
   return {
     object: 'response',
     id: responseId,
     created_at: Math.floor((entry.createdAt || Date.now()) / 1000),
-    status: 'completed',
+    // The turn's real terminal status, as recorded at creation. Hardcoding
+    // 'completed' made GET contradict what POST reported for the SAME id: a
+    // legitimately truncated turn (finish_reason length / content_filter) is stored
+    // and chainable since 8fa5e97, and retrieval laundered it into a completed one —
+    // the exact stream/non-stream status divergence this release line kept fixing.
+    status: entry.status || 'completed',
+    ...(entry.incompleteReason
+      ? { incomplete_details: { reason: entry.incompleteReason } }
+      : {}),
     model: entry.model || null,
     output,
-    output_text: assistant?.content || '',
-    usage: mapUsage({}),
+    output_text: answer,
+    // usage is OPTIONAL on the Response model in both official SDKs, and the store
+    // never held it. An all-zero block is indistinguishable from "this turn really
+    // used 0 tokens" and would be metered as such by a billing relay, so omit it.
   };
 }
 
@@ -1233,7 +1260,9 @@ export function handleGetResponse(responseId, deps = {}) {
   if (!found.ok) return responseNotFound(responseId);
   return {
     status: 200,
-    body: storedResponseBody(responseId, { messages: found.messages, model: found.model, createdAt: found.createdAt }),
+    // Forward the whole lookup result: hand-listing fields here is what silently
+    // dropped `status` / `incompleteReason` and kept retrieval reporting 'completed'.
+    body: storedResponseBody(responseId, found),
   };
 }
 
@@ -1358,7 +1387,10 @@ export async function handleResponses(body, deps = {}) {
 
   // The conversation to persist for the NEXT turn: everything the upstream saw.
   const priorMessages = chatBody.messages || [];
-  const commit = (assistantMessage) => {
+  // `terminal` carries the status this request REPORTED to the client, so a later
+  // GET /v1/responses/{id} answers with the same thing instead of assuming
+  // 'completed'. Defaults to a clean completion when the caller passes nothing.
+  const commit = (assistantMessage, terminal = {}) => {
     if (!isResponseStoreEnabled() || !chainable) return;
     try {
       putResponse(
@@ -1370,7 +1402,12 @@ export async function handleResponses(body, deps = {}) {
           return assistantMessage ? [...base, assistantMessage] : base;
         })(),
         callerKey,
-        { model: requestedModel, store: body.store },
+        {
+          model: requestedModel,
+          store: body.store,
+          status: terminal.status || 'completed',
+          incompleteReason: terminal.incompleteReason || null,
+        },
       );
     } catch { /* best-effort — never fail a served request over bookkeeping */ }
   };
@@ -1379,12 +1416,17 @@ export async function handleResponses(body, deps = {}) {
     const result = await chatHandler({ ...chatBody, stream: false, __route: 'responses' }, context);
     if (result.status !== 200) return result;
     const msg = result.body?.choices?.[0]?.message;
+    const responseBody = chatToResponse(result.body, requestedModel, responseId, genMessageId(), requestedTools);
+    // Record the status THIS response reported, so retrieval agrees with it.
     commit(msg ? {
       role: 'assistant',
       content: msg.content || '',
       ...(msg.tool_calls ? { tool_calls: msg.tool_calls } : {}),
-    } : null);
-    return { status: 200, body: chatToResponse(result.body, requestedModel, responseId, genMessageId(), requestedTools) };
+    } : null, {
+      status: responseBody.status,
+      incompleteReason: responseBody.incomplete_details?.reason || null,
+    });
+    return { status: 200, body: responseBody };
   }
 
   // O1: the internal chat stream now omits the trailing usage frame unless the
@@ -1436,11 +1478,19 @@ export async function handleResponses(body, deps = {}) {
         // (real) terminal chunk at all raises no error, so it reached here looking
         // clean and its half answer was stored as the next turn's context.
         if (translator.finished && !translator.failed && !translator.aborted) {
+          // Same as the non-streaming path: persist the status the client was told,
+          // so a later retrieval does not report a truncated turn as completed.
+          const reason = translator.streamFinishReason;
           commit({
             role: 'assistant',
             content: translator.text || '',
             ...(translator.committedToolCalls?.length ? { tool_calls: translator.committedToolCalls } : {}),
-          });
+          }, translator.truncated
+            ? {
+              status: 'incomplete',
+              incompleteReason: reason === 'length' ? 'max_output_tokens' : 'content_filter',
+            }
+            : { status: 'completed' });
         }
       } catch (e) {
         log.error(`Responses stream error: ${e.message}`);
