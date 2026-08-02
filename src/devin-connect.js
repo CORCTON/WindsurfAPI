@@ -176,7 +176,7 @@ function deriveDeviceBytes(seed, info, len) {
  * takes a single string per ChatMessage; structured/tool content is degraded to
  * text the same way the legacy Raw path does (see windsurf.js).
  */
-function messageText(content) {
+export function messageText(content) {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
     return content.filter(c => c?.type === 'text').map(c => c.text).join('\n');
@@ -798,6 +798,11 @@ export function buildGetChatMessageRequest({ token, messages, model, sessionId, 
     if (msg.role === 'system') {
       const t = messageText(msg.content);
       systemPrompt += systemPrompt ? `\n${t}` : t;
+      continue;
+    }
+    // Empty assistant turns are sent verbatim upstream and measurably provoke repeated
+    // empty completions (kimi client retries failed 10/10 because of this).
+    if (msg.role === 'assistant' && messageText(msg.content).trim() === '' && !msg.tool_calls?.length) {
       continue;
     }
     const source = msg.role === 'assistant' ? SOURCE.ASSISTANT : SOURCE.USER;

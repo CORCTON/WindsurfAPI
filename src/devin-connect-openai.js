@@ -18,7 +18,7 @@
  */
 
 import { randomUUID } from 'crypto';
-import { streamChat as realStreamChat, isRetryable } from './devin-connect.js';
+import { streamChat as realStreamChat, isRetryable, messageText } from './devin-connect.js';
 import { ToolCallStreamParser, parseToolCallsFromText, isWeakEmulationModel } from './handlers/tool-emulation.js';
 import { log } from './config.js';
 import { systemFingerprint } from './system-fingerprint.js';
@@ -111,11 +111,12 @@ function isEmptyCompletion(finishEv, sawContent) {
 
 /**
  * Transparent wrapper around streamChatImpl that heals probabilistic empty
- * completions by re-issuing the identical request. Yields the same event stream
- * as streamChat; on a non-empty turn it is a pass-through (only the terminal
- * finish event is briefly held to end-of-stream, which it already is).
+ * completions by re-issuing the identical request, and rescues thinking-only
+ * traps (swe-1-7 declaring tool intent in reasoning without emitting the call)
+ * by appending a corrective user nudge and dropping empty assistant turns.
+ * Yields the same event stream as streamChat; on a non-empty turn it is a pass-through.
  */
-async function* streamChatWithEmptyRetry(params, { env = process.env } = {}) {
+async function* streamChatWithEmptyRetry(params, { env = process.env, rescueThinkingOnly = false } = {}) {
   // Weak models (fable) return DETERMINISTIC empties on complex multi-turn / large
   // system — paid E2E (2026-07-08, 27/27) proved retry never heals them, it only
   // triples the upstream load and burns the account into a 3h rate limit. So for
@@ -123,12 +124,21 @@ async function* streamChatWithEmptyRetry(params, { env = process.env } = {}) {
   // bounded retry, where an empty is more likely genuine capacity jitter.
   const weak = isWeakEmulationModel(params?.model || '');
   const max = (retryOnEmptyEnabled(env) && !weak) ? retryOnEmptyMax(env) : 0;
+  const rescueMax = Number(env.DEVIN_CONNECT_RESCUE_MAX ?? 2);
+  let attemptParams = params;
+  let rescueAttempt = 0;
   for (let attempt = 0; ; attempt++) {
     let sawContent = false;
+    let sawText = false;
+    let sawReasoning = false;
     let finishEv = null;
-    for await (const ev of streamChatImpl(params)) {
+    for await (const ev of streamChatImpl(attemptParams)) {
       if (ev.type === 'content' || ev.type === 'reasoning') {
-        if (ev.text) sawContent = true;
+        if (ev.text) {
+          sawContent = true;
+          if (ev.type === 'content') sawText = true;
+          if (ev.type === 'reasoning') sawReasoning = true;
+        }
         yield ev;
       } else if (ev.type === 'finish') {
         finishEv = ev; // hold: decide retry after the stream drains
@@ -136,6 +146,31 @@ async function* streamChatWithEmptyRetry(params, { env = process.env } = {}) {
         yield ev;
       }
     }
+    // swe-1-7 (Kimi K2 fine-tune) intermittently spends the whole turn in reasoning
+    // declaring tool intent without emitting the call; a corrective nudge measurably
+    // (24/24 live probe) forces emission; empty assistant turns poison upstream into
+    // repeating empty turns.
+    const isStopOrNull = finishEv && (finishEv.reason == null || finishEv.reason === 'stop');
+    const hasNoToolCalls = !finishEv?.toolCalls || finishEv.toolCalls.length === 0;
+    if (rescueThinkingOnly && rescueAttempt < rescueMax && isStopOrNull && hasNoToolCalls && sawReasoning && !sawText) {
+      rescueAttempt++;
+      log.warn(`DEVIN_CONNECT: thinking-only completion (reasoning-only, finish=${finishEv?.reason ?? 'null'}) — rescue retry ${rescueAttempt}/${rescueMax} (nudge appended)`);
+      const backoff = retryOnEmptyBaseMs(env) * rescueAttempt;
+      if (backoff) await new Promise((r) => setTimeout(r, backoff));
+      const origMsgs = attemptParams?.messages || [];
+      const filteredMsgs = origMsgs.filter((msg) => {
+        if (msg.role !== 'assistant') return true;
+        if (Array.isArray(msg.tool_calls) && msg.tool_calls.length) return true;
+        return messageText(msg.content).trim() !== '';
+      });
+      const rescued = [
+        ...filteredMsgs,
+        { role: 'user', content: 'Stop reasoning. Emit the tool call markup now.' },
+      ];
+      attemptParams = { ...attemptParams, messages: rescued };
+      continue;
+    }
+
     if (attempt < max && isEmptyCompletion(finishEv, sawContent)) {
       log.warn(`DEVIN_CONNECT: empty completion (finish=${finishEv.reason ?? 'null'}, completion_tokens=${finishEv.usage?.completion_tokens ?? 'n/a'}) — retry ${attempt + 1}/${max}`);
       const backoff = retryOnEmptyBaseMs(env) * (attempt + 1);
@@ -193,7 +228,7 @@ export async function toChatCompletion(params, { id = newId(), created = nowSeco
   for (let attempt = 0; ; attempt++) {
     try {
       content = ''; reasoning = ''; finishReason = 'stop'; usage = null; nativeToolCalls = [];
-      for await (const ev of streamChatWithEmptyRetry(params)) {
+      for await (const ev of streamChatWithEmptyRetry(params, { rescueThinkingOnly: emulateTools })) {
         if (ev.type === 'content') content += ev.text;
         else if (ev.type === 'reasoning') reasoning += ev.text;
         else if (ev.type === 'finish') {
@@ -248,6 +283,10 @@ export async function toChatCompletion(params, { id = newId(), created = nowSeco
       toolCalls = parsed.toolCalls;
     }
   }
+
+  // Fallback promotion: promote reasoning to content when no tool calls and no content exist
+  // so plain prompts never return an empty visible answer to clients.
+  if (!toolCalls.length && !content && reasoning) content = reasoning;
 
   // OpenAI convention: content is a string (may be empty), never undefined.
   const message = { role: 'assistant', content: content || '' };
@@ -369,7 +408,7 @@ export async function streamChatCompletion(params, send, { id = newId(), created
     }
   };
 
-  for await (const ev of streamChatWithEmptyRetry(params)) {
+  for await (const ev of streamChatWithEmptyRetry(params, { rescueThinkingOnly: emulateTools })) {
     if (ev.type === 'reasoning') {
       prime(); // first real delta: emit the deferred role chunk first
       reasoning += ev.text;
@@ -417,6 +456,13 @@ export async function streamChatCompletion(params, send, { id = newId(), created
       id: tc.id, name: tc.name, argumentsJson: tc.arguments,
     })));
     finishReason = 'tool_calls';
+  }
+
+  // Fallback promotion: promote reasoning to content when no tool calls and no content exist
+  // so plain prompts never return an empty visible answer to clients.
+  if (!content && !collectedToolCalls.length && !nativeToolCalls.length && reasoning && !stopHit) {
+    sendContent(reasoning);
+    content = reasoning;
   }
 
   // 4. Terminal finish chunk. Reaching here means streamChat drained cleanly
