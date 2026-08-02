@@ -1911,7 +1911,24 @@ function isAbortError(err) {
 // test/connect-error-blame.test.js can assert the whole classification from source
 // — the `else reportError` fallthrough is silent, and every code that landed there
 // by accident (STREAM_TRUNCATED, then these three) evicted healthy accounts.
-const TRANSPORT_FAULT_CODES = new Set(['TIMEOUT', 'DEADLINE_EXCEEDED', 'NO_TOKEN']);
+//
+// The socket-level codes are the same class and were the next ones sitting in that
+// fallthrough. They are not produced by classifyUpstreamError — they arrive from
+// Node with `.code` already set and propagate through the connect generator
+// untouched, which is exactly why the guard that enumerates
+// classifyUpstreamError's own UPPER_SNAKE vocabulary could not see them.
+// Measured with a healthy peer seeded (so lastAccountExempt cannot mask it):
+// three ECONNRESET / ETIMEDOUT / EPIPE / ECONNREFUSED / `unavailable` calls each
+// flipped a healthy account to status='error' with persisted backoff — a flaky
+// network path or an upstream dropping connections walks the pool offline three
+// faults at a time. devin-connect.js already treats all of these as RETRYABLE_CODES,
+// so blaming the account for them contradicts the transport layer's own verdict.
+// `unavailable` is the lowercase gRPC status for the same condition.
+const TRANSPORT_FAULT_CODES = new Set([
+  'TIMEOUT', 'DEADLINE_EXCEEDED', 'NO_TOKEN',
+  'ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'ECONNREFUSED', 'ENOTFOUND', 'EHOSTUNREACH',
+  'ENETUNREACH', 'EAI_AGAIN', 'ECONNABORTED', 'unavailable',
+]);
 
 // `abortedHint` lets a caller say "the client went away" WITHOUT discarding the
 // upstream error it was holding. The callers used to substitute a synthetic

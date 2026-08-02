@@ -51,6 +51,13 @@ describe('route parity — streaming usage frame opt-in', () => {
 });
 
 describe('route parity — mid-stream error classification', () => {
+  // Strip comments first: a check for "does this file consume the classifier's
+  // result" must not be satisfied by prose mentioning it (this file's sibling
+  // guards were found accepting exactly that).
+  const stripComments = (s) => s
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+
   for (const route of ROUTES) {
     it(`${route} resolves the DEVIN_CONNECT code through connectErrorToHttp`, () => {
       // Reading err.type alone collapses CAPACITY (503, retryable) / RATE_LIMITED
@@ -59,8 +66,58 @@ describe('route parity — mid-stream error classification', () => {
       // exactly this until v3.8.0.
       assert.match(src[route], /import \{[^}]*connectErrorToHttp[^}]*\} from '\.\/chat\.js'/,
         `${route} must import the shared classifier`);
-      assert.ok(src[route].includes('connectErrorToHttp('),
-        `${route} imports the classifier but never calls it`);
+
+      // `includes('connectErrorToHttp(')` is NOT enough: a call whose RESULT is
+      // discarded satisfies it while the defect is fully restored. Measured — the
+      // pre-v3.8.0 flat-err.type defect plus one dead reference
+      // (`const _unused = (c) => connectErrorToHttp(c);`) left this suite at 10/10.
+      //
+      // Checking "is the result assigned" is not enough either, because that dead
+      // reference IS an assignment. So follow the value one step further: the name
+      // it is bound to must be READ somewhere after the binding. A lambda nobody
+      // invokes, or a variable nobody reads, fails that.
+      const body = stripComments(src[route]);
+      const calls = [...body.matchAll(/connectErrorToHttp\s*\(/g)];
+      assert.ok(calls.length > 0, `${route} imports the classifier but never calls it`);
+
+      // For each call, walk back to the enclosing statement and pull the names it
+      // binds (plain or destructured).
+      const boundNames = new Set();
+      for (const m of calls) {
+        // Walk back to the enclosing STATEMENT, not just the current line: the
+        // real call sites are multi-line ternaries whose `const x =` sits a line
+        // above the call, so a line-scoped look-back finds no binding and would
+        // fail on correct source.
+        const stmtStart = Math.max(
+          body.lastIndexOf(';', m.index),
+          body.lastIndexOf('{', m.index),
+          body.lastIndexOf('}', m.index),
+        );
+        const stmt = body.slice(stmtStart + 1, m.index);
+        const destructured = stmt.match(/(?:const|let|var)\s*\{([^}]*)\}\s*=/);
+        if (destructured) {
+          for (const part of destructured[1].split(',')) {
+            const name = part.split(':').pop().trim();
+            if (/^[\w$]+$/.test(name)) boundNames.add(name);
+          }
+          continue;
+        }
+        const plain = stmt.match(/(?:const|let|var)\s+([\w$]+)\s*=/);
+        if (plain) boundNames.add(plain[1]);
+      }
+
+      // A name that is only defined and never read is a dead binding.
+      const read = [...boundNames].filter((name) => {
+        const uses = body.match(new RegExp(`\\b${name.replace(/\$/g, '\\$')}\\b`, 'g')) || [];
+        return uses.length > 1;
+      });
+
+      assert.ok(
+        read.length > 0,
+        `${route} calls connectErrorToHttp but nothing reads the result `
+        + `(bound: ${[...boundNames].join(', ') || 'nothing'}). A discarded call keeps the string `
+        + 'present — and the pre-v3.8.0 defect (reading a flat err.type) intact.',
+      );
     });
   }
 });

@@ -109,15 +109,43 @@ describe('account-side failures still count against the account', () => {
 describe('structural guard — every upstream code has an explicit blame decision', () => {
   const read = (p) => readFileSync(new URL(p, import.meta.url), 'utf8');
 
+  // Collect every code that can REACH finalizeConnectAccount, from both sources:
+  //
+  //  (a) codes devin-connect.js constructs itself — UPPER_SNAKE, `code: 'X'`;
+  //  (b) codes it never constructs but happily propagates — Node's socket codes
+  //      and the lowercase gRPC statuses. These arrive with `.code` already set
+  //      and travel through the connect generator untouched.
+  //
+  // (b) is why the first version of this guard was blind to the largest class of
+  // codes that actually reached the fallthrough: it read only `code: 'X'` literals
+  // with an [A-Z_] character class, so ECONNRESET / ETIMEDOUT / EPIPE /
+  // ECONNREFUSED were invisible AND a lowercase status like `unavailable` could
+  // not match at all. Measured, healthy peer seeded: three of each flipped the
+  // account to status='error'. The guard reported emitted.size = 12 and passed.
+  //
+  // devin-connect.js's own RETRYABLE_CODES list is the authoritative enumeration of
+  // (b): it exists precisely because the transport layer already decided these are
+  // retryable transport conditions, which is incompatible with blaming the account.
+  function codesReachingBlame(connectSrc) {
+    const constructed = [...connectSrc.matchAll(/code:\s*'([A-Za-z_]+)'/g)].map(m => m[1]);
+    const retryable = (connectSrc.match(/const RETRYABLE_CODES = new Set\(\[([^\]]*)\]/) || [, ''])[1];
+    const propagated = [...retryable.matchAll(/'([A-Za-z_]+)'/g)].map(m => m[1]);
+    return new Set([...constructed, ...propagated]);
+  }
+
   it('no code reaches the silent `else reportError` fallthrough unclassified', () => {
     const connectSrc = read('../src/devin-connect.js');
     const chatSrc = read('../src/handlers/chat.js');
 
-    // Every code devin-connect.js attaches to an Error it throws.
-    const emitted = new Set(
-      [...connectSrc.matchAll(/code:\s*'([A-Z_]+)'/g)].map(m => m[1]),
-    );
+    const emitted = codesReachingBlame(connectSrc);
     assert.ok(emitted.size >= 10, `expected the real code vocabulary, got ${emitted.size}`);
+    // Meta-check on the collector itself: a vocabulary that silently loses the
+    // socket codes is how this guard passed the defect. Pin that it sees them.
+    for (const c of ['ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'ECONNREFUSED', 'unavailable']) {
+      assert.ok(emitted.has(c),
+        `the code vocabulary must include ${c} — it reaches finalizeConnectAccount with .code `
+        + 'set and a guard that cannot see it cannot protect against it');
+    }
 
     // Everything finalizeConnectAccount decides explicitly: either an `err.code ===`
     // arm, or a member of the TRANSPORT_FAULT_CODES set. Read from the set
@@ -127,10 +155,12 @@ describe('structural guard — every upstream code has an explicit blame decisio
     assert.notEqual(from, -1, 'TRANSPORT_FAULT_CODES declaration not found');
     const end = chatSrc.indexOf('\n}', chatSrc.indexOf('releaseAccountById(acct.id)', from));
     const body = chatSrc.slice(from, end > from ? end : undefined);
+    // Same character class on both sides, or a lowercase code would look
+    // "unclassified" even after being handled.
     const classified = new Set([
-      ...[...body.matchAll(/err\.code === '([A-Z_]+)'/g)].map(m => m[1]),
+      ...[...body.matchAll(/err\.code === '([A-Za-z_]+)'/g)].map(m => m[1]),
       ...[...(body.match(/const TRANSPORT_FAULT_CODES = new Set\(\[([^\]]*)\]/) || [, ''])[1]
-        .matchAll(/'([A-Z_]+)'/g)].map(m => m[1]),
+        .matchAll(/'([A-Za-z_]+)'/g)].map(m => m[1]),
     ]);
 
     const unclassified = [...emitted].filter(c => !classified.has(c));
@@ -140,5 +170,60 @@ describe('structural guard — every upstream code has an explicit blame decisio
       + 'explicitly: a real account fault stays in the fallthrough, anything else '
       + 'belongs in TRANSPORT_FAULT_CODES or its own arm. '
       + `Unclassified: ${unclassified.join(', ')}`);
+  });
+
+  // Behavioural half. The structural check above proves a decision was WRITTEN;
+  // this proves the decision has the effect it claims. Both are needed: the
+  // structural one catches the next unclassified code (behaviour cannot, the code
+  // does not exist yet), and this one catches a classification that is present but
+  // wired to the wrong outcome.
+  it('a transport fault does not evict a healthy account, but an auth fault does', async () => {
+    const { addAccountByKey, removeAccount, setAccountTier, getAccountInternal } =
+      await import('../src/auth.js');
+    const { finalizeConnectAccount } = await import('../src/handlers/chat.js');
+
+    const made = [];
+    const seed = (label) => {
+      const a = addAccountByKey(
+        `devin-session-token$blame-${label}-${Math.random().toString(36).slice(2)}`, label,
+      );
+      made.push(a.id);
+      setAccountTier(a.id, 'pro');
+      return a;
+    };
+    const hammer = (acct, code, times = 4) => {
+      for (let i = 0; i < times; i++) {
+        finalizeConnectAccount(
+          { id: acct.id, apiKey: acct.apiKey },
+          {
+            model: 'gpt-5.5', selector: 'gpt-5-5-low', startTime: Date.now() - 5,
+            err: Object.assign(new Error(`synthetic ${code}`), { code }),
+          },
+        );
+      }
+      return getAccountInternal(acct.id);
+    };
+
+    try {
+      // A peer must exist or lastAccountExempt masks the eviction entirely — the
+      // reason this failure mode kept hiding on single-account pools.
+      seed('peer');
+      for (const code of ['ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'ECONNREFUSED', 'unavailable', 'TIMEOUT']) {
+        const victim = seed(`t-${code}`);
+        const after = hammer(victim, code);
+        assert.equal(after.status, 'active',
+          `${code} is a transport fault and must not evict the account (status became ${after.status})`);
+        assert.equal(after.errorCount || 0, 0,
+          `${code} must not charge the error budget (got ${after.errorCount})`);
+      }
+
+      const authVictim = seed('auth');
+      const after = hammer(authVictim, 'UNAUTHORIZED', 3);
+      assert.ok((after.errorCount || 0) >= 3,
+        'a genuine auth fault MUST still charge the error budget — the exemption must not be '
+        + 'so broad that real account failures stop counting');
+    } finally {
+      while (made.length) removeAccount(made.pop());
+    }
   });
 });

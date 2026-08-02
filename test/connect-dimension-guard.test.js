@@ -103,21 +103,109 @@ describe('source guard: finalizeConnectAccount never writes a client-facing mode
 
   it('was located', () => assert.ok(body.length > 200, 'finalizeConnectAccount body not found'));
 
+  // Split one cooldown call into balanced argument expressions.
+  //
+  // The previous version matched `mark...\([^)]*\)`, which stops at the FIRST
+  // `)` — so any nested call truncated the argument list. On unmutated source
+  // that already mis-parsed a real call site
+  // (`markRateLimited(apiKey, getBreakerTunable('rlBurstMs'), null)` came back
+  // as two arguments), and the missing third argument then defaulted to the
+  // string 'null' and was waved through. Measured: rewriting that call's third
+  // argument to the client-facing `model` — the #224 defect verbatim — left the
+  // suite at 9/9.
+  function argsOf(call) {
+    const open = call.indexOf('(');
+    let depth = 0;
+    let current = '';
+    const args = [];
+    for (let i = open; i < call.length; i++) {
+      const ch = call[i];
+      if (ch === '(' || ch === '[') { depth++; if (depth === 1) continue; }
+      else if (ch === ')' || ch === ']') {
+        depth--;
+        if (depth === 0) { args.push(current.trim()); return args; }
+      } else if (ch === ',' && depth === 1) { args.push(current.trim()); current = ''; continue; }
+      current += ch;
+    }
+    return args;
+  }
+
+  // Grab each call with balanced parentheses so nested calls stay intact.
+  function cooldownCalls(text) {
+    const out = [];
+    const re = /mark(?:RateLimited|QuotaExhausted)\(/g;
+    for (const m of text.matchAll(re)) {
+      let depth = 0;
+      for (let i = m.index + m[0].length - 1; i < text.length; i++) {
+        if (text[i] === '(') depth++;
+        else if (text[i] === ')' && --depth === 0) { out.push(text.slice(m.index, i + 1)); break; }
+      }
+    }
+    return out;
+  }
+
   it('every cooldown it writes uses null (account-wide) or the resolved selector', () => {
-    const calls = body.match(/mark(?:RateLimited|QuotaExhausted)\([^)]*\)/g) || [];
+    const calls = cooldownCalls(body);
     assert.ok(calls.length >= 3, `expected the cooldown calls, found ${calls.length}`);
+
+    // Every call must be parsed to its real arity. A truncated parse is itself a
+    // failure: it is how the guard used to accept the defect.
     for (const call of calls) {
-      // markQuotaExhausted has no model dimension at all — always fine.
       if (call.startsWith('markQuotaExhausted')) continue;
-      const args = call.slice(call.indexOf('(') + 1, -1).split(',').map(s => s.trim());
-      const dimension = args[2] ?? 'null';
-      const ok = dimension === 'null'
-        || dimension === 'undefined'
-        || dimension.includes('selector');
-      assert.ok(ok,
-        `${call}\n  → writes cooldown dimension \`${dimension}\`, which connect selection `
-        + '(modelKey=null) cannot see. Use null for account-wide, or the resolved '
-        + 'connect selector. See #224 / v3.8.0 CAPACITY.');
+      const args = argsOf(call);
+      assert.ok(
+        args.length >= 3,
+        `${call}\n  → parsed only ${args.length} argument(s). The dimension argument must be `
+        + 'visible to this guard; a parse that loses it silently accepts the #224 defect.',
+      );
+    }
+
+    // Accept exactly two spellings of the dimension, by set difference rather
+    // than substring. `dimension.includes('selector')` used to accept
+    // `model || selector` — the REVERSED fallback, which is the v3.8.0 CAPACITY
+    // defect verbatim, because `model` is always truthy in production
+    // (chat.js passes `{ model: reqModelName, selector }`). Measured: that
+    // mutation left the suite at 9/9 while the pool re-picked the throttled
+    // account. So the allowlist is literal.
+    const ALLOWED_DIMENSIONS = new Set([
+      'null',
+      'undefined',
+      'selector',
+      // The Cascade path legitimately passes a real catalog modelKey, and the
+      // connect path must win when both are present — so only this order.
+      'selector || model',
+    ]);
+
+    const offenders = calls
+      .filter((call) => !call.startsWith('markQuotaExhausted'))
+      .map((call) => ({ call, dimension: argsOf(call)[2] ?? 'null' }))
+      .filter(({ dimension }) => !ALLOWED_DIMENSIONS.has(dimension));
+
+    assert.deepEqual(
+      offenders.map(o => `${o.dimension}  in  ${o.call}`), [],
+      'a cooldown is written in a dimension connect selection (modelKey=null) cannot see. '
+      + `Allowed spellings: ${[...ALLOWED_DIMENSIONS].join(' | ')}. Note that \`model || selector\` `
+      + 'is NOT allowed even though it mentions the selector: `model` is always truthy on the '
+      + 'connect path, so the reversed order restores the v3.8.0 CAPACITY defect. See #224.',
+    );
+  });
+
+  it('the guard itself parses the real call sites (meta-check)', () => {
+    // A guard that silently parses nothing passes forever. Pin the shape it sees.
+    const calls = cooldownCalls(body);
+    const rateLimited = calls.filter(c => c.startsWith('markRateLimited'));
+    assert.ok(rateLimited.length >= 2,
+      `expected multiple markRateLimited call sites, parsed ${rateLimited.length}`);
+    for (const call of rateLimited) {
+      assert.ok(argsOf(call).length >= 3, `truncated parse of: ${call}`);
+    }
+    // And confirm the nested-call shape specifically, since that is what broke.
+    const nested = rateLimited.find(c => c.includes('getBreakerTunable'));
+    if (nested) {
+      const args = argsOf(nested);
+      assert.equal(args.length, 3,
+        `the nested-call site must parse to 3 arguments, got ${args.length}: ${JSON.stringify(args)}`);
+      assert.match(args[1], /getBreakerTunable/, 'the nested call must survive parsing intact');
     }
   });
 });
