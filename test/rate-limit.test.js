@@ -115,11 +115,48 @@ describe('rate-limit handling', () => {
       WindsurfClient: RateLimitedClient,
     });
 
+    const UPSTREAM_MS = (27 * 60 * 1000) + (12 * 1000);   // "Resets in: 27m12s"
+
     assert.equal(result.status, 429);
     assert.equal(result.body.error.type, 'rate_limit_exceeded');
-    assert.equal(result.body.error.retry_after_ms, (27 * 60 * 1000) + (12 * 1000));
-    assert.equal(result.headers['Retry-After'], '1632');
-    assert.match(result.body.error.message, /27m12s/);
+
+    // Assert WHICH branch produced this, not just the number. Two branches can
+    // answer a fully rate-limited pool and they compute retry_after_ms
+    // differently, so a bare numeric assertion silently accepts either one:
+    //   - the IP-burst breaker (chat.js) needs >= 3 accounts rate-limited for the
+    //     same model within an 8s window, and reports max(cooldownMs);
+    //   - the pool-exhausted fallback reports isAllTemporarilyUnavailable's
+    //     window and a localized message.
+    // With 4.5s of injected latency per acquisition the 8s window prunes and the
+    // SECOND branch answers with ~1622996ms and a Chinese message — which the old
+    // assertions still accepted as "roughly 1632000", so this test could pass
+    // while exercising the wrong code path. The message is the branch's signature.
+    assert.match(
+      result.body.error.message, /IP-level cooldown/,
+      'expected the IP-burst breaker branch (3 accounts within the 8s window). A different '
+      + 'branch answered, so the numeric assertion below would be measuring the wrong path.',
+    );
+    assert.match(result.body.error.message, /27m12s/, 'the upstream window must be surfaced verbatim');
+
+    // Tolerance, not equality. Every candidate feeding this branch is wall-clock
+    // derived: the burst breaker takes max() over per-event cooldowns, and each of
+    // those comes from getAccountAvailability, i.e. `until - Date.now()`. The
+    // localized message it is handed does not parse to the exact upstream constant
+    // (parseRateLimitCooldownMs returns null for it), so nothing pins the value to
+    // 1632000 — 1ms of scheduler delay between the two clock reads yields 1631999.
+    // Asserting strict equality made this test fail CI on the v3.9.5 release
+    // commit (actual 1631999, expected 1632000) and reproduce roughly 1-in-30
+    // under load. Bound it from both sides instead: it must never EXCEED the
+    // upstream window (that would be inventing time the upstream did not grant)
+    // and must not be stale by more than a scheduling hiccup.
+    const reported = result.body.error.retry_after_ms;
+    assert.ok(
+      reported <= UPSTREAM_MS && reported > UPSTREAM_MS - 5_000,
+      `retry_after_ms ${reported} is not within [${UPSTREAM_MS - 5_000}, ${UPSTREAM_MS}] — the `
+      + 'advertised window must track the upstream reset window and never exceed it',
+    );
+    // header and body must agree after the same ceil() the handler applies.
+    assert.equal(result.headers['Retry-After'], String(Math.ceil(reported / 1000)));
   });
 
   it('does not extend an existing cooldown when a later 429 arrives for the same model', async () => {
