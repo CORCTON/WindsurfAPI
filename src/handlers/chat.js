@@ -1875,11 +1875,31 @@ function connectFailoverMax(env = process.env) {
 }
 
 // True when an error is an AbortError (client disconnect / server shutdown).
-// Tests look at both name and code because Node's AbortController sets `name`
-// on errors it throws, while fetch/undici sometimes only sets `code: 'ABORT_ERR'`.
+// Both name and code are checked because Node's AbortController sets `name` on
+// errors it throws, while fetch/undici sometimes only sets `code: 'ABORT_ERR'`.
+//
+// The `/aborted/i` message arm exists for the undici shapes that carry NEITHER
+// marker, but on its own it also swallowed genuine upstream faults:
+// classifyUpstreamError puts the raw upstream body into `.message` and passes
+// unknown gRPC codes through verbatim, so a real gRPC `aborted` trailer — or any
+// 5xx / middlebox body containing the word — read as a client disconnect. The
+// caller then returned 499 client_disconnect to a client that never left,
+// suppressed cross-account failover, and recorded no cooldown or health signal.
+// So the message arm is only consulted when the error carries NO upstream
+// verdict: any code at all (the UPPER_SNAKE vocabulary classifyUpstreamError
+// emits, a Node socket code, or a lowercase gRPC status) means the upstream
+// spoke and this is not a local abort.
+function hasUpstreamVerdict(err) {
+  const code = err?.code;
+  if (typeof code !== 'string' || !code) return false;
+  return code !== 'ABORT_ERR';
+}
+
 function isAbortError(err) {
   if (!err) return false;
-  return err.name === 'AbortError' || err.code === 'ABORT_ERR' || /aborted/i.test(err.message);
+  if (err.name === 'AbortError' || err.code === 'ABORT_ERR') return true;
+  if (hasUpstreamVerdict(err)) return false;
+  return /aborted/i.test(err.message);
 }
 
 // Pair with acquireConnectAccount on every exit path. Records billing/stats and
@@ -1893,7 +1913,11 @@ function isAbortError(err) {
 // by accident (STREAM_TRUNCATED, then these three) evicted healthy accounts.
 const TRANSPORT_FAULT_CODES = new Set(['TIMEOUT', 'DEADLINE_EXCEEDED', 'NO_TOKEN']);
 
-export function finalizeConnectAccount(acct, { model, selector = null, startTime, err }) {
+// `abortedHint` lets a caller say "the client went away" WITHOUT discarding the
+// upstream error it was holding. The callers used to substitute a synthetic
+// AbortError for the real one on disconnect, which erased the upstream verdict
+// (e.g. RATE_LIMITED + resetMs) before this function could act on it.
+export function finalizeConnectAccount(acct, { model, selector = null, startTime, err, aborted: abortedHint = false }) {
   if (!acct) {
     // env-token path: still record the request for dashboard totals.
     recordRequest(model, !err, Date.now() - startTime, null);
@@ -1908,22 +1932,26 @@ export function finalizeConnectAccount(acct, { model, selector = null, startTime
   // release by id so the counter always finds its account.
   const apiKey = currentApiKeyForId(acct.id, acct.apiKey);
   if (err) {
-    // A client-side abort (caller disconnected) is not an account fault — just
-    // release without penalizing the account's error budget.
-    const aborted = isAbortError(err);
-    if (aborted) { /* no penalty */ }
-    // MODEL_BLOCKED is a tier/entitlement wall (free account asked for a paid
-    // selector → upstream "/upgrade"), NOT an account-health problem. Penalizing
-    // it would demote a perfectly good free account toward eviction every time a
-    // client names claude-*/gpt-* — so release cleanly, same as a success.
-    else if (err.code === 'MODEL_BLOCKED') { /* no penalty — tier wall, not a fault */ }
-    // CONTENT_BLOCKED is an upstream content-policy rejection of the REQUEST
-    // content — the session token is alive and the account is healthy. Penalizing
-    // it (dead-token/re-login/cooldown) would bench a perfectly good account over a
-    // prompt the caller sent; a single such request used to cascade the whole pool
-    // to "exhausted (dead session tokens)". Release cleanly, exactly like a success.
-    else if (err.code === 'CONTENT_BLOCKED') { /* no penalty — request content rejected, not an account fault */ }
-    else if (err.code === 'QUOTA_EXHAUSTED') {
+    // A client-side abort (caller disconnected) is not an account fault — release
+    // without penalizing the account's error budget.
+    //
+    // But "no penalty" is NOT "no cooldown". This arm used to sit FIRST in the
+    // chain, so a disconnect that raced an in-flight upstream 429 skipped the
+    // whole classification below — including the account-wide reset window that
+    // the RATE_LIMITED arm exists to apply. The upstream had already declared a
+    // throttle (measured: a 3h window dropped to 0, account immediately
+    // re-selectable), and agent clients cancel mid-turn constantly, so every
+    // cancelled turn re-armed an already-throttled account and the pool kept
+    // hammering the upstream velocity limiter.
+    //
+    // Split the two notions: an upstream-declared COOLDOWN is a fact about the
+    // account or model that stays true regardless of whether our client is still
+    // listening, so those arms run first and unconditionally. The HEALTH/penalty
+    // arms below (errorCount eviction, re-login, internal-error streaks) are
+    // judgements about whether the account misbehaved, and a client disconnect is
+    // no evidence of that — those stay exempt.
+    const aborted = abortedHint || isAbortError(err);
+    if (err.code === 'QUOTA_EXHAUSTED') {
       // The account ran out of credit/quota — unlike a tier wall this IS an
       // account-specific dry-well. Cool it down so getApiKey stops re-selecting
       // it and serving 402 to every client; failover moves to a funded account.
@@ -1936,15 +1964,6 @@ export function finalizeConnectAccount(acct, { model, selector = null, startTime
       markQuotaExhausted(apiKey, 30 * 60 * 1000);
       bumpConnect('quota_exhausted');
     }
-    else if (err.code === 'UNAUTHORIZED') {
-      reportError(apiKey);
-      // The DEVIN_CONNECT session token is an opaque session_id with no refresh
-      // path — UNAUTHORIZED most likely means the server retired it. If the
-      // account has stored credentials + auto-relogin is enabled, trigger a
-      // background re-login (throttled/de-duped in auth.js) so the next request
-      // lands on a fresh token instead of a permanently-dead account.
-      reLoginAccount(acct.id).catch(() => {});
-    }
     else if (err.code === 'RATE_LIMITED') {
       // Honor an explicit upstream reset window when the classifier parsed one
       // (e.g. "message rate limit ... Resets in: 3h0m0s" → err.resetMs). Apply it
@@ -1953,11 +1972,13 @@ export function finalizeConnectAccount(acct, { model, selector = null, startTime
       // and isRateLimitedForModel only consults _modelRateLimits when modelKey is
       // truthy — so a model-scoped cooldown is structurally invisible to
       // DEVIN_CONNECT selection and the pool immediately re-picks the account that
-      // just 429'd, ignoring the reset window entirely. rateLimitedUntil is the
-      // only cooldown dimension getApiKey honors with modelKey=null. Falls back to
-      // a burst cooldown when no window was given (generic 429 with no retry-after);
-      // F2: that burst duration is the `rlBurstMs` tunable (default 300000 = the
-      // historical 5min).
+      // just 429'd, ignoring the reset window entirely. (The account-wide choice is
+      // still right for a hard reset window, but note the premise has narrowed
+      // since: isCooledForRequest also honors the connect-selector dimension now,
+      // so rateLimitedUntil is no longer the ONLY dimension a modelKey=null lookup
+      // sees.) Falls back to a burst cooldown when no window was given (generic
+      // 429 with no retry-after); F2: that burst duration is the `rlBurstMs`
+      // tunable (default 300000 = the historical 5min).
       if (Number.isFinite(err.resetMs) && err.resetMs > 0) {
         markRateLimited(apiKey, err.resetMs, null, 'r');
       } else {
@@ -1985,6 +2006,27 @@ export function finalizeConnectAccount(acct, { model, selector = null, startTime
       // to `model` for the Cascade path, which passes a real catalog modelKey.
       markRateLimited(apiKey, 60 * 1000, selector || model, 'c');
       bumpConnect('capacity_throttled');
+    }
+    else if (aborted) { /* no penalty — client left, and the upstream declared nothing */ }
+    // MODEL_BLOCKED is a tier/entitlement wall (free account asked for a paid
+    // selector → upstream "/upgrade"), NOT an account-health problem. Penalizing
+    // it would demote a perfectly good free account toward eviction every time a
+    // client names claude-*/gpt-* — so release cleanly, same as a success.
+    else if (err.code === 'MODEL_BLOCKED') { /* no penalty — tier wall, not a fault */ }
+    // CONTENT_BLOCKED is an upstream content-policy rejection of the REQUEST
+    // content — the session token is alive and the account is healthy. Penalizing
+    // it (dead-token/re-login/cooldown) would bench a perfectly good account over a
+    // prompt the caller sent; a single such request used to cascade the whole pool
+    // to "exhausted (dead session tokens)". Release cleanly, exactly like a success.
+    else if (err.code === 'CONTENT_BLOCKED') { /* no penalty — request content rejected, not an account fault */ }
+    else if (err.code === 'UNAUTHORIZED') {
+      reportError(apiKey);
+      // The DEVIN_CONNECT session token is an opaque session_id with no refresh
+      // path — UNAUTHORIZED most likely means the server retired it. If the
+      // account has stored credentials + auto-relogin is enabled, trigger a
+      // background re-login (throttled/de-duped in auth.js) so the next request
+      // lands on a fresh token instead of a permanently-dead account.
+      reLoginAccount(acct.id).catch(() => {});
     }
     else if (err.code === 'UPSTREAM_INTERNAL') {
       // Transient upstream BACKEND fault ("an internal error occurred (trace
@@ -2943,7 +2985,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
               // is shutting down). Don't penalize the account, don't log a scary
               // ERROR, and don't burn quota on more retries/failover.
               if (abortController.signal.aborted || isAbortError(err)) {
-                finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: isAbortError(err) ? err : Object.assign(new Error('client disconnected'), { name: 'AbortError' }) });
+                finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: err || Object.assign(new Error('client disconnected'), { name: 'AbortError' }), aborted: true });
                 return { kind: 'abort' };
               }
               // Transient blip (5xx / ECONNRESET / server "unavailable") BEFORE
@@ -2973,7 +3015,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
                   // than falling through to the generic error handling which would
                   // log an ERROR and possibly try to write to a dead socket.
                   if (abortController.signal.aborted || isAbortError(retryErr)) {
-                    finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: isAbortError(retryErr) ? retryErr : Object.assign(new Error('client disconnected'), { name: 'AbortError' }) });
+                    finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: retryErr || Object.assign(new Error('client disconnected'), { name: 'AbortError' }), aborted: true });
                     return { kind: 'abort' };
                   }
                   // Retry failed too — fall through to the normal handling below
@@ -3001,7 +3043,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
                   } catch (retryErr) {
                     // Client disconnected while re-login was in flight — stop cleanly.
                     if (abortController.signal.aborted || isAbortError(retryErr)) {
-                      finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: isAbortError(retryErr) ? retryErr : Object.assign(new Error('client disconnected'), { name: 'AbortError' }) });
+                      finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: retryErr || Object.assign(new Error('client disconnected'), { name: 'AbortError' }), aborted: true });
                       return { kind: 'abort' };
                     }
                     // Fresh token still UNAUTHORIZED ⇒ entitlement wall, not a dead
@@ -3141,7 +3183,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
       } catch (err) {
         // Client or server-level abort: don't penalize the account or log ERROR.
         if ((context.signal?.aborted) || isAbortError(err)) {
-          finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: isAbortError(err) ? err : Object.assign(new Error('client disconnected'), { name: 'AbortError' }) });
+          finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: err || Object.assign(new Error('client disconnected'), { name: 'AbortError' }), aborted: true });
           return { kind: 'abort' };
         }
         if (err.code === 'UNAUTHORIZED' && a) {
@@ -3158,7 +3200,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
             } catch (retryErr) {
               // Client aborted during the re-login retry.
               if ((context.signal?.aborted) || isAbortError(retryErr)) {
-                finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: isAbortError(retryErr) ? retryErr : Object.assign(new Error('client disconnected'), { name: 'AbortError' }) });
+                finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: retryErr || Object.assign(new Error('client disconnected'), { name: 'AbortError' }), aborted: true });
                 return { kind: 'abort' };
               }
               // The re-login above minted a verifiably-fresh token (windsurfLogin
