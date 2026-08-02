@@ -8,14 +8,26 @@
  *
  * Design:
  *   - (callerKey, modelKey) → accountId binding with configurable TTL
- *   - Model dimension prevents cross-model collision: the same session
- *     using opus and sonnet can be bound to different accounts
+ *   - The model dimension separates bindings ON THE CASCADE PATH ONLY: there the
+ *     same caller using opus and sonnet can be bound to different accounts.
+ *     It does NOT hold on DEVIN_CONNECT, which is the production default —
+ *     connect selection always looks up with modelKey=null (chat.js getApiKey),
+ *     so the binding must be WRITTEN with null too or it would never resolve
+ *     (test/connect-sticky-affinity.test.js pins that as a regression guard).
+ *     Every connect selector of one caller therefore shares the single slot
+ *     `callerKey\0*`, and cross-model collision is guaranteed rather than
+ *     prevented: on a pool partitioned by entitlement a caller alternating
+ *     between a free-reachable and a paid selector clears and re-creates the
+ *     one slot on every request, so it gets zero affinity. Adding a selector
+ *     dimension to both the write and the lookup is the open follow-up.
  *   - Binding is created when a successful response is returned
  *   - On next request, getApiKey checks the binding first
  *   - If the bound account is unavailable (rate limited, etc.),
  *     the stale binding is immediately cleared so retries don't
  *     keep hitting the same unavailable account
- *   - Bindings are cleared on session reset or TTL expiry
+ *   - Bindings expire by TTL. Nothing clears them on session reset or client
+ *     disconnect: clearCallerBindings exists but has no production call site
+ *     (see its own note below).
  *   - The binding table is in-memory only (no persistence needed)
  *
  * Why this matters:
@@ -247,7 +259,16 @@ export function clearStickyBinding(callerKey, modelKey = '') {
 
 /**
  * Clear all bindings for a caller (all models).
- * Called on session reset or disconnection.
+ *
+ * NOT WIRED UP. This comment used to read "Called on session reset or
+ * disconnection", which is not true and never was: the only references outside
+ * this definition are in test/sticky-session.test.js. Nothing in src/ calls it,
+ * so a caller's bindings survive a session reset and a client disconnect and go
+ * away only by TTL or by clearStickyBinding on an unusable account. Anyone
+ * reasoning about sticky cleanup on disconnect was reading a guarantee that does
+ * not exist — the function is correct, its documented lifecycle hook is fiction.
+ * Kept (with the claim corrected) because wiring it into the disconnect path is
+ * the open follow-up, not because it runs today.
  *
  * @param {string} callerKey
  */
