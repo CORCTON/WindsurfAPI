@@ -821,17 +821,35 @@ async function fetchAndMergeModelCatalog(accountId, apiKey) {
     const snapshot = mergeCloudCatalogSnapshot(result?.configs, { accountId });
     if (!snapshot.accepted) {
       if (snapshot.reason === 'malformed') {
+        // No delayed confirmation for a malformed body: there is nothing to
+        // confirm. Leave the account unsynced (no pending retry) so the next
+        // ordinary sync trigger re-fetches it — arming a timer here would make
+        // trySyncModelCatalog skip the account while the timer is pending, which
+        // DELAYS recovery rather than helping it. What made this branch dangerous
+        // was never the cancel, it was that the merge wiped the account's
+        // last-known-good on the way here; models.js now preserves it.
         cancelModelCatalogRetry(accountId);
-        log.warn(`Model catalog returned malformed configs for ${safeAccountRef(acct)}`);
+        log.warn(`Model catalog returned malformed configs for ${safeAccountRef(acct)}; preserving the last-known-good view, will re-fetch on the next sync trigger`);
         return false;
       }
-      if (!confirmationAttempt) scheduleModelCatalogRetry(accountId, apiKey);
+      // Keep re-checking while the candidate is quarantined. Arming the retry only
+      // on the FIRST round meant a small-but-VARYING upstream stopped being
+      // re-checked after one attempt, so the stale larger snapshot stayed
+      // authoritative until some unrelated account-lifecycle event happened to
+      // trigger another sync — and there is no periodic catalog refresh to fall
+      // back on. models.js caps the quarantine at a fixed number of rounds and
+      // then accepts the newest snapshot, so this converges instead of polling
+      // forever.
+      scheduleModelCatalogRetry(accountId, apiKey);
       const baseline = snapshot.baselineSource === 'last_accepted'
         ? `the last accepted ${snapshot.baselineCount}`
         : `the static baseline of ${snapshot.baselineCount}`;
+      const rounds = snapshot.quarantineRounds
+        ? ` (quarantine round ${snapshot.quarantineRounds}/${snapshot.quarantineRoundsMax})`
+        : '';
       const nextStep = confirmationAttempt
-        ? 'the delayed confirmation differed, so the candidate remains quarantined'
-        : `retrying once in ${MODEL_CATALOG_CONFIRM_RETRY_MS / 1000}s`;
+        ? `the delayed confirmation differed, so the candidate remains quarantined${rounds} and will be re-checked in ${MODEL_CATALOG_CONFIRM_RETRY_MS / 1000}s`
+        : `retrying in ${MODEL_CATALOG_CONFIRM_RETRY_MS / 1000}s`;
       log.warn(`Model catalog for ${safeAccountRef(acct)} returned ${snapshot.receivedCount} unique models versus ${baseline}; preserving the current fail-open/last-known-good view and ${nextStep}`);
       return false;
     }

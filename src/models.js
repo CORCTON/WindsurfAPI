@@ -608,7 +608,21 @@ const DEFAULT_CLOUD_CATALOG_ACCOUNT = Symbol('default-cloud-catalog-account');
 const _cloudCatalogUidsByAccount = new Map();
 const _activeCloudCatalogAccounts = new Set();
 const _pendingCloudCatalogUidsByAccount = new Map();
+// Consecutive rounds this account's shrunken snapshot has been quarantined
+// without ever repeating the same UID set. See CLOUD_CATALOG_CONFIRM_MAX_ROUNDS.
+const _cloudCatalogQuarantineRoundsByAccount = new Map();
 const CLOUD_CATALOG_CONFIRM_RATIO = 0.5;
+// The quarantine exists so one degenerate response cannot shrink a catalog, and
+// it clears when the same small UID set comes back twice. But an upstream that
+// keeps returning a SMALL and VARYING set never repeats itself, so the candidate
+// was re-quarantined forever and a stale, larger last-known-good stayed
+// authoritative indefinitely — the proxy kept advertising and routing models the
+// account had lost (a plan downgrade or entitlement revocation genuinely shrinks
+// a catalog by more than half, which is precisely this case). After this many
+// consecutive quarantined rounds, the newest snapshot is accepted: "the upstream
+// has told us it is small several times running, in varying ways" is better
+// evidence than an old snapshot nothing has confirmed since.
+const CLOUD_CATALOG_CONFIRM_MAX_ROUNDS = 3;
 
 function normalizeCloudCatalogUid(uid) {
   return typeof uid === 'string' ? uid.trim().toLowerCase() : '';
@@ -645,6 +659,7 @@ export function setActiveCloudCatalogAccounts(accountIds) {
     if (nextActiveAccounts.has(accountId)) continue;
     _cloudCatalogUidsByAccount.delete(accountId);
     _pendingCloudCatalogUidsByAccount.delete(accountId);
+    _cloudCatalogQuarantineRoundsByAccount.delete(accountId);
   }
   _activeCloudCatalogAccounts.clear();
   for (const accountId of nextActiveAccounts) _activeCloudCatalogAccounts.add(accountId);
@@ -655,12 +670,14 @@ export function removeCloudModelCatalog(accountId) {
   const accountKey = cloudCatalogAccountKey(accountId);
   _cloudCatalogUidsByAccount.delete(accountKey);
   _pendingCloudCatalogUidsByAccount.delete(accountKey);
+  _cloudCatalogQuarantineRoundsByAccount.delete(accountKey);
 }
 
 /** Clear all in-memory catalog state. Primarily useful for deterministic tests. */
 export function clearCloudModelCatalogs() {
   _cloudCatalogUidsByAccount.clear();
   _pendingCloudCatalogUidsByAccount.clear();
+  _cloudCatalogQuarantineRoundsByAccount.clear();
   _activeCloudCatalogAccounts.clear();
 }
 
@@ -881,40 +898,65 @@ function cloudCatalogSetsEqual(left, right) {
  */
 export function mergeCloudCatalogSnapshot(configs, { accountId = null } = {}) {
   const accountKey = cloudCatalogAccountKey(accountId);
+  const currentUids = _cloudCatalogUidsByAccount.get(accountKey);
+  const hasAcceptedSnapshot = !!currentUids?.size;
+
+  // A malformed response is NO DATA, not "this account has no filter". It used to
+  // call applyCloudModels([]) — which DELETES the account's snapshot — so a single
+  // truncated / throttled / auth-blipped response silently restored the full
+  // catalog and re-advertised every model the filter existed to hide (#231's own
+  // symptom). Keep the last-known-good and let the caller retry.
   if (!Array.isArray(configs)) {
-    _pendingCloudCatalogUidsByAccount.delete(accountKey);
-    applyCloudModels([], { accountId });
     return {
       accepted: false,
       added: 0,
       reason: 'malformed',
       receivedCount: 0,
-      baselineCount: 0,
+      baselineCount: currentUids?.size || 0,
+      baselineSource: hasAcceptedSnapshot ? 'last_accepted' : 'static',
+      preservedLastKnownGood: hasAcceptedSnapshot,
     };
   }
 
   const nextUids = cloudCatalogUidSet(configs);
   if (nextUids.size === 0) {
-    _pendingCloudCatalogUidsByAccount.delete(accountKey);
-    return {
-      accepted: true,
-      added: applyCloudModels(configs, { accountId }),
-      reason: 'no_filter',
-      receivedCount: 0,
-      baselineCount: 0,
-    };
+    // Zero UIDs is ambiguous, and the two readings need opposite handling:
+    //
+    //  - No snapshot accepted yet → "this deployment has no cloud filter". That
+    //    is the documented fail-open, and it stays immediate.
+    //  - A snapshot WAS accepted before → an empty response is the maximal
+    //    shrink. It used to be accepted with NO confirmation at all, while a
+    //    one-UID response needed two rounds — a pure asymmetry that left the one
+    //    most-likely degenerate shape (empty body) as the only unguarded path.
+    //    Route it through the same confirmation as any other shrink.
+    if (!hasAcceptedSnapshot) {
+      _pendingCloudCatalogUidsByAccount.delete(accountKey);
+      _cloudCatalogQuarantineRoundsByAccount.delete(accountKey);
+      return {
+        accepted: true,
+        added: applyCloudModels(configs, { accountId }),
+        reason: 'no_filter',
+        receivedCount: 0,
+        baselineCount: 0,
+      };
+    }
   }
 
-  const currentUids = _cloudCatalogUidsByAccount.get(accountKey);
   const baselineCount = currentUids?.size || STATIC_CLOUD_CATALOG_UID_COUNT;
-  const baselineSource = currentUids?.size ? 'last_accepted' : 'static';
+  const baselineSource = hasAcceptedSnapshot ? 'last_accepted' : 'static';
   const confirmationThreshold = Math.ceil(baselineCount * CLOUD_CATALOG_CONFIRM_RATIO);
   const needsConfirmation = nextUids.size < confirmationThreshold;
 
   if (needsConfirmation) {
     const pendingUids = _pendingCloudCatalogUidsByAccount.get(accountKey);
-    if (!cloudCatalogSetsEqual(pendingUids, nextUids)) {
+    const repeated = cloudCatalogSetsEqual(pendingUids, nextUids);
+    const rounds = (_cloudCatalogQuarantineRoundsByAccount.get(accountKey) || 0) + 1;
+    // Converge rather than wedge: a small-and-varying upstream never satisfies
+    // the repeat check, so cap how long the stale last-known-good can win.
+    const exhausted = rounds >= CLOUD_CATALOG_CONFIRM_MAX_ROUNDS;
+    if (!repeated && !exhausted) {
       _pendingCloudCatalogUidsByAccount.set(accountKey, nextUids);
+      _cloudCatalogQuarantineRoundsByAccount.set(accountKey, rounds);
       return {
         accepted: false,
         added: 0,
@@ -922,15 +964,30 @@ export function mergeCloudCatalogSnapshot(configs, { accountId = null } = {}) {
         receivedCount: nextUids.size,
         baselineCount,
         baselineSource,
+        quarantineRounds: rounds,
+        quarantineRoundsMax: CLOUD_CATALOG_CONFIRM_MAX_ROUNDS,
+        preservedLastKnownGood: hasAcceptedSnapshot,
       };
     }
+    _pendingCloudCatalogUidsByAccount.delete(accountKey);
+    _cloudCatalogQuarantineRoundsByAccount.delete(accountKey);
+    return {
+      accepted: true,
+      added: applyCloudModels(configs, { accountId }),
+      reason: repeated ? 'confirmed_small' : 'converged_small',
+      receivedCount: nextUids.size,
+      baselineCount,
+      baselineSource,
+      ...(repeated ? {} : { quarantineRounds: rounds }),
+    };
   }
 
   _pendingCloudCatalogUidsByAccount.delete(accountKey);
+  _cloudCatalogQuarantineRoundsByAccount.delete(accountKey);
   return {
     accepted: true,
     added: applyCloudModels(configs, { accountId }),
-    reason: needsConfirmation ? 'confirmed_small' : 'accepted',
+    reason: 'accepted',
     receivedCount: nextUids.size,
     baselineCount,
     baselineSource,

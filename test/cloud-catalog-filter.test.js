@@ -201,13 +201,26 @@ describe('upstream account cloud catalog filtering', () => {
     assert.deepEqual(handleModels({}).data.map((model) => model.id), baseline);
   });
 
-  it('clears a stale catalog when mergeCloudModels receives a non-array', () => {
-    const baseline = handleModels({}).data.map((model) => model.id);
+  it('keeps the accepted catalog when mergeCloudModels receives a non-array', () => {
+    // This test used to assert the opposite — that a non-array response CLEARS the
+    // catalog back to the unfiltered baseline — and its name said "clears a stale
+    // catalog". That was the defect, not the contract: a malformed body is NO DATA,
+    // and applying it deleted the account's snapshot so every model the filter
+    // existed to hide was re-advertised (#231's own symptom) with no confirmation
+    // round. A truncated / throttled / auth-blipped upstream response is the most
+    // likely degenerate shape there is, so it was the one unguarded path that got
+    // taken most. See test/cloud-catalog-degenerate-response.test.js.
+    const unfiltered = handleModels({}).data.map((model) => model.id);
     syncAllowed();
+    const filtered = handleModels({}).data.map((model) => model.id);
+    assert.notDeepEqual(filtered, unfiltered, 'precondition: the sync must narrow the view');
 
     mergeCloudModels({ malformed: true }, { accountId: ACCOUNT_A });
 
-    assert.deepEqual(handleModels({}).data.map((model) => model.id), baseline);
+    assert.deepEqual(
+      handleModels({}).data.map((model) => model.id), filtered,
+      'a malformed response must preserve the last-known-good catalog, not widen it back out',
+    );
   });
 
   it('matches cloud model UIDs case-insensitively', () => {
@@ -374,7 +387,19 @@ describe('upstream account cloud catalog filtering', () => {
     assert.equal(isModelAllowedForAccount(account, SECOND_ALLOWED_KEY), true);
   });
 
-  it('does not keep polling when the delayed confirmation returns a different candidate', async () => {
+  it('keeps re-checking a differing candidate, bounded, instead of polling forever', async () => {
+    // This test used to assert that a differing confirmation schedules NOTHING
+    // further. That is what wedged the catalog: an upstream returning a small set
+    // that varies each round never satisfies the identical-repeat check, so the
+    // candidate was re-quarantined indefinitely while a stale LARGER snapshot
+    // stayed authoritative — and there is no periodic catalog refresh to recover
+    // it, only account-lifecycle events. Measured: after a downgrade plus four
+    // sync cycles the proxy still allowed a model the account had lost.
+    //
+    // The re-check is now armed every quarantined round, and models.js bounds the
+    // quarantine (CLOUD_CATALOG_CONFIRM_MAX_ROUNDS) so it converges on the newest
+    // snapshot instead of polling forever. Both halves matter: "keeps re-checking"
+    // AND "is bounded". See test/cloud-catalog-degenerate-response.test.js.
     const runId = Date.now().toString(36);
     const apiKey = `catalog-changing-${runId}`;
     const scheduledRetries = [];
@@ -403,15 +428,33 @@ describe('upstream account cloud catalog filtering', () => {
     await __waitForModelCatalogSync();
 
     assert.equal(requests, 2);
-    assert.equal(scheduledRetries.length, 0);
+    assert.equal(
+      scheduledRetries.length, 1,
+      'a differing confirmation must arm the NEXT re-check — dropping it here is what let a '
+      + 'small-and-varying upstream wedge the stale snapshot in place permanently',
+    );
     assert.equal(isModelAllowedForAccount(account, ALLOWED_KEY), true);
     assert.equal(isModelAllowedForAccount(account, SECOND_ALLOWED_KEY), true);
+
+    // Bounded: the re-checks converge rather than continuing indefinitely. Drain
+    // them and assert the loop terminates well inside a small budget.
+    let rounds = 2;
+    while (scheduledRetries.length && rounds < 8) {
+      scheduledRetries.shift()();
+      await __waitForModelCatalogSync();
+      rounds = requests;
+    }
+    assert.ok(
+      scheduledRetries.length === 0,
+      `the re-check loop did not converge within ${rounds} rounds — it must be bounded, not perpetual`,
+    );
+    assert.ok(rounds <= 4, `expected convergence in a few rounds, took ${rounds}`);
 
     setAccountStatus(account.id, 'disabled');
     setAccountStatus(account.id, 'active');
     await __waitForModelCatalogSync();
 
-    assert.equal(requests, 3);
+    assert.equal(requests, rounds + 1);
     assert.equal(
       scheduledRetries.length,
       1,
