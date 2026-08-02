@@ -175,7 +175,7 @@ bash install-ls.sh
 cat > .env << 'EOF'
 PORT=3003
 API_KEY=
-DEFAULT_MODEL=claude-4.5-sonnet-thinking
+DEFAULT_MODEL=claude-sonnet-4.6
 MAX_TOKENS=8192
 LOG_LEVEL=info
 LS_BINARY_PATH=/opt/windsurf/language_server_linux_x64
@@ -281,7 +281,7 @@ In your client's settings for **Custom OpenAI Compatible**:
 | `CODEIUM_EMAIL` | empty | Email for Windsurf account authentication. |
 | `CODEIUM_PASSWORD` | empty | Password for Windsurf account authentication. |
 | `CODEIUM_API_URL` | `https://server.self-serve.windsurf.com` | Windsurf cloud API endpoint. |
-| `DEFAULT_MODEL` | `claude-4.5-sonnet-thinking` | The model to use if `model` is not specified. |
+| `DEFAULT_MODEL` | `claude-sonnet-4.6` | The model to use if `model` is not specified. Must be a name the active backend can resolve — a name Connect cannot resolve silently degrades to the free selector. |
 | `MAX_TOKENS` | `8192` | Default maximum number of response tokens. |
 | `LOG_LEVEL` | `info` | debug / info / warn / error |
 | `WINDSURFAPI_IGNORE_CLOUD_FILTER` | `0` | On the Cascade transport, after per-account cloud catalogs sync, pool listings show their union and routing enforces each selected account's catalog. Set to `1` to restore the full static catalog. Missing, empty, or failed catalog syncs fail open. `DEVIN_CONNECT` uses its separate selector catalog. |
@@ -311,7 +311,7 @@ In your client's settings for **Custom OpenAI Compatible**:
 | `STICKY_SESSION_ENABLED` | `0` | Set to `1` to pin each conversation to one upstream account. Strongly recommended on DEVIN_CONNECT: upstream prompt caches are per-account and a cache write costs ~10x a read, so without pinning every turn rotates accounts and re-writes the whole context. Requires a per-user signal on the caller (`user` / `safety_identifier` / `prompt_cache_key` / Claude Code `metadata.user_id`); single-user self-hosts without one set `WINDSURFAPI_SINGLE_TENANT_CACHE=1`. Observe via the `sticky` field of `/dashboard/api/connect-metrics`. |
 | `STICKY_SESSION_TTL_MS` | `1800000` | Binding TTL (30 min); active conversations auto-renew each turn. |
 | `STICKY_SESSION_MAX` | `10000` | Binding table cap, LRU-evicted. |
-| `RESPONSE_STORE_ENABLED` | `1` | Responses API server-side conversation state. With it on, `previous_response_id` continues a conversation (the client sends only the new turn); set `0` and such requests get a 400, as do `GET`/`DELETE /v1/responses/{id}`. Scoped by callerKey — tenants cannot read each other's conversations. Retrieval and deletion use the same scope as chaining: another caller's id always 404s, without revealing whether it exists. **Retrieval/deletion carry no request body, so the identity signal rides a header**: `GET /v1/responses/{id}` with `x-response-prompt-cache-key: <the value you sent on POST>`. All six scope signals work (`user` / `prompt_cache_key` / `safety_identifier` / `conversation` / `conversation-id` / `session-id`; header names use hyphens). It must match the value used when the response was created, otherwise 404. The same names are accepted as query params for clients that cannot set headers, but **query strings are logged by reverse proxies, CDNs and browser history and `user` often contains PII — prefer the header.** |
+| `RESPONSE_STORE_ENABLED` | `1` | Responses API server-side conversation state. With it on, `previous_response_id` continues a conversation (the client sends only the new turn); set `0` and such requests get a 400, as do `GET`/`DELETE /v1/responses/{id}`. Scoped by callerKey — tenants cannot read each other's conversations. Retrieval and deletion use the same scope as chaining: another caller's id always 404s, without revealing whether it exists. **Retrieval/deletion carry no request body, so the identity signal rides a header**: `GET /v1/responses/{id}` with `x-response-prompt-cache-key: <the value you sent on POST>`. All six scope signals work: `user` / `prompt_cache_key` / `safety_identifier` / `conversation` / `conversation_id` / `session_id`. **Header names replace underscores with hyphens** (`x-response-conversation-id`); the query fallback accepts either spelling (`?conversation_id=` and `?conversation-id=`). It must match the value used when the response was created, otherwise 404. **Query strings are logged by reverse proxies, CDNs and browser history and `user` often contains PII — prefer the header.** |
 | `RESPONSE_STORE_TTL_MS` | `3600000` | Conversation retention (1 hour), renewed on each turn. |
 | `RESPONSE_STORE_MAX` | `2000` | Max stored conversations, LRU-evicted with a per-tenant fair share. |
 | `RESPONSE_STORE_MAX_BYTES` | `128m` | Total byte budget for stored conversations (b/k/kb/m/mb/g/gb). The count caps bound cardinality, not memory — a realistic agent conversation measures ~167KB, so 2000 entries is ~327MB. Eviction triggers on whichever limit binds first. |

@@ -721,7 +721,17 @@ async function route(req, res) {
       const q = new URL(req.url, 'http://localhost').searchParams;
       // Header first; query kept as a documented fallback for clients that cannot
       // set headers, with the PII caveat spelled out in the README.
-      const pick = (name) => h[`x-response-${name.replace(/_/g, '-')}`] || q.get(name) || '';
+      // Header names use hyphens (`x-response-conversation-id`); the canonical
+      // scope vocabulary uses underscores (`conversation_id`). The query fallback
+      // accepts BOTH spellings: the README documents the six signals with the
+      // header spelling and then says the same names work as query parameters, so
+      // `?conversation-id=` was documented but 404'd while only `?conversation_id=`
+      // worked. Accepting both is strictly more permissive and derives the exact
+      // same identity, so it closes the gap for anyone who followed the doc.
+      const pick = (name) => {
+        const hyphen = name.replace(/_/g, '-');
+        return h[`x-response-${hyphen}`] || q.get(name) || q.get(hyphen) || '';
+      };
       const ident = {};
       for (const k of ['user', 'prompt_cache_key', 'safety_identifier', 'conversation']) {
         const v = pick(k);

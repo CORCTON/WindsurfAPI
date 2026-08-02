@@ -34,7 +34,16 @@ API_KEY=sk-REDACTED        # existing downstream proxy key — unchanged
 ```
 
 That is the whole minimum. The pool supplies tokens; free-tier accounts resolve
-only `swe-1-6-slow`. Any other model name degrades to that free selector.
+only `swe-1-6-slow`.
+
+A model name the catalog does not know is **rejected with `400 model_not_found`**,
+not degraded. This sentence used to say the opposite ("any other model name
+degrades to that free selector"), which stopped being true when the strict-model
+guard shipped with default `WINDSURFAPI_STRICT_MODEL=1`: silently substituting the
+free selector changes both the output and the billing semantics of an explicitly
+requested paid model, so it fails loudly instead. Setting
+`WINDSURFAPI_STRICT_MODEL=0` restores the legacy silent degrade — see the env
+reference for why that is a footgun rather than a workaround.
 
 ## 2. Recommended hardening adds (optional, all default-off)
 
@@ -425,7 +434,7 @@ temp cred store + an ephemeral pool account, so the real `accounts.json` /
 > The calibrator (§8.0) handles it gracefully: it reports the probe error, marks
 > every target `pending`, and writes nothing. Retry with a paid token to capture.
 
-### 8.8 Surface actual_model_uid (router resolution signal)
+### 8.8b Surface actual_model_uid (router resolution signal)
 
 For router selectors (`adaptive`/`arena-*`, see §8.3) the response carries
 `actual_model_uid` — the concrete model that actually served the turn. Useful to

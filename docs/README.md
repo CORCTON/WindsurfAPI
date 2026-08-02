@@ -4,7 +4,6 @@
 
 - [Production Cutover Runbook](DEVIN-CONNECT-CUTOVER.md): how to enable and
   operate the DEVIN_CONNECT direct-cloud backend.
-- [Local HTTPS Setup](../local-setup.md): run the proxy locally over HTTPS.
 
 ## Protocol And Product Notes
 

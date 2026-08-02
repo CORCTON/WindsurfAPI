@@ -285,6 +285,60 @@ describe('every documented identity signal resolves over real HTTP', () => {
     });
   }
 
+  // The query fallback must accept BOTH spellings of a multi-word signal.
+  //
+  // The READMEs list the six signals with the header spelling (`conversation-id`,
+  // `session-id`) and then state that the same names work as query parameters. They
+  // did not: the hyphen substitution in server.js's `pick()` was applied to the
+  // HEADER name only, while the query lookup used the raw underscore key. So a
+  // client that followed the documented vocabulary literally — `?conversation-id=` —
+  // got a 404 with no hint why, on the very channel documented as the fallback for
+  // clients that cannot set headers.
+  for (const [queryName, body] of [
+    ['conversation_id', { metadata: { conversation_id: 'q-underscore' } }],
+    ['conversation-id', { metadata: { conversation_id: 'q-hyphen' } }],
+    ['session_id', { metadata: { session_id: 'q-us-sess' } }],
+    ['session-id', { metadata: { session_id: 'q-hy-sess' } }],
+  ]) {
+    it(`?${queryName}= resolves the caller's own response`, async () => {
+      const port = await boot(`q-${queryName}`);
+      const { callerKeyFromRequest } = await import('../src/caller-key.js');
+      const callerKey = callerKeyFromRequest(
+        { headers: {}, socket: { remoteAddress: '127.0.0.1' } }, API_KEY, body,
+      );
+      const id = `resp_q_${queryName.replace(/[^a-z]/g, '')}_${Object.values(body.metadata)[0]}`;
+      store.putResponse(id, [
+        { role: 'user', content: 'q' },
+        { role: 'assistant', content: 'the answer' },
+      ], callerKey, { model: 'm' });
+
+      const value = Object.values(body.metadata)[0];
+      const res = await request(port, `/v1/responses/${id}?${queryName}=${value}`, 'GET', AUTH);
+      assert.equal(res.statusCode, 200,
+        `?${queryName}= is a documented spelling of this scope signal and must resolve it`);
+      assert.equal(res.body.output_text, 'the answer');
+    });
+  }
+
+  it('a wrong query value still 404s on either spelling', async () => {
+    const port = await boot('q-wrong');
+    const { callerKeyFromRequest } = await import('../src/caller-key.js');
+    const mine = callerKeyFromRequest(
+      { headers: {}, socket: { remoteAddress: '127.0.0.1' } }, API_KEY,
+      { metadata: { conversation_id: 'mine' } },
+    );
+    store.putResponse('resp_qscope', [
+      { role: 'user', content: 'q' },
+      { role: 'assistant', content: 'secret answer' },
+    ], mine, { model: 'm' });
+
+    for (const spelling of ['conversation_id', 'conversation-id']) {
+      const res = await request(port, `/v1/responses/resp_qscope?${spelling}=theirs`, 'GET', AUTH);
+      assert.equal(res.statusCode, 404,
+        `accepting the ${spelling} spelling must not weaken the scope gate`);
+    }
+  });
+
   it('a wrong header value still 404s (the scope gate is not weakened)', async () => {
     const port = await boot('hdr-wrong');
     const { callerKeyFromRequest } = await import('../src/caller-key.js');

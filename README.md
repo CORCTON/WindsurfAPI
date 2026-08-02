@@ -172,7 +172,7 @@ bash install-ls.sh
 cat > .env << 'EOF'
 PORT=3003
 API_KEY=
-DEFAULT_MODEL=claude-4.5-sonnet-thinking
+DEFAULT_MODEL=claude-sonnet-4.6
 MAX_TOKENS=8192
 LOG_LEVEL=info
 LS_BINARY_PATH=/opt/windsurf/language_server_linux_x64
@@ -272,7 +272,7 @@ curl http://localhost:3003/v1/messages \
 | `PORT` | `3003` | 服务端口 |
 | `API_KEY` | 空 | 调 API 要带的密钥 留空就不验证 |
 | `DATA_DIR` | 项目根目录 | 持久化 JSON 状态和 `logs/` 的目录，Docker 推荐设成 `/data` |
-| `DEFAULT_MODEL` | `claude-4.5-sonnet-thinking` | 不传 model 用哪个 |
+| `DEFAULT_MODEL` | `claude-sonnet-4.6` | 不传 model 用哪个。必须是当前后端能解析的名字 —— connect 上解析不到的名字会静默降级成免费 selector |
 | `MAX_TOKENS` | `8192` | 默认最大回复 token 数 |
 | `LOG_LEVEL` | `info` | debug / info / warn / error |
 | `WINDSURFAPI_IGNORE_CLOUD_FILTER` | `0` | Cascade 路径下，各账号云端 catalog 同步后，账号池列表展示活跃账号目录的并集，路由则校验所选账号自己的目录；设为 `1` 恢复完整静态 catalog。目录缺失、为空或同步失败时保持 fail-open；`DEVIN_CONNECT` 使用独立 selector catalog |
@@ -304,7 +304,7 @@ curl http://localhost:3003/v1/messages \
 | `STICKY_SESSION_ENABLED` | `0` | 设为 `1` 把同一会话固定在同一上游账号。DEVIN_CONNECT 上强烈建议开启：上游 prompt cache 按账号隔离且写入约为读取 10 倍单价，不固定则每轮换号、整段上下文重写。需要 caller 有 per-user 信号（`user` / `safety_identifier` / `prompt_cache_key` / Claude Code `metadata.user_id`）；单用户自部署无这些信号时配 `WINDSURFAPI_SINGLE_TENANT_CACHE=1`。观测：`/dashboard/api/connect-metrics` 的 `sticky` 字段 |
 | `STICKY_SESSION_TTL_MS` | `1800000` | 绑定 TTL（30 分钟）；活跃会话每轮自动续期 |
 | `STICKY_SESSION_MAX` | `10000` | 绑定表上限，LRU 驱逐 |
-| `RESPONSE_STORE_ENABLED` | `1` | Responses API 服务端会话状态。开启时 `previous_response_id` 可续接上下文(客户端只发新一轮);设 `0` 关闭后带该字段的请求返回 400,`GET`/`DELETE /v1/responses/{id}` 同样返回 400。按 callerKey 隔离,租户间不可互读:读取与删除与续接同一套作用域,别人的 id 一律 404(不泄漏是否存在)。**检索/删除没有请求体,身份信号走 header**:`GET /v1/responses/{id}` 带 `x-response-prompt-cache-key: <你 POST 时用的值>`。六种作用域信号都支持(`user` / `prompt_cache_key` / `safety_identifier` / `conversation` / `conversation-id` / `session-id`,header 名把下划线换连字符)。取值必须与创建该响应时一致,否则 404。同名 query 参数作为降级通道保留,但 **query 会被反代/CDN/浏览器历史记录,`user` 常含 PII,优先用 header** |
+| `RESPONSE_STORE_ENABLED` | `1` | Responses API 服务端会话状态。开启时 `previous_response_id` 可续接上下文(客户端只发新一轮);设 `0` 关闭后带该字段的请求返回 400,`GET`/`DELETE /v1/responses/{id}` 同样返回 400。按 callerKey 隔离,租户间不可互读:读取与删除与续接同一套作用域,别人的 id 一律 404(不泄漏是否存在)。**检索/删除没有请求体,身份信号走 header**:`GET /v1/responses/{id}` 带 `x-response-prompt-cache-key: <你 POST 时用的值>`。六种作用域信号都支持:`user` / `prompt_cache_key` / `safety_identifier` / `conversation` / `conversation_id` / `session_id`。**header 名把下划线换成连字符**(`x-response-conversation-id`);query 降级通道两种拼写都接受(`?conversation_id=` 与 `?conversation-id=`)。取值必须与创建该响应时一致,否则 404。**query 会被反代/CDN/浏览器历史记录,`user` 常含 PII,优先用 header** |
 | `RESPONSE_STORE_TTL_MS` | `3600000` | 会话保留时长(1 小时),每轮访问自动续期 |
 | `RESPONSE_STORE_MAX` | `2000` | 最多保留多少个会话,LRU 驱逐 + 租户公平配额 |
 | `RESPONSE_STORE_MAX_BYTES` | `128m` | 会话总字节预算(支持 b/k/kb/m/mb/g/gb)。条数上限约束的是数量不是内存 —— 实测真实 agent 会话每条约 167KB,2000 条约 327MB。按条数与字节两个维度中先触发的那个驱逐 |
