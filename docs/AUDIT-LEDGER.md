@@ -357,3 +357,54 @@ ACP vision 重路由不是 `selectBackend` 的 flow,是 `devin_connect` 逃进 `
 | `STRICT_MODEL=0` 的静默改写 | 仍在;且 `devin-connect-strict-model.test.js` 把该行为断言成期望行为,套件在强制执行 #234 验收标准的违反 |
 | 模块级 `MODELS` 表注入 | 已采纳快照永久注入 key 且无人移除,已删除账号的模型仍被宣传 |
 | 逐请求 billing tag 号 | `credit_cost` / `committed_acu_cost` 只有声明顺序推测,需付费 token 校准(已在 #239 请社区协助) |
+
+---
+
+## 2026-08-03 第四轮:v3.9.8 之后的三条积压 + 突变验证继续收割
+
+| 子系统 | 结论 | 守卫 |
+|---|---|---|
+| MODELS 表注入 | 已删除账号的模型永久被宣传(实测 removeAccount 后 key 仍在、listModels 仍列、池 total=0) | `models-injection-eviction.test.js`(8 条,5 突变全 CAUGHT) |
+| sticky 绑定维度 | connect 每个 selector 共享单槽 `caller\0*`,按 entitlement 分区的池上零亲和 | `sticky-selector-dimension.test.js`(7 条,突变 CAUGHT) |
+| dashboard 转义调用点 | 208 个调用点零覆盖;审计结论:当前无未转义的 innerHTML sink | `dashboard-escape-callsites.test.js`(3 条,3 突变全 CAUGHT) |
+| sticky TTL 断言 | 70ms 对 120ms TTL 仅 50ms 余量,满套件负载下 3 次红 1 次 | 加余量至 400/600,突变确认未削弱 |
+
+### 新判别动作:先问"这条顺序/这个记账维度在哪条路径上承重"
+
+两次踩到同一形态:
+
+1. **注入记账维度选错**。按"谁注入的"记账,而 applyCloudModels 跳过已存在的 key,所以
+   只有第一个报告该 UID 的账号有记录 —— 移除最后一个真实持有者时什么都不驱逐。正确的
+   问题不是"谁注入的"而是"还有谁能到达"
+2. **调用顺序只在一条路径上承重**。`forgetCloudModelCatalog` 内部的"先丢目录再驱逐"
+   顺序,经由 removeAccount 时无关(上游已经丢过了),只在直接调用时承重。我的注释声称
+   它承重,而突变验证显示零测试失败 —— 补了一条直接调用的测试才让它真的承重
+
+**动作**:写下"顺序/维度很重要"的注释时,立刻问"经由哪个调用者时它才重要?"然后给那条
+路径写测试。这是本轮第五、六次"我的注释声称某处承重、实际没有断言覆盖"。
+
+### 复现失败也要归因,不能当成"缺陷不存在"
+
+第一次复现 MODELS 泄漏得到 delta +0,看起来像"缺陷不存在"。真实原因是单条目快照触发了
+缩水确认守卫被隔离,`applyCloudModels` 压根没执行。**一次没能复现的尝试,和一次证明缺陷
+不存在的实验,不是同一件事。** 归因之前不要下结论 —— 我在对话里一度声称复现成功而当时
+工具输出是空的,那句话没有依据。
+
+### 守卫的守卫抓到了我凭印象写的字段名
+
+dashboard 守卫第一版的字段表里有 `labelHash`,它在整个 dashboard 里根本不存在。没有"每个
+字段必须至少匹配一个已转义 sink"这条反向断言,那个守卫会永远通过且什么都不police。
+
+同一条守卫的计数逻辑还有个 `break`:`keyPrefix` 与 `apiKey_masked` 共享同一表达式,break
+在第一个匹配上使得 keyPrefix 永远记不到。**一个表达式可以同时命中多个维度,计数时不要
+break。**
+
+### 仍未 exhaustive 扫描 ⬜(第四轮更新)
+
+| 面 | 缺口 |
+|---|---|
+| `STRICT_MODEL=0` 静默改写 | 仍在。**但上一份交接对它的描述不准确**:那条测试只断言"opt-out 不得 400",没有断言响应里的 model 字段 —— 谎言是没有断言覆盖的,不是被固化成契约的,修它不需要跟测试打架 |
+| `connect-dimension-guard` | 只检查 `finalizeConnectAccount` 那一段源码,把冷却写到别处可逃 |
+| `handler-route-parity-guard` | "绑定名被读到"可被一行 debug log 满足 |
+| sticky 线余 6 条 | thundering-herd / RPM 清绑定 / 双 flag 楔子 / clearCallerBindings 未接线 / GPT tag 校准 / response store 租户配额 |
+| 逐请求 billing tag 号 | `credit_cost` / `committed_acu_cost` 需付费 token 校准(已在 #239 请社区协助) |
