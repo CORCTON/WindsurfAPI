@@ -1845,10 +1845,16 @@ function acquireConnectFailover(triedKeys, signal, callerKey, selector = null) {
 // mid-conversation re-pays for the whole accumulated context every turn.
 //
 // The connect path always acquires with modelKey=null (acquireConnectAccount and
-// acquireConnectFailover both pass null), so the binding MUST be written with
-// null too: bindingKey() is `callerKey\0(modelKey || '*')` and a mismatch here
-// would silently never resolve on lookup.
-export function bindConnectSticky(callerKey, acct) {
+// acquireConnectFailover both pass null), so the binding MUST be written with null in
+// the MODEL dimension too, or it would silently never resolve on lookup.
+//
+// The SELECTOR is a separate, third dimension. Writing it is what gives a caller
+// per-selector affinity: with only (caller, modelKey=null) every connect selector of
+// one caller shared the single slot `callerKey\0*`, so on a pool partitioned by
+// entitlement a caller alternating between a free-reachable and a paid selector
+// cleared and re-created that slot every request and got zero affinity. getApiKey
+// already receives the selector, so both sides agree.
+export function bindConnectSticky(callerKey, acct, selector = null) {
   if (!callerKey || !acct?.id || !isStickyEnabled()) return;
   // Same per-user-scope gate every Cascade sticky write sits behind (via
   // reuseEnabled → !sharedApiKeyNoScope, chat.js hasPerUserScope / SEC-W2):
@@ -1861,7 +1867,7 @@ export function bindConnectSticky(callerKey, acct) {
   // cascade reuse.
   if (!hasPerUserScope(callerKey)) return;
   try {
-    setStickyBinding(callerKey, null, acct.id, currentApiKeyForId(acct.id, acct.apiKey));
+    setStickyBinding(callerKey, null, acct.id, currentApiKeyForId(acct.id, acct.apiKey), selector);
   } catch { /* affinity is best-effort — never fail a served request over it */ }
 }
 
@@ -3210,7 +3216,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
                 // upstream session_id stable, this keeps the ACCOUNT stable — the
                 // prompt cache lives on the account, so without both the next turn
                 // still lands elsewhere and re-writes the whole context.
-                bindConnectSticky(callerKey, acct);
+                bindConnectSticky(callerKey, acct, selector);
                 // Session continuity: commit the completed request→response pair
                 // from the streamed result so the next turn resolves to this same
                 // session_id via pair-chain overlap. Gate-checked + best-effort
@@ -3347,7 +3353,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
       const r = await attempt(acct);
       if (r.kind === 'ok') {
         // Same cache-affinity pin as the streaming path above.
-        bindConnectSticky(callerKey, acct);
+        bindConnectSticky(callerKey, acct, selector);
         // Feed the dashboard token-usage breakdown from the DEVIN_CONNECT path
         // too. Without this the non-stream connect responses never reached
         // recordTokenUsage (only the cascade paths did), so the "Token 用量分布"

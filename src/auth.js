@@ -1742,7 +1742,10 @@ export function getApiKey(excludeKeys = [], modelKey = null, callerKey = null, c
   // account so the cascade_id from the previous turn is still valid.
   // Falls through to normal selection if the bound account is unavailable.
   if (callerKey && isStickyEnabled()) {
-    const bound = getStickyBinding(callerKey, modelKey);
+    // Pass the connect selector through as its own dimension. getApiKey has always
+    // RECEIVED it (the connect path acquires with modelKey=null + a selector) but the
+    // binding key ignored it, so all of a caller's connect selectors shared one slot.
+    const bound = getStickyBinding(callerKey, modelKey, connectSelector);
     if (bound) {
       // Match by account id ONLY — never by the apiKey snapshot taken at bind time.
       // A background re-login swaps account.apiKey in place (keeping the id and
@@ -1792,7 +1795,7 @@ export function getApiKey(excludeKeys = [], modelKey = null, callerKey = null, c
         return null;
       }
       // Clear it so the next call falls through to normal selection instead of looping.
-      clearStickyBinding(callerKey, modelKey);
+      clearStickyBinding(callerKey, modelKey, connectSelector);
       noteStickyFallback();
     }
   }

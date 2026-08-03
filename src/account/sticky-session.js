@@ -119,19 +119,31 @@ function oldestKey(tenant = null) {
  * Build the internal map key from caller + model dimensions.
  * Using \0 delimiter (valid in Map keys but never appears in user input).
  */
-function bindingKey(callerKey, modelKey) {
+function bindingKey(callerKey, modelKey, selector = null) {
   if (isExperimentalEnabled('stickyBindByUserOnly')) {
-    return callerKey + '\0' + '*';
+    return callerKey + '\0' + '*' + '\0' + '*';
   }
-  return callerKey + '\0' + (modelKey || '*');
+  // Three dimensions, because modelKey and selector are DIFFERENT namespaces and
+  // collapsing them loses affinity on the production default backend.
+  //
+  // The connect path acquires with modelKey=null, so every connect selector of one
+  // caller used to share the single slot `callerKey\0*`. On a pool partitioned by
+  // entitlement, a caller alternating between a free-reachable and a paid selector
+  // cleared and re-created that one slot on every request and got ZERO affinity —
+  // the exact cache-rewrite cost sticky binding exists to avoid.
+  //
+  // Keeping them as separate dimensions rather than overloading modelKey means the
+  // Cascade path (real model keys, selector=null) and the connect path (modelKey=null,
+  // real selectors) can never collide in the same slot.
+  return callerKey + '\0' + (modelKey || '*') + '\0' + (selector || '*');
 }
 
 // Log-safe rendering of a binding key: the raw \0 delimiter must never reach
 // log output (it corrupts line-oriented log consumers), and the callerKey side
 // is truncated the same way auth.js truncates it.
 function displayKey(key) {
-  const [caller, model] = key.split('\0');
-  return `caller=${caller.slice(0, 50)} model=${model}`;
+  const [caller, model, selector] = key.split('\0');
+  return `caller=${caller.slice(0, 50)} model=${model} selector=${selector ?? '*'}`;
 }
 
 // ── Periodic cleanup ─────────────────────────────────────────────
@@ -168,12 +180,12 @@ export function isStickyEnabled() {
  * @param {string} [modelKey] - Model being requested
  * @returns {{ accountId: string, apiKey: string } | null}
  */
-export function getStickyBinding(callerKey, modelKey = '') {
+export function getStickyBinding(callerKey, modelKey = '', selector = null) {
   if (!ENABLED) return null;
   if (!callerKey) return null;
   ensureCleanupTimer();
 
-  const key = bindingKey(callerKey, modelKey);
+  const key = bindingKey(callerKey, modelKey, selector);
   const binding = _bindings.get(key);
   if (!binding) {
     _stats.misses++;
@@ -206,7 +218,7 @@ export function getStickyBinding(callerKey, modelKey = '') {
  * @param {string} accountId
  * @param {string} apiKey
  */
-export function setStickyBinding(callerKey, modelKey, accountId, apiKey) {
+export function setStickyBinding(callerKey, modelKey, accountId, apiKey, selector = null) {
   if (!ENABLED || !callerKey || !accountId) return;
   ensureCleanupTimer();
 
@@ -214,7 +226,7 @@ export function setStickyBinding(callerKey, modelKey, accountId, apiKey) {
   // fresh callerKeys and evict every other tenant's live binding. So a tenant
   // already holding at least its fair share pays for its own growth — it evicts
   // ITS OWN least-recently-used binding instead of a stranger's.
-  if (_bindings.size >= MAX_BINDINGS && !_bindings.has(bindingKey(callerKey, modelKey))) {
+  if (_bindings.size >= MAX_BINDINGS && !_bindings.has(bindingKey(callerKey, modelKey, selector))) {
     const tenant = tenantOf(callerKey);
     const fairShare = Math.max(1, Math.floor(MAX_BINDINGS / Math.max(1, _tenantCounts.size)));
     const overShare = (_tenantCounts.get(tenant) || 0) >= fairShare;
@@ -225,7 +237,7 @@ export function setStickyBinding(callerKey, modelKey, accountId, apiKey) {
     }
   }
 
-  const key = bindingKey(callerKey, modelKey);
+  const key = bindingKey(callerKey, modelKey, selector);
   const now = Date.now();
   const existing = _bindings.get(key);
 
@@ -250,9 +262,9 @@ export function setStickyBinding(callerKey, modelKey, accountId, apiKey) {
  * @param {string} callerKey
  * @param {string} [modelKey]
  */
-export function clearStickyBinding(callerKey, modelKey = '') {
+export function clearStickyBinding(callerKey, modelKey = '', selector = null) {
   if (!ENABLED || !callerKey) return;
-  const key = bindingKey(callerKey, modelKey);
+  const key = bindingKey(callerKey, modelKey, selector);
   if (_bindings.has(key)) log.info(`[sticky] CLEAR ${displayKey(key)}`);
   dropBinding(key);
 }

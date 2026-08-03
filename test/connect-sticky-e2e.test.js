@@ -31,6 +31,11 @@ const sticky = await import('../src/account/sticky-session.js');
 // ':user:'-scoped — passes hasPerUserScope, like a client sending body.user
 // or Claude Code's metadata.user_id.
 const SCOPED_CALLER = 'api:cafebabecafebabecafebabecafebabe:user:tooluser01';
+// The connect path binds per SELECTOR (third dimension), so an end-to-end assertion
+// has to read the same slot production writes. A 2-arg lookup reads `caller\0*\0*`,
+// which is a DIFFERENT slot and always misses here — that mismatch is exactly the
+// regression these tests exist to catch.
+const CONNECT_SELECTOR = 'swe-1-6-slow';
 // Bare shared API key — N end users behind one key, must NOT bind.
 const SHARED_CALLER = 'api:cafebabecafebabecafebabecafebabe';
 
@@ -74,7 +79,7 @@ describe('connect sticky e2e — call-site wiring', () => {
       { callerKey: SCOPED_CALLER },
     );
     assert.equal(r.status, 200);
-    const bound = sticky.getStickyBinding(SCOPED_CALLER, null);
+    const bound = sticky.getStickyBinding(SCOPED_CALLER, null, CONNECT_SELECTOR);
     assert.ok(bound, 'success path must write the null-modelKey binding (call-site regression)');
   });
 
@@ -114,7 +119,7 @@ describe('connect sticky e2e — dead bound token must still fail over', () => {
       { callerKey: SCOPED_CALLER },
     );
     assert.equal(t1.status, 200);
-    const pinned = sticky.getStickyBinding(SCOPED_CALLER, null);
+    const pinned = sticky.getStickyBinding(SCOPED_CALLER, null, CONNECT_SELECTOR);
     assert.ok(pinned, 'turn 1 must pin the serving account');
 
     // Kill exactly the pinned account's token for turn 2.
@@ -130,7 +135,7 @@ describe('connect sticky e2e — dead bound token must still fail over', () => {
     assert.ok(seen.some(k => k !== deadKey), 'a non-pinned account must have served');
 
     // And the surviving account owns the binding for turn 3.
-    const rebound = sticky.getStickyBinding(SCOPED_CALLER, null);
+    const rebound = sticky.getStickyBinding(SCOPED_CALLER, null, CONNECT_SELECTOR);
     assert.ok(rebound && rebound.apiKey !== deadKey, 'binding must move to the account that served');
     assert.ok([a.id, b.id].includes(rebound.accountId));
   });
