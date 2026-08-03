@@ -1847,7 +1847,16 @@ export function getApiKey(excludeKeys = [], modelKey = null, callerKey = null, c
 
   // Pick the account with the fewest in-flight requests first (so a burst
   // of concurrent calls spreads across accounts instead of piling onto a
-  // single one that still has RPM headroom — see issue #37). Then prefer
+  // single one that still has RPM headroom — see issue #37).
+  //
+  // This is in direct tension with sticky-session prompt-cache affinity: a caller's
+  // parallel first-round requests deliberately scatter (measured: 8 concurrent → 8
+  // distinct accounts, 0 sticky hits), so each account pays its own cache write. The
+  // trade is intentional and documented on both sides — see the CONCURRENCY note in
+  // account/sticky-session.js and test/sticky-concurrency-tension.test.js. Do not
+  // "fix" one side without reading the other.
+  //
+  // Then prefer
   // accounts with the highest quota headroom (v2.0.57 Fix 4 — predictive
   // pre-warming reads min(daily%, weekly%) so a Trial about to roll over
   // doesn't keep getting picked over a healthier account). Then RPM

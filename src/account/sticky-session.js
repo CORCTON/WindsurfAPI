@@ -25,6 +25,24 @@
  *   - If the bound account is unavailable (rate limited, etc.),
  *     the stale binding is immediately cleared so retries don't
  *     keep hitting the same unavailable account
+ *   - CONCURRENCY: sticky only helps SEQUENTIAL turns. A caller firing N requests in
+ *     parallel with no binding yet gets N DIFFERENT accounts, by design — the candidate
+ *     sort in auth.js getApiKey puts fewest-in-flight first precisely so a burst spreads
+ *     instead of piling onto one account with RPM headroom (issue #37). Measured: 8
+ *     concurrent first-round acquisitions for one caller land on 8 distinct accounts,
+ *     0 sticky hits.
+ *
+ *     That is a genuine TENSION, not a bug on either side: #37 buys throughput, sticky
+ *     buys prompt-cache affinity, and for a parallel burst they want opposite things. The
+ *     proxy cannot tell "8 parallel tool calls in one conversation" (which would want one
+ *     account, paying 1 cache write instead of 8) from "8 independent conversations"
+ *     (which want 8 accounts). Binding the first round would serialise the former against
+ *     a single account's RPM limit.
+ *
+ *     Neither side documented this before. Whoever changes the balance should do it
+ *     deliberately and update test/sticky-concurrency-tension.test.js, which pins the
+ *     current choice so the change cannot happen by accident.
+ *
  *   - Bindings expire by TTL. Nothing clears them on session reset or client
  *     disconnect: clearCallerBindings exists but has no production call site
  *     (see its own note below).
