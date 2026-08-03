@@ -110,13 +110,26 @@ describe('sticky-session — TTL expiry (sliding on lastAccess)', () => {
   });
 
   it('access within TTL slides the window forward (stays alive)', async () => {
-    const m = await loadFresh({ enabled: '1', ttl: 120 });
+    // Margins, not exact timings. The property under test is that a lookup inside the
+    // window slides lastAccess, so total elapsed can exceed the TTL while no single gap
+    // does. That needs gap < TTL < 2*gap — the absolute numbers are irrelevant.
+    //
+    // The original 70ms gap against a 120ms TTL left only 50ms of headroom, and
+    // setTimeout overshoots under full-suite CPU load: this failed intermittently in the
+    // release gate (~1 run in 3) while passing 3/3 in isolation. There is no injectable
+    // clock here — getStickyBinding reads Date.now() inline — so the fix is headroom.
+    // 400ms gaps against a 600ms TTL need a 200ms overshoot to break instead of 50ms.
+    const TTL = 600;
+    const GAP = 400;
+    const m = await loadFresh({ enabled: '1', ttl: TTL });
     m.resetAllBindings();
     m.setStickyBinding('caller-a', 'opus', 'acct-1', 'sk');
-    await new Promise(r => setTimeout(r, 70));
-    assert.ok(m.getStickyBinding('caller-a', 'opus'), 'alive at 70ms (<120 TTL)');   // slides lastAccess
-    await new Promise(r => setTimeout(r, 70));
-    assert.ok(m.getStickyBinding('caller-a', 'opus'), 'still alive: total 140ms but slid at 70ms');
+    await new Promise(r => setTimeout(r, GAP));
+    assert.ok(m.getStickyBinding('caller-a', 'opus'),
+      `alive at ${GAP}ms (< ${TTL} TTL)`);   // this lookup slides lastAccess
+    await new Promise(r => setTimeout(r, GAP));
+    assert.ok(m.getStickyBinding('caller-a', 'opus'),
+      `still alive: total ${GAP * 2}ms exceeds the ${TTL}ms TTL, but it slid at ${GAP}ms`);
   });
 });
 
