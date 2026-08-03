@@ -210,3 +210,37 @@ describe('degrade honesty: the echoed model must be what ran (#234)', () => {
       'precondition: the two names produce different fingerprints');
   });
 });
+
+describe('degrade honesty reaches the Anthropic and Gemini routes too (#234)', () => {
+  // The partial-path check. chat.js alone fixes /v1/chat/completions and leaves the other
+  // two protocol routes reporting the requested name — measured before this: a
+  // /v1/messages request for claude-opus-4.9 ran swe-1-6-slow and reported
+  // claude-opus-4.9. Both files had ZERO references to displayModel.
+
+  it('/v1/messages reports what ran, not what was asked for', async () => {
+    process.env.WINDSURFAPI_STRICT_MODEL = '0';
+    const { handleMessages } = await import('../src/handlers/messages.js');
+
+    const res = await handleMessages(
+      { model: UNMAPPED_PAID, max_tokens: 16, messages: [{ role: 'user', content: 'hi' }] },
+      { callerKey: 'honesty-caller' },
+    );
+
+    assert.equal(seen?.wire, FREE_SELECTOR, 'precondition: the free selector ran');
+    assert.equal(res?.body?.model, FREE_SELECTOR,
+      'the Anthropic route must not report the paid name either');
+  });
+
+  it('/v1/messages still echoes the requested name for a mapped alias', async () => {
+    process.env.WINDSURFAPI_STRICT_MODEL = '0';
+    const { handleMessages } = await import('../src/handlers/messages.js');
+
+    const res = await handleMessages(
+      { model: MAPPED_ALIAS, max_tokens: 16, messages: [{ role: 'user', content: 'hi' }] },
+      { callerKey: 'honesty-caller' },
+    );
+
+    assert.equal(res?.body?.model, MAPPED_ALIAS,
+      'alias resolution is not a degrade — the requested name still stands');
+  });
+});

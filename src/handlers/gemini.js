@@ -303,7 +303,10 @@ export function openAIToGemini(result, model) {
 
   const out = {
     candidates: [candidate],
-    modelVersion: model || result?.model || '',
+    // Same precedence flip as messages.js: chat.js already reports what actually ran,
+    // so the upstream name wins over the requested one and this route stops
+    // misreporting a degraded request.
+    modelVersion: result?.model || model || '',
   };
   const usageMetadata = buildUsageMetadata(result?.usage);
   if (usageMetadata) out.usageMetadata = usageMetadata;
@@ -404,6 +407,19 @@ class GeminiStreamTranslator {
       this.sawTerminalSignal = true;
       this.error(chunk.error);
       return;
+    }
+    // Adopt the upstream's model name before the first frame is emitted.
+    //
+    // Constructed with the REQUESTED name (it must exist before the upstream call), so a
+    // degraded connect request — WINDSURFAPI_STRICT_MODEL=0 rewriting an unmapped paid
+    // name to the free selector — would report the paid name it never ran. Every OpenAI
+    // chunk carries the truthful name.
+    //
+    // Gated on frameCount rather than on a "started" flag: EVERY gemini frame carries
+    // modelVersion, so adopting after the first frame would emit two different names
+    // within one response.
+    if (this.frameCount === 0 && typeof chunk.model === 'string' && chunk.model) {
+      this.model = chunk.model;
     }
     const choice = chunk.choices?.[0];
     if (choice) {

@@ -808,7 +808,13 @@ export function openAIToAnthropic(result, model, msgId, cachePolicy = null, stop
     // the top-level container field official responses include. null = no
     // container was created (no server-side tool ran).
     container: null,
-    model: model || result.model,
+    // The UPSTREAM name wins over the requested one. chat.js reports what actually ran
+    // (it echoes the requested name for a mapped alias, and the real selector when
+    // WINDSURFAPI_STRICT_MODEL=0 degrades an unmapped name), so deferring to it is what
+    // makes this route honest. Measured before this: a /v1/messages request for
+    // claude-opus-4.9 ran swe-1-6-slow and reported claude-opus-4.9.
+    // `|| model` still covers a result with no model field at all.
+    model: result.model || model,
     stop_reason: stopReason,
     stop_sequence: stopSequence,
     usage: buildAnthropicUsage(usage, cachePolicy),
@@ -1158,6 +1164,19 @@ class AnthropicStreamTranslator {
       this.sawTerminalSignal = true;
       this.error(chunk.error);
       return;
+    }
+    // Adopt the upstream's model name before message_start goes out.
+    //
+    // The translator is constructed with the REQUESTED name because it has to exist
+    // before the upstream is called, so on the connect path a degraded request
+    // (WINDSURFAPI_STRICT_MODEL=0 rewriting an unmapped paid name to the free selector)
+    // would announce the paid name it never ran. Every OpenAI chunk carries the truthful
+    // name, and startMessage() is lazy — so the first chunk arrives in time to correct it.
+    //
+    // Only BEFORE message_start: once announced, the model must not change mid-stream, or
+    // a client that keyed state on it sees two different models in one message.
+    if (!this.messageStarted && typeof chunk.model === 'string' && chunk.model) {
+      this.model = chunk.model;
     }
     this.startMessage();
     const choice = chunk.choices?.[0];
