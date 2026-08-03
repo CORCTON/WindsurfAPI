@@ -137,6 +137,38 @@ describe('a concurrent burst spreads regardless of the caller hash', () => {
       + 'number means the shard is treating a busy account as tied with an idle one.');
   });
 
+  it('an account the sort demoted for RECENT TROUBLE is never promoted', () => {
+    // Isolates the recent-trouble term, which the first version of tiedWithFirst omitted
+    // even though the sort compares it — and it is the sort's SECOND-most significant key,
+    // so the omission also broke the scan's contiguity assumption (a genuinely-tied account
+    // could sit after a non-tied one, stopping the scan early). Measured before the fix: an
+    // account with two hard failures was still selected for 2 of 6 sampled callerKeys.
+    const POOL = 4;
+    seedPool(POOL);
+    const wobbly = auth.getAccountInternal(created[0]);
+    const now = Date.now();
+
+    let promoted = 0;
+    const sampled = ['api:k:user:alice', 'api:k:user:bob', 'api:k:user:carol',
+      'api:k:user:dave', 'api:1111111111111111:user:alice', 'caller-tension'];
+    for (const caller of sampled) {
+      makeAllTied();
+      // A real trouble cluster: two hard failures → score 6 → bucket 2. Everything else
+      // (in-flight, reservations, lastUsed) stays identical across the pool, so the trouble
+      // term is the ONLY thing separating this account from its peers.
+      wobbly._health = [{ t: now - 1000, k: 'e' }, { t: now - 500, k: 'e' }];
+      const x = auth.getApiKey([], null, caller, SELECTOR);
+      assert.ok(x, `${caller} must be served`);
+      if (x.id === wobbly.id) promoted++;
+      auth.releaseAccountById(x.id);
+    }
+
+    assert.equal(promoted, 0,
+      `the account with a recent failure cluster was selected for ${promoted} of `
+      + `${sampled.length} callers. The sort demotes it on the trouble term; if the shard's `
+      + 'tie predicate does not mirror that term, it promotes it back to slot 0.');
+  });
+
   it('an account loaded by OTHER callers is never promoted into the shard', () => {
     // Isolates the RPM-ratio term of the tie test, which also read as redundant until this
     // case existed: measured, deleting it left the rest of this file green, and yet the

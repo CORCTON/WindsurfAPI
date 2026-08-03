@@ -4,13 +4,19 @@
     "test/scatter-attribution.test.js",
     "test/sticky-concurrency-tension.test.js"
   ],
-  "expectBaselinePass": 18,
+  "expectBaselinePass": 19,
   "mutations": [
     {
       "name": "the original defect: shard indexes the WHOLE array again",
       "file": "src/auth.js",
       "anchor": "      const bucket = hash.readUInt32BE(0) % span;",
       "replacement": "      const bucket = hash.readUInt32BE(0) % candidates.length;"
+    },
+    {
+      "name": "tie test drops the recent-trouble term — a demoted account counts as tied",
+      "file": "src/auth.js",
+      "anchor": "          && Math.floor(recentTroubleScore(c.account, now) / 3)\n             === Math.floor(recentTroubleScore(a.account, now) / 3)",
+      "replacement": "          && true"
     },
     {
       "name": "tie test drops the in-flight term — a busier account counts as tied",
@@ -25,7 +31,7 @@
       "replacement": "          && true"
     },
     {
-      "name": "DOCUMENTED SURVIVOR: tie test drops the lastUsed term. Not observable, and arguably over-strict rather than load-bearing: accounts differing ONLY in lastUsed have identical in-flight AND identical reservation counts, so neither is closer to its ceiling, and an unbound caller has no affinity to protect. Permuting among them is precisely what sharding is for. Kept in the tie test because it costs nothing and makes the predicate mirror the sort exactly. See AUDIT-LEDGER round 10.",
+      "name": "DOCUMENTED SURVIVOR: tie test drops the lastUsed term. Not reproducible as a selection change in any case constructed so far. Note the earlier rationale here was WRONG: it claimed tied accounts have identical reservation COUNTS, but the predicate compares the RPM RATIO, so in a mixed-tier pool two accounts can tie on ratio with different absolute headroom. The honest statement is narrower — accounts differing only in lastUsed tie on every term the sort ranks above it, and an unbound caller has no affinity to preserve, so permuting among them is what sharding is for. Kept because it costs nothing and makes the predicate mirror the sort exactly, which is the property the trouble-term regression proved matters.",
       "file": "src/auth.js",
       "anchor": "          && (c.account.lastUsed || 0) === (a.account.lastUsed || 0);",
       "replacement": "          && true;",
