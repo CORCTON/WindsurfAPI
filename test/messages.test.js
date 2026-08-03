@@ -643,6 +643,77 @@ describe('Anthropic messages request translation', () => {
   // only accumulate output_tokens from message_delta, so an all-zero start made
   // the SDK's final input read 0. message_delta must then only add output_tokens
   // (input stays the authoritative upstream value) and never regress input to 0.
+  // #234 — message_start must announce the model that ACTUALLY ran.
+  //
+  // The translator is constructed with the REQUESTED name (it exists before the upstream
+  // call), so on the connect path a degraded request — WINDSURFAPI_STRICT_MODEL=0
+  // rewriting an unmapped paid name to the free selector — used to announce the paid name
+  // it never ran. Every OpenAI chunk carries the truthful name and message_start is lazy,
+  // so the first chunk arrives in time to correct it.
+  it('message_start adopts the upstream model name, not the requested one', async () => {
+    const result = await handleMessages({
+      model: 'claude-opus-4.9',          // unmapped: would be degraded upstream
+      stream: true,
+      messages: [{ role: 'user', content: 'hi' }],
+    }, {
+      async handleChatCompletions() {
+        return {
+          status: 200,
+          stream: true,
+          async handler(res) {
+            // Upstream reports the model it really ran, as chat.js now does.
+            res.write(chatChunk({ model: 'swe-1-6-slow', choices: [{ index: 0, delta: { content: 'ok' }, finish_reason: null }] }));
+            res.write(chatChunk({ model: 'swe-1-6-slow', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }));
+            res.end('data: [DONE]\n\n');
+          },
+        };
+      },
+    });
+
+    const res = fakeRes();
+    await result.handler(res);
+    const events = parseAnthropicEvents(res.body);
+    const start = events.find(e => e.event === 'message_start');
+
+    assert.ok(start, 'message_start emitted');
+    assert.equal(start.data.message.model, 'swe-1-6-slow',
+      'message_start must announce what ran, not the requested claude-opus-4.9');
+  });
+
+  it('does not change the announced model mid-stream', async () => {
+    // Once message_start has gone out the model is fixed: a client that keyed state on it
+    // must not see two different models inside one message. So a later chunk claiming a
+    // different name is ignored.
+    const result = await handleMessages({
+      model: 'claude-opus-4.9',
+      stream: true,
+      messages: [{ role: 'user', content: 'hi' }],
+    }, {
+      async handleChatCompletions() {
+        return {
+          status: 200,
+          stream: true,
+          async handler(res) {
+            res.write(chatChunk({ model: 'swe-1-6-slow', choices: [{ index: 0, delta: { content: 'a' }, finish_reason: null }] }));
+            // A later chunk disagreeing must NOT retroactively change the announcement.
+            res.write(chatChunk({ model: 'something-else-entirely', choices: [{ index: 0, delta: { content: 'b' }, finish_reason: null }] }));
+            res.write(chatChunk({ model: 'something-else-entirely', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }));
+            res.end('data: [DONE]\n\n');
+          },
+        };
+      },
+    });
+
+    const res = fakeRes();
+    await result.handler(res);
+    const events = parseAnthropicEvents(res.body);
+    const starts = events.filter(e => e.event === 'message_start');
+
+    assert.equal(starts.length, 1, 'exactly one message_start');
+    assert.equal(starts[0].data.message.model, 'swe-1-6-slow',
+      'the first chunk wins; a later disagreeing chunk must not change it');
+  });
+
   it('prefills message_start.usage.input_tokens (>0) and lets message_delta carry authoritative usage (A1)', async () => {
     const result = await handleMessages({
       model: 'claude-sonnet-4.6',
