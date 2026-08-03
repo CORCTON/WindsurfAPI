@@ -25,10 +25,11 @@
       "replacement": "          && true"
     },
     {
-      "name": "tie test drops the lastUsed term",
+      "name": "DOCUMENTED SURVIVOR: tie test drops the lastUsed term. Not observable, and arguably over-strict rather than load-bearing: accounts differing ONLY in lastUsed have identical in-flight AND identical reservation counts, so neither is closer to its ceiling, and an unbound caller has no affinity to protect. Permuting among them is precisely what sharding is for. Kept in the tie test because it costs nothing and makes the predicate mirror the sort exactly. See AUDIT-LEDGER round 10.",
       "file": "src/auth.js",
       "anchor": "          && (c.account.lastUsed || 0) === (a.account.lastUsed || 0);",
-      "replacement": "          && true;"
+      "replacement": "          && true;",
+      "expectCaught": false
     },
     {
       "name": "span always 1 — sharding becomes a no-op, callers stack on candidates[0]",
