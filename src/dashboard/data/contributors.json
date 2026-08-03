@@ -458,6 +458,16 @@
       "mergedAt": "2026-07-29",
       "title": "fix(ci): migrate macOS x64 release runner to macos-26-intel",
       "summary": "四行改动,价值全在诊断。GitHub 已于 2025-12-04 下线 macos-13 runner 镜像,而 release.yml 的 x64 job 一直写着 runs-on: macos-13 —— v3.9.1 到 v3.9.4 的 x64 job 终态**全部是 cancelled 而非排队**,也就是连续四个版本都没有 macOS x64 二进制发出去。而我们这边一直把 GitHub UI 上的 queued 按 workflow 注释里\"x64 可能排几小时\"的说法解释,没去看终态,四次都判断成\"非阻塞、不用管\"。他附了 GitHub changelog 与 actions/runner-images README 两条官方依据,标签选择(macos-26-intel)也与官方当前 x64 标签一致,并保留了 x64 不进 release needs 的非阻塞语义。这条的分量不在代码量,而在于它是外部贡献者替维护方发现的自身发布链缺口 —— 与 lovivi #204 那种\"十行精准方言修复\"同档但更靠上,因为它纠正的是一个已经影响了四个已发布版本的事实。"
+    },
+    {
+      "login": "warelik",
+      "githubId": 54947489,
+      "pr": 238,
+      "weight": "S",
+      "weightLabel": "swe-1-7 reasoning-only 停滞 · 三链根因 + 按失效特征而非模型名做键",
+      "mergedAt": "2026-08-02",
+      "title": "fix(devin-connect): rescue thinking-only finishes with a corrective nudge",
+      "summary": "swe-1-7(Kimi K2 fine-tune,当前免费档,因此是很多部署的首选 SWE 模型)在 agentic 循环里间歇性把整个 turn 花在 reasoning 通道:thinking delta 有内容、content 零、tool call 零、finish=stop。严格客户端(kimi CLI)报 APIEmptyResponseError 且 10/10 同样失败,宽容客户端静默丢弃该轮、循环无限停滞。实测 agentic 25%、纯文本提问 100%,其中 60% 的推理里明确声明了工具意图。三环一链且只修一环无可观测效果:上游把 turn 花在 reasoning 通道(proto #9)、isEmptyCompletion 把 reasoning 计入 sawContent 所以空完成重试从不触发、重试历史里的零长度 assistant turn 被原样转发上游反过来诱导模型继续产空轮(这正是客户端 10 次重试全部同样失败的原因)。修复键在**失效特征**(reasoning-only finish + 有 tools)而不是模型名上 —— 本仓库吃过几次按模型名硬编码的亏,这个选择明显更耐用。实测数据扎实:纠正 nudge 24/24 恢复,盲重试仅 20%;剔除空 assistant turn 后首次成功率 100% vs 75%。issue 里还有一条方法论值得记:宽容客户端静默丢弃 thinking-only 轮,等于把可观测性也一起丢了 —— 只有 kimi CLI 的严格校验给出完整 trace,这个 bug 才成为可捕获的。评审查出两条自引入缺陷(reasoning 提升成 content 时未移除 reasoning_content 导致同一段文字返回两遍;每次 rescue 尝试的输出被拼进同一个答案),均由维护方在合并后修掉 —— 都比它们修复的缺陷轻一个数量级,不值得让贡献者再跑一轮往返。未到 MR/LR 档是因为这两条本可在提交前自查到。"
     }
   ]
 }
