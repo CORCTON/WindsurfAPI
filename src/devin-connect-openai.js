@@ -116,7 +116,7 @@ function isEmptyCompletion(finishEv, sawContent) {
  * by appending a corrective user nudge and dropping empty assistant turns.
  * Yields the same event stream as streamChat; on a non-empty turn it is a pass-through.
  */
-async function* streamChatWithEmptyRetry(params, { env = process.env, rescueThinkingOnly = false } = {}) {
+async function* streamChatWithEmptyRetry(params, { env = process.env, rescueThinkingOnly = true } = {}) {
   // Weak models (fable) return DETERMINISTIC empties on complex multi-turn / large
   // system — paid E2E (2026-07-08, 27/27) proved retry never heals them, it only
   // triples the upstream load and burns the account into a 3h rate limit. So for
@@ -147,6 +147,12 @@ async function* streamChatWithEmptyRetry(params, { env = process.env, rescueThin
   // load into a 3h rate limit. Whether fable produces reasoning-only finishes is
   // unproven either way, so this errs toward the documented account-protection.
   const rescueMax = (retryOnEmptyEnabled(env) && !weak) ? rescueConfigured : 0;
+  // Cap for the reasoning digest: the nudge quotes only the END of the reasoning,
+  // sliced once at nudge time (the consumers already hold the full reasoning text,
+  // so per-chunk trimming would only churn the GC). 0 disables the digest; a
+  // non-numeric value falls back to the default instead of silently disabling it.
+  const digestRaw = Number(env.DEVIN_CONNECT_RESCUE_REASONING_MAX_CHARS);
+  const reasoningDigestMaxChars = Number.isFinite(digestRaw) && digestRaw >= 0 ? digestRaw : 2000;
   let attemptParams = params;
   // Two speculative arms, two budgets (#240). They used to share the loop counter: the
   // rescue arm has always had its own `rescueAttempt`/`rescueMax` pair, but reaching the
@@ -172,13 +178,17 @@ async function* streamChatWithEmptyRetry(params, { env = process.env, rescueThin
     let sawContent = false;
     let sawText = false;
     let sawReasoning = false;
+    let sawReasoningText = '';
     let finishEv = null;
     for await (const ev of streamChatImpl(attemptParams)) {
       if (ev.type === 'content' || ev.type === 'reasoning') {
         if (ev.text) {
           sawContent = true;
           if (ev.type === 'content') sawText = true;
-          if (ev.type === 'reasoning') sawReasoning = true;
+          if (ev.type === 'reasoning') {
+            sawReasoning = true;
+            sawReasoningText += ev.text;
+          }
         }
         yield ev;
       } else if (ev.type === 'finish') {
@@ -191,22 +201,38 @@ async function* streamChatWithEmptyRetry(params, { env = process.env, rescueThin
     // declaring tool intent without emitting the call; a corrective nudge measurably
     // (24/24 live probe) forces emission; empty assistant turns poison upstream into
     // repeating empty turns.
+    // NOTE: Rescue triggers only when tools are present in the request (params.tools?.length > 0).
+    // Plain chat requests without tools legitimately end in reasoning/text, so rescue is skipped.
     const isStopOrNull = finishEv && (finishEv.reason == null || finishEv.reason === 'stop');
     const hasNoToolCalls = !finishEv?.toolCalls || finishEv.toolCalls.length === 0;
-    if (rescueThinkingOnly && rescueAttempt < rescueMax && isStopOrNull && hasNoToolCalls && sawReasoning && !sawText) {
+    const hasTools = Boolean(params?.tools?.length);
+    if (rescueThinkingOnly && hasTools && rescueAttempt < rescueMax && isStopOrNull && hasNoToolCalls && sawReasoning && !sawText) {
       rescueAttempt++;
       log.warn(`DEVIN_CONNECT: thinking-only completion (reasoning-only, finish=${finishEv?.reason ?? 'null'}) — rescue retry ${rescueAttempt}/${rescueMax} (nudge appended)`);
       const backoff = retryOnEmptyBaseMs(env) * rescueAttempt;
       if (backoff) await new Promise((r) => setTimeout(r, backoff));
-      const origMsgs = attemptParams?.messages || [];
+      // Rebuild from the ORIGINAL request every rescue: `params` is never mutated (each
+      // rescue constructs a fresh attemptParams below), so it always holds the client's
+      // messages. Building from attemptParams instead accumulated — previous rescues'
+      // nudges are role:'user' so the filter keeps them, and with a capped digest each
+      // stale nudge is ~2.1KB at the 2000-char default: five rescues stacked ~10.4KB
+      // of old nudges into the upstream call, each quoting reasoning the model already
+      // moved past.
+      // One rescue = exactly one fresh nudge.
+      const origMsgs = params?.messages || [];
       const filteredMsgs = origMsgs.filter((msg) => {
         if (msg.role !== 'assistant') return true;
         if (Array.isArray(msg.tool_calls) && msg.tool_calls.length) return true;
         return messageText(msg.content).trim() !== '';
       });
+      let nudgeText = 'Stop reasoning. Emit the tool call markup now.';
+      const digest = reasoningDigestMaxChars > 0 ? sawReasoningText.slice(-reasoningDigestMaxChars).trim() : '';
+      if (digest) {
+        nudgeText = `Your previous reasoning ended with: """${digest}"""\nStop reasoning. Emit the tool call markup now.`;
+      }
       const rescued = [
         ...filteredMsgs,
-        { role: 'user', content: 'Stop reasoning. Emit the tool call markup now.' },
+        { role: 'user', content: nudgeText },
       ];
       attemptParams = { ...attemptParams, messages: rescued };
       // Tell the consumer to discard what it accumulated: the next attempt REPLACES
@@ -286,7 +312,7 @@ export async function toChatCompletion(params, { id = newId(), created = nowSeco
   for (let attempt = 0; ; attempt++) {
     try {
       content = ''; reasoning = ''; finishReason = 'stop'; usage = null; nativeToolCalls = [];
-      for await (const ev of streamChatWithEmptyRetry(params, { rescueThinkingOnly: emulateTools })) {
+      for await (const ev of streamChatWithEmptyRetry(params, { rescueThinkingOnly: true })) {
         // A rescue attempt REPLACES the previous one; drop what it produced or the
         // client is handed every attempt concatenated.
         if (ev.type === 'attempt_reset') { content = ''; reasoning = ''; nativeToolCalls = []; billing = null; continue; }
@@ -511,7 +537,7 @@ export async function streamChatCompletion(params, send, { id = newId(), created
     }
   };
 
-  for await (const ev of streamChatWithEmptyRetry(params, { rescueThinkingOnly: emulateTools })) {
+  for await (const ev of streamChatWithEmptyRetry(params, { rescueThinkingOnly: true })) {
     // A rescue attempt REPLACES the previous one. The deltas already sent cannot be
     // retracted (documented at the promotion site below), but the accumulators must
     // not keep the abandoned attempt — otherwise `content` ends up holding every

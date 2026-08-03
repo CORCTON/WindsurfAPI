@@ -333,7 +333,7 @@ const syntheticImagePath = (n) => `C:\\windsurfapi\\image_${n + 1}.png`;
 // serde-JSON": the ENVELOPE is protobuf, only the args VALUE is JSON. Wire wins.
 // Symmetric with the response-side ChatToolCall #6{1:id,2:name,3:arguments}
 // pinned in parseToolCallTagMap.
-function encodeAssistantToolCall({ id, name, argsJson, reasoning, provider }) {
+function encodeAssistantToolCall({ id, name, argsJson, reasoning, provider, reasoningTagNum = 11 }) {
   const toolCall = Buffer.concat([
     writeStringField(1, id),
     writeStringField(2, name),
@@ -344,12 +344,15 @@ function encodeAssistantToolCall({ id, name, argsJson, reasoning, provider }) {
     writeVarintField(2, SOURCE.ASSISTANT),  // #2 role=2
     writeMessageField(6, toolCall),         // #6 tool_call submessage
   ];
-  // #11 reasoning text — VERIFIED-FROM-WIRE (req022: every role=2 assistant turn
-  // carries #11, 59B–1470B). Our default synthetic path omits it; a paid probe
-  // can inject one via DEVIN_CONNECT_IMAGE_REASONING to isolate whether the
-  // agent-loop requires it. Emitted only when a non-empty string is supplied so
-  // the default wire stays byte-identical. ← SWITCH POINT.
-  if (reasoning) parts.push(writeStringField(11, reasoning));
+  // #11 reasoning text (or custom tag, e.g. #9 for negative control RE probes) —
+  // VERIFIED-FROM-WIRE (req022: every role=2 assistant turn carries #11, 59B–1470B).
+  // Our default synthetic path omits it; a probe can inject one via
+  // DEVIN_CONNECT_IMAGE_REASONING or DEVIN_CONNECT_REPLAY_REASONING.
+  // Emitted only when a non-empty string is supplied so default wire stays byte-identical.
+  // The tag-number guard is load-bearing even though callers currently pass reasoningText
+  // only when reasoningTagNum is truthy: field 0 is RESERVED in protobuf and a zero tag
+  // would serialize makeTag(0,2) — an invalid frame — so the encoder refuses it itself.
+  if (reasoning && reasoningTagNum) parts.push(writeStringField(reasoningTagNum, reasoning));
   // #18 provider marker — VERIFIED-FROM-WIRE (req022 MSG14, the DRIVING turn:
   // #18="anthropic"). Only the final/driving assistant tool_use carried it
   // (MSG4 did not). Env-gated, default off. A synthetic #12 thinking SIGNATURE
@@ -778,9 +781,16 @@ function buildCompletionConfig({ maxTokens, temperature, topK, topP, contextWind
  * @param {object}   [params.completion]  CompletionConfig overrides
  * @returns {Buffer} raw protobuf (un-enveloped)
  */
-export function buildGetChatMessageRequest({ token, messages, model, sessionId, completion, tools, nativeToolCall = false, deviceSeed } = {}) {
+export function buildGetChatMessageRequest({ token, messages, model, sessionId, completion, tools, nativeToolCall = false, deviceSeed, env = process.env } = {}) {
   if (!token) throw new Error('DEVIN_CONNECT: missing session token');
   if (!model) throw new Error('DEVIN_CONNECT: missing model selector');
+
+  // Probe: gated replay of reasoning into tag #11 (or #9 for negative control).
+  // Fact A3 (2026-08-03): upstream swe-1-7 accepts reasoning tags (#11, #9) without error
+  // but does not consume them (0/3 effect). Kept as permanent gated RE probe tool.
+  // Reference req022: genuine Bedrock/Claude client wire where #11 actually lives on assistant turns.
+  const replayTag = String(env.DEVIN_CONNECT_REPLAY_REASONING || '').trim();
+  const reasoningTagNum = replayTag === '1' ? 11 : (replayTag === '9' ? 9 : 0);
 
   // System turns are concatenated into the dedicated system_prompt field (#2);
   // everything else becomes a repeated ChatMessage (#3).
@@ -816,18 +826,27 @@ export function buildGetChatMessageRequest({ token, messages, model, sessionId, 
     if (nativeToolCall && msg.role === 'assistant' && Array.isArray(msg.tool_calls) && msg.tool_calls.length) {
       // Optional leading assistant text stays on its own role=2 text message.
       const preText = messageText(msg.content);
+      const reasoningText = reasoningTagNum && (msg.reasoning || msg.reasoning_content) ? String(msg.reasoning || msg.reasoning_content) : '';
       if (preText) {
-        chatMessages.push(Buffer.concat([
+        const parts = [
           writeStringField(1, randomUUID()),
           writeVarintField(2, SOURCE.ASSISTANT),
           writeStringField(3, preText),
-        ]));
+        ];
+        if (reasoningText) parts.push(writeStringField(reasoningTagNum, reasoningText));
+        chatMessages.push(Buffer.concat(parts));
       }
       for (const tc of msg.tool_calls) {
         const name = tc.function?.name || tc.name || 'unknown';
         const rawArgs = tc.function?.arguments ?? tc.arguments;
         const argsJson = typeof rawArgs === 'string' ? rawArgs : JSON.stringify(rawArgs ?? {});
-        chatMessages.push(encodeAssistantToolCall({ id: tc.id || randomUUID(), name, argsJson }));
+        chatMessages.push(encodeAssistantToolCall({
+          id: tc.id || randomUUID(),
+          name,
+          argsJson,
+          reasoning: reasoningText,
+          reasoningTagNum,
+        }));
       }
       continue;
     }
@@ -862,11 +881,18 @@ export function buildGetChatMessageRequest({ token, messages, model, sessionId, 
     if (msg.role === 'tool') {
       text = `[tool result${msg.tool_call_id ? ` for ${msg.tool_call_id}` : ''}]: ${text}`;
     }
-    chatMessages.push(Buffer.concat([
+    const msgParts = [
       writeStringField(1, randomUUID()),
       writeVarintField(2, source),
       writeStringField(3, text),
-    ]));
+    ];
+    if (source === SOURCE.ASSISTANT && reasoningTagNum) {
+      const reasoningText = msg.reasoning || msg.reasoning_content;
+      if (reasoningText && String(reasoningText).trim()) {
+        msgParts.push(writeStringField(reasoningTagNum, String(reasoningText)));
+      }
+    }
+    chatMessages.push(Buffer.concat(msgParts));
   }
 
   // ★ EMPTY-SYSTEM + TOOLS GUARD (2026-07-10, verified from live devin.exe capture).
@@ -1942,7 +1968,7 @@ export async function* streamChat({
     ? tools.map((t) => t?.function?.name || t?.name).filter(Boolean)
     : null;
 
-  const proto = buildGetChatMessageRequest({ token: sessionToken, messages, model, sessionId, completion, tools, nativeToolCall, deviceSeed });
+  const proto = buildGetChatMessageRequest({ token: sessionToken, messages, model, sessionId, completion, tools, nativeToolCall, deviceSeed, env });
   // Request envelope is sent UNCOMPRESSED (flag 0). The live calibration showed
   // the server rejects a gzipped request frame with an opaque "internal" error;
   // it still streams gzipped frames back, which the parser handles.

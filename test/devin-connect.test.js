@@ -27,7 +27,8 @@ import { wrapEnvelope, endOfStreamEnvelope } from '../src/connect.js';
 import { EventEmitter } from 'node:events';
 
 const ENV_KEYS = ['DEVIN_CONNECT_TOKEN', 'WINDSURF_API_KEY', 'DEVIN_CONNECT_IMAGE_TAG',
-  'DEVIN_CONNECT_IMAGE_TOOLDEF', 'DEVIN_CONNECT_IMAGE_INNER_TAGS', 'DEVIN_CONNECT_TOOL_DEF_TAGS'];
+  'DEVIN_CONNECT_IMAGE_TOOLDEF', 'DEVIN_CONNECT_IMAGE_INNER_TAGS', 'DEVIN_CONNECT_TOOL_DEF_TAGS',
+  'DEVIN_CONNECT_REPLAY_REASONING'];
 const originalEnv = Object.fromEntries(ENV_KEYS.map(k => [k, process.env[k]]));
 
 afterEach(() => {
@@ -291,6 +292,60 @@ describe('buildGetChatMessageRequest', () => {
     const comp = parseFields(getField(parseFields(proto), 8, 2).value);
     const temp = getField(comp, 5, 1).value.readDoubleLE(0);
     assert.ok(temp > 0 && temp <= 0.001, `expected clamped epsilon, got ${temp}`);
+  });
+
+  describe('DEVIN_CONNECT_REPLAY_REASONING probe gate', () => {
+    const messages = [
+      { role: 'user', content: 'user Q' },
+      { role: 'assistant', content: 'thought text', reasoning: 'thinking 123' },
+      { role: 'assistant', content: '', reasoning_content: 'thinking 456', tool_calls: [{ id: 'tc1', name: 'bash', arguments: '{}' }] },
+    ];
+
+    it('gate unset/off: does not emit reasoning tags on assistant turns', () => {
+      delete process.env.DEVIN_CONNECT_REPLAY_REASONING;
+      const proto = buildGetChatMessageRequest({
+        token: TOKEN, model: 'm', messages, nativeToolCall: true,
+      });
+      const chats = getAllFields(parseFields(proto), 3).filter((f) => f.wireType === 2);
+      for (const chat of chats) {
+        const inner = parseFields(chat.value);
+        assert.ok(!getField(inner, 11, 2), 'no tag #11');
+        assert.ok(!getField(inner, 9, 2), 'no tag #9');
+      }
+    });
+
+    it('gate=1: emits tag #11 with reasoning text on assistant turns, user turns clean', () => {
+      process.env.DEVIN_CONNECT_REPLAY_REASONING = '1';
+      const proto = buildGetChatMessageRequest({
+        token: TOKEN, model: 'm', messages, nativeToolCall: true,
+      });
+      const chats = getAllFields(parseFields(proto), 3).filter((f) => f.wireType === 2);
+      // chat[0]: user message
+      const userInner = parseFields(chats[0].value);
+      assert.equal(getField(userInner, 2, 0).value, 1); // SOURCE.USER
+      assert.ok(!getField(userInner, 11, 2), 'user turn has no #11');
+
+      // chat[1]: assistant text turn with reasoning
+      const astTextInner = parseFields(chats[1].value);
+      assert.equal(getField(astTextInner, 2, 0).value, 2); // SOURCE.ASSISTANT
+      assert.equal(getField(astTextInner, 11, 2).value.toString('utf8'), 'thinking 123');
+
+      // chat[2]: assistant native tool call turn with reasoning
+      const astToolInner = parseFields(chats[2].value);
+      assert.equal(getField(astToolInner, 2, 0).value, 2); // SOURCE.ASSISTANT
+      assert.equal(getField(astToolInner, 11, 2).value.toString('utf8'), 'thinking 456');
+    });
+
+    it('gate=9: emits tag #9 for negative control RE probes', () => {
+      process.env.DEVIN_CONNECT_REPLAY_REASONING = '9';
+      const proto = buildGetChatMessageRequest({
+        token: TOKEN, model: 'm', messages, nativeToolCall: true,
+      });
+      const chats = getAllFields(parseFields(proto), 3).filter((f) => f.wireType === 2);
+      const astTextInner = parseFields(chats[1].value);
+      assert.ok(!getField(astTextInner, 11, 2), 'no tag #11 when gate=9');
+      assert.equal(getField(astTextInner, 9, 2).value.toString('utf8'), 'thinking 123');
+    });
   });
 });
 
@@ -2038,6 +2093,32 @@ describe('streamChat transport resetMs propagation', () => {
         assert.equal(err.resetMs, (1 * 3600 + 15 * 60) * 1000);
         return true;
       },
+    );
+  });
+});
+
+describe('encodeAssistantToolCall reasoning-tag guard (PR #241 review point 3)', () => {
+  it('refuses to serialize field 0: reasoning with tag 0 is dropped, not written', () => {
+    const base = { id: 'call_1', name: 'read_file', argsJson: '{}' };
+    // uuid field is the only random part (fixed 36 chars), so dropped-reasoning
+    // output must be byte-length-identical to a no-reasoning frame.
+    const withZero = __testing.encodeAssistantToolCall({
+      ...base, reasoning: 'some reasoning text', reasoningTagNum: 0,
+    });
+    const bare = __testing.encodeAssistantToolCall({ ...base, reasoningTagNum: 0 });
+    assert.equal(
+      withZero.length, bare.length,
+      'reasoning with a zero tag must be dropped entirely, not serialized as reserved field 0',
+    );
+    assert.equal(decodeFrame(withZero).reasoning, '', 'decoding the zero-tag frame must yield no reasoning');
+    // Regression: a legal tag still carries the reasoning payload end to end.
+    const withEleven = __testing.encodeAssistantToolCall({
+      ...base, reasoning: 'some reasoning text', reasoningTagNum: 11,
+    });
+    assert.ok(withEleven.length > bare.length, 'tag 11 reasoning must still be serialized');
+    assert.ok(
+      withEleven.indexOf(writeStringField(11, 'some reasoning text')) >= 0,
+      'tag 11 reasoning must still be serialized verbatim',
     );
   });
 });
