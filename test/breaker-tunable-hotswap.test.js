@@ -126,8 +126,13 @@ describe('setBreakerTunables — whitelist / clamp / clear (v3.0.3)', () => {
   it('getBreakerTunables returns every knob', () => {
     const all = getBreakerTunables();
     // 13 original breaker knobs + F3 (rlClientBackoffFloorMs, rlClientBackoffCeilMs)
-    // + F2 (rlBurstMs) + L2 (degradedServe) = 17.
-    assert.equal(Object.keys(all).length, 17);
+    // + F2 (rlBurstMs) + L2 (degradedServe) + queue-on-pin (stickyQueueOnPinMs) = 18.
+    assert.equal(Object.keys(all).length, 18);
+    // Name the newest one explicitly: a bare count tells the next person a knob was
+    // added but not which, and it passes just as well if one is added while another
+    // is dropped.
+    assert.ok('stickyQueueOnPinMs' in all,
+      'queue-on-pin must be reachable through getBreakerTunables, or Settings cannot show it');
   });
 });
 
