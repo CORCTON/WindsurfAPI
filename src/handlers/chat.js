@@ -6,7 +6,7 @@
 import { createHash, randomUUID } from 'crypto';
 import { WindsurfClient, contentToString, isCascadeTransportError } from '../client.js';
 import { getApiKey, acquireAccountByKey, releaseAccountById, currentApiKeyForId, getAccountAvailability, reportError, reportSuccess, markRateLimited, markQuotaExhausted, reportInternalError, reportDeadToken, updateCapability, getAccountList, isAllRateLimited, isAllTemporarilyUnavailable, refundReservation, looksLikeBanSignal, reportBanSignal, clearBanSignals, isModelBlockedByDrought, isConnectSelectorBlockedByDrought, getDroughtSummary, reLoginAccount, getAccountCount, hasConnectEntitledAccount, recordAccountSpend, ensureDeviceSeed } from '../auth.js';
-import { isStickyEnabled, setStickyBinding } from '../account/sticky-session.js';
+import { isStickyEnabled, setStickyBinding, peekStickyBinding } from '../account/sticky-session.js';
 import { resolveModel, getModelInfo, pickRateLimitFallback } from '../models.js';
 import { getLsFor, ensureLs } from '../langserver.js';
 import { config, log } from '../config.js';
@@ -2166,8 +2166,90 @@ export function finalizeConnectAccount(acct, { model, selector = null, startTime
 // Wait until getApiKey returns a non-null account, or until maxWaitMs expires.
 // Used when every account has momentarily exhausted its RPM budget so the
 // client is queued instead of getting a 503.
+/**
+ * queue-on-pin: briefly WAIT for a sticky-bound caller's own account instead of
+ * immediately rotating to a substitute. OFF by default (stickyQueueOnPinMs = 0).
+ *
+ * Why wait at all: rotating away from the pin costs a full prompt-cache WRITE on the
+ * substitute, and the pin does NOT come back afterwards — the success path re-pins
+ * whatever served, and there is no return-home mechanism. Measured over 6 blocked
+ * turns, distinct accounts touched (each one a full-prefix write, ~5.6x a read):
+ * rotate-and-repin 2, keep-the-pin-but-rotate-anyway 4 (it SCATTERS, because the
+ * candidate sort ends on lastUsed ASCENDING so each blocked turn picks a different
+ * cold account), queue-on-pin 1. Waiting is the only one that stays on one account.
+ *
+ * Why it is off by default: waiting caps this caller's throughput at ONE account's RPM
+ * (pro 60/min, unprobed 20/min) where rotating spreads it across the pool. Cost versus
+ * latency is an operator's call, not the code's.
+ *
+ * MUST run before the first getApiKey below, because that call is what clears the pin —
+ * once it returns, there is nothing left to wait for.
+ *
+ * @returns {Promise<{acct: object|null, aborted: boolean}>} `acct` is the pinned account
+ *   when the wait succeeded. `aborted` is true only when the caller disconnected DURING a
+ *   wait this function actually performed — see the note at its use site for why that has
+ *   to be distinguishable from an ordinary give-up.
+ */
+async function waitForOwnPin(tried, signal, modelKey, callerKey, connectSelector) {
+  const NO_WAIT = { acct: null, aborted: false };
+  const budgetMs = getBreakerTunable('stickyQueueOnPinMs');
+  if (!budgetMs || budgetMs <= 0) return NO_WAIT;
+  if (!callerKey || !isStickyEnabled()) return NO_WAIT;
+
+  // Non-mutating: a poll must not count as a hit or reorder the LRU.
+  const pin = peekStickyBinding(callerKey, modelKey, connectSelector);
+  if (!pin) return NO_WAIT;
+  // Already burned this request — a failover hop passed it in tried. Waiting for an
+  // account this request has just failed on is waiting for nothing.
+  if (tried?.includes(pin.apiKey)) return NO_WAIT;
+
+  // Only wait when the account's own stated recovery FITS the budget. Passing the
+  // connect selector as the dimension is deliberate: connect acquires with
+  // modelKey=null, and the CAPACITY cooldown finalizeConnectAccount writes is keyed on
+  // the selector, so asking with null would miss exactly the cooldown we are waiting
+  // out (the modelKey=null trap, #224 / #230 / v3.8.0).
+  const avail = getAccountAvailability(pin.apiKey, connectSelector || modelKey);
+  if (avail.available) return NO_WAIT;  // usable already — the ordinary path will pin it
+  // Entitlement and structural misses never expire, so waiting is waiting forever.
+  // Anything unrecognised is treated as non-waitable: the safe default is today's
+  // behaviour, not an unbounded stall on a reason nobody classified.
+  const WAITABLE = new Set(['rate_limited', 'model_rate_limited', 'rpm_full', 'quota_exhausted']);
+  if (!WAITABLE.has(avail.reason)) return NO_WAIT;
+  // The reason code alone is not enough: `rpm_full` is ~1.5s for a caller whose window is
+  // about to roll over, and ~59s for one that just burst through its whole allowance.
+  // Compare the account's OWN stated recovery against the budget.
+  if (!Number.isFinite(avail.retryAfterMs) || avail.retryAfterMs > budgetMs) return NO_WAIT;
+
+  const deadline = Date.now() + budgetMs;
+  const started = Date.now();
+  while (Date.now() < deadline) {
+    if (signal?.aborted) return { acct: null, aborted: true };
+    await new Promise(r => setTimeout(r, Math.min(QUEUE_RETRY_MS, Math.max(50, deadline - Date.now()))));
+    if (signal?.aborted) return { acct: null, aborted: true };
+    // pinOnly: reuses the real usability test, and cannot answer with a substitute or
+    // clear the pin on a miss.
+    const acct = getApiKey(tried, modelKey, callerKey, connectSelector, { pinOnly: true });
+    if (acct) {
+      log.info(`[sticky] QUEUE-ON-PIN served the pinned account after ${Date.now() - started}ms (reason was ${avail.reason})`);
+      return { acct, aborted: false };
+    }
+  }
+  log.info(`[sticky] QUEUE-ON-PIN gave up after ${Date.now() - started}ms (reason ${avail.reason}) — rotating`);
+  return NO_WAIT;
+}
+
 async function waitForAccount(tried, signal, maxWaitMs = QUEUE_MAX_WAIT_MS, modelKey = null, callerKey = null, connectSelector = null) {
   const deadline = Date.now() + maxWaitMs;
+  const pinWait = await waitForOwnPin(tried, signal, modelKey, callerKey, connectSelector);
+  if (pinWait.acct) return pinWait.acct;
+  // Aborted DURING a wait we chose to perform. The pre-existing contract below is "if an
+  // account is free, serve it even if the signal is aborted" — the abort check sits inside
+  // the retry loop, so a first-try success is handed back regardless. That is fine when
+  // the call is instantaneous, but queue-on-pin deliberately spent up to a second first,
+  // so continuing here would acquire an account — pushing an RPM reservation and an
+  // in-flight count — for a caller we now KNOW has gone. Bail instead, which is also what
+  // the loop below would do on its next iteration.
+  if (pinWait.aborted) return null;
   let acct = getApiKey(tried, modelKey, callerKey, connectSelector);
   while (!acct) {
     if (signal?.aborted) return null;
@@ -5958,3 +6040,9 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
     },
   };
 }
+
+// Test-only surface. `waitForAccount` is the single async choke point every acquisition
+// path funnels through (connect via acquireConnectAccount, both cascade paths directly),
+// so queue-on-pin is tested by driving it end to end rather than by re-implementing the
+// wait loop in a fixture — a fixture would pass while the real hook was wired wrong.
+export const __testing = { waitForAccount, waitForOwnPin };

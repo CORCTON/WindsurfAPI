@@ -232,6 +232,33 @@ export function getStickyBinding(callerKey, modelKey = '', selector = null) {
 }
 
 /**
+ * Read a binding WITHOUT recording a hit/miss, without refreshing lastAccess, and
+ * without touching LRU order — i.e. without any of getStickyBinding's side effects.
+ *
+ * getStickyBinding is deliberately mutating: it counts the lookup and re-inserts the
+ * entry so Map iteration order stays LRU. That is right for a real acquisition, and
+ * wrong for anything that only wants to ASK whether a pin exists. queue-on-pin
+ * (chat.js waitForAccount) asks once per queued turn before the real lookup runs, so
+ * using getStickyBinding there would double-count every hit and let a merely-queried
+ * pin outlive genuinely newer ones.
+ *
+ * Expiry is honoured but NOT collected — a caller peeking must not be the thing that
+ * evicts, or the peek becomes observable after all.
+ *
+ * @param {string} callerKey
+ * @param {string} [modelKey]
+ * @param {string|null} [selector]
+ * @returns {{ accountId: string, apiKey: string }|null}
+ */
+export function peekStickyBinding(callerKey, modelKey = '', selector = null) {
+  if (!ENABLED || !callerKey) return null;
+  const binding = _bindings.get(bindingKey(callerKey, modelKey, selector));
+  if (!binding) return null;
+  if (Date.now() - binding.lastAccess > TTL_MS) return null;
+  return { accountId: binding.accountId, apiKey: binding.apiKey };
+}
+
+/**
  * Set (or refresh) a sticky binding.
  *
  * @param {string} callerKey

@@ -1734,8 +1734,23 @@ function pickDegradedFallback(now, excludeKeys, modelKey, connectSelector) {
   return best;
 }
 
-export function getApiKey(excludeKeys = [], modelKey = null, callerKey = null, connectSelector = null) {
+/**
+ * @param {string[]} [excludeKeys]
+ * @param {string|null} [modelKey]
+ * @param {string|null} [callerKey]
+ * @param {string|null} [connectSelector]
+ * @param {{ pinOnly?: boolean }} [opts] `pinOnly` makes the sticky arm NON-DESTRUCTIVE:
+ *   return the pinned account if it is usable right now, otherwise return null WITHOUT
+ *   clearing the binding and WITHOUT rotating to a substitute. It exists so an async
+ *   caller can poll for its own pin (chat.js queue-on-pin) using the very same
+ *   usability test a real acquisition uses — re-implementing that conjunction next to
+ *   the wait loop is how "the fix covered only some paths" keeps recurring here.
+ *   It is absolute: with `pinOnly` this NEVER returns a non-pinned account, not even
+ *   when no binding exists, so a poll can never be answered with a substitute.
+ */
+export function getApiKey(excludeKeys = [], modelKey = null, callerKey = null, connectSelector = null, opts = {}) {
   const now = Date.now();
+  const pinOnly = !!opts.pinOnly;
 
   // ── Sticky session: prefer the account from the last turn ────────
   // When enabled, this keeps multi-turn conversations on the same upstream
@@ -1809,6 +1824,12 @@ export function getApiKey(excludeKeys = [], modelKey = null, callerKey = null, c
       //   - STRUCTURALLY (not in the pool any more, or not 'active'): the binding can
       //     never resolve again, so holding it serves nobody. Clear it and let this
       //     request fall through to normal selection.
+      // pinOnly: the caller is POLLING for its own pin and will decide for itself
+      // whether to keep waiting or give up. Report "not right now" and change nothing —
+      // no clear, no fallback stat, no rotation. Placed ahead of both arms below so it
+      // is the same answer regardless of stickyNoFallback, and returns before any
+      // mutation so a poll is genuinely free.
+      if (pinOnly) return null;
       if (isExperimentalEnabled('stickyNoFallback')) {
         const boundAccount = accounts.find(a => a.id === bound.accountId);
         const structurallyGone = !boundAccount || boundAccount.status !== 'active';
@@ -1827,6 +1848,13 @@ export function getApiKey(excludeKeys = [], modelKey = null, callerKey = null, c
       }
     }
   }
+
+  // pinOnly means "the pinned account or nothing". Reaching here means there was no
+  // usable pin — including the no-binding case, and the case where a concurrent request
+  // cleared the pin between the poll loop's peek and this call. Falling through would
+  // hand back a SUBSTITUTE, which a polling caller would then mistake for its own pin
+  // and rebind to, silently converting a wait into the rotation it was avoiding.
+  if (pinOnly) return null;
 
   const candidates = [];
   for (const a of accounts) {

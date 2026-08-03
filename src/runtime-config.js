@@ -117,6 +117,7 @@ const DEFAULTS = {
     breakerFactor: null, breakerMaxMs: null, breakerStreakStart: null,
     newAccountGraceMs: null, lastAccountExempt: null, newAccountBaseline: null,
     rlClientBackoffFloorMs: null, rlClientBackoffCeilMs: null, rlBurstMs: null,
+    stickyQueueOnPinMs: null,
     degradedServe: null,
   },
   // v3.0.3 — quota / on-demand spend policy. Governs what happens when an
@@ -461,6 +462,23 @@ const BREAKER_TUNABLES = {
   // Set 300000 to revert. A 429 WITH a parsed reset window still honours the
   // upstream value (model-scoped), unaffected by this.
   rlBurstMs:              { env: 'WINDSURFAPI_RL_BURST_MS',                kind: 'int', def: 15000,  min: 1000, max: 86400000 },
+  // queue-on-pin (2026-08-05): how long a sticky-bound caller may WAIT for its own
+  // pinned account before rotating to a substitute. def 0 = OFF, so an existing
+  // deploy is byte-identical.
+  //
+  // Why it is opt-in rather than a fix: rotating away from the pin costs a full
+  // prompt-cache WRITE on the substitute (measured ~5.6x a read — cold round-1
+  // tag4=14361 vs warm round-2 tag5=14356+tag4=5), so waiting is cheaper in tokens.
+  // But waiting caps that caller's throughput at ONE account's RPM (pro 60/min,
+  // unprobed 20/min), where rotating spreads it across the pool. Which one an
+  // operator wants depends on whether they are optimising cost or latency, so the
+  // knob picks rather than the code.
+  //
+  // Only waits when the pinned account's own retryAfterMs FITS in the budget, so an
+  // hours-long quota dry-well rotates immediately instead of burning the budget.
+  // Entitlement misses (free account, paid selector) never wait — they do not expire.
+  // 2000ms is the useful starting point: rpm_full reports ~1500ms.
+  stickyQueueOnPinMs:     { env: 'WINDSURFAPI_STICKY_QUEUE_ON_PIN_MS',     kind: 'int', def: 0,      min: 0,    max: 30000 },
   // L2 (2026-07-10): degraded-serve fallback. When the hard account filter leaves
   // ZERO candidates (whole entitled pool transiently throttled), serve the least-
   // bad transiently-cooled account instead of returning 429. def TRUE as of
