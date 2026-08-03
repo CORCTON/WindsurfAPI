@@ -1173,8 +1173,12 @@ class AnthropicStreamTranslator {
     // would announce the paid name it never ran. Every OpenAI chunk carries the truthful
     // name, and startMessage() is lazy — so the first chunk arrives in time to correct it.
     //
-    // Only BEFORE message_start: once announced, the model must not change mid-stream, or
-    // a client that keyed state on it sees two different models in one message.
+    // The messageStarted check is defence-in-depth, not the primary protection:
+    // startMessage() already returns early once it has fired, and this.model is read
+    // nowhere else in this class, so a late write could not alter an emitted event today.
+    // It is kept so that a future second reader of this.model cannot observe the name
+    // changing mid-stream. (Verified: removing this condition fails no test — the
+    // load-bearing equivalent lives in gemini.js, where every frame re-reads the name.)
     if (!this.messageStarted && typeof chunk.model === 'string' && chunk.model) {
       this.model = chunk.model;
     }

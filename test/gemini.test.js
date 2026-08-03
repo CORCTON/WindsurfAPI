@@ -348,6 +348,68 @@ describe('handleGemini non-stream', () => {
 
 // ─── main entry: streaming ──────────────────────────────────────
 describe('handleGemini streaming', () => {
+  // #234 — every frame's modelVersion must name what ACTUALLY ran.
+  //
+  // The translator is built with the REQUESTED name (it exists before the upstream call),
+  // so a degraded connect request — WINDSURFAPI_STRICT_MODEL=0 rewriting an unmapped paid
+  // name to the free selector — used to report the paid name it never ran.
+  it('adopts the upstream model name into modelVersion', async () => {
+    const result = await handleGemini('claude-opus-4.9', {
+      contents: [{ role: 'user', parts: [{ text: 'hi' }] }],
+    }, {
+      async handleChatCompletions() {
+        return {
+          stream: true, status: 200,
+          async handler(res) {
+            res.write(chatChunk({ model: 'swe-1-6-slow', choices: [{ delta: { content: 'ok' } }] }));
+            res.write(chatChunk({ model: 'swe-1-6-slow', choices: [{ delta: {}, finish_reason: 'stop' }] }));
+            res.write('data: [DONE]\n\n');
+            res.end();
+          },
+        };
+      },
+    }, { stream: true, alt: 'sse' });
+
+    const res = fakeRes();
+    await result.handler(res);
+    const frames = parseSseFrames(res.body);
+
+    assert.ok(frames.length > 0, 'frames emitted');
+    assert.equal(frames[0].modelVersion, 'swe-1-6-slow',
+      'modelVersion must name what ran, not the requested claude-opus-4.9');
+  });
+
+  it('keeps modelVersion identical across every frame', async () => {
+    // Load-bearing here in a way it is not for the Anthropic route: gemini re-reads the
+    // name on EVERY frame, so adopting a late-arriving different name would emit two
+    // model identities inside one response.
+    const result = await handleGemini('claude-opus-4.9', {
+      contents: [{ role: 'user', parts: [{ text: 'hi' }] }],
+    }, {
+      async handleChatCompletions() {
+        return {
+          stream: true, status: 200,
+          async handler(res) {
+            res.write(chatChunk({ model: 'swe-1-6-slow', choices: [{ delta: { content: 'a' } }] }));
+            // A later chunk disagreeing must not change frames already committed.
+            res.write(chatChunk({ model: 'something-else-entirely', choices: [{ delta: { content: 'b' } }] }));
+            res.write(chatChunk({ model: 'something-else-entirely', choices: [{ delta: {}, finish_reason: 'stop' }] }));
+            res.write('data: [DONE]\n\n');
+            res.end();
+          },
+        };
+      },
+    }, { stream: true, alt: 'sse' });
+
+    const res = fakeRes();
+    await result.handler(res);
+    const frames = parseSseFrames(res.body);
+    const names = [...new Set(frames.map(f => f.modelVersion))];
+
+    assert.deepEqual(names, ['swe-1-6-slow'],
+      `all frames must carry one model identity; saw ${JSON.stringify(names)}`);
+  });
+
   it('translates an OpenAI SSE stream to SSE-mode Gemini frames', async () => {
     const result = await handleGemini('gemini-2.5-pro', {
       contents: [{ role: 'user', parts: [{ text: 'hi' }] }],
