@@ -55,13 +55,31 @@ function seed(label) {
   return auth.getAccountInternal(a.id);
 }
 
-/** Drive the account to its RPM ceiling without touching status or cooldowns. */
+/**
+ * Drive the account to its RPM ceiling without touching status or cooldowns.
+ *
+ * rpmLimitFor is NOT exported from auth.js, so the limit cannot be read directly and
+ * must not be guessed either: a hardcoded count that silently falls SHORT of the real
+ * ceiling would leave the account usable, the sticky hit would succeed, and every
+ * "the pin survived" assertion below would pass without the transient arm ever running.
+ * TIER_RPM tops out at 60 (pro), so filling past that covers every tier — and the
+ * fill is then VERIFIED by observation rather than trusted.
+ */
+const RPM_CEILING_UPPER_BOUND = 60;
 function fillRpm(acct) {
   const now = Date.now();
   acct._rpmHistory = [];
-  const limit = auth.rpmLimitFor ? auth.rpmLimitFor(acct) : 60;
-  for (let i = 0; i < limit; i++) acct._rpmHistory.push(now - 1000 + i);
-  return limit;
+  for (let i = 0; i < RPM_CEILING_UPPER_BOUND + 1; i++) acct._rpmHistory.push(now - 1000 + i);
+
+  // Prove the account really is unusable now. Asked WITHOUT a callerKey, so this probe
+  // takes no sticky path and cannot disturb the binding under test.
+  const probe = auth.getApiKey([], null, null, SELECTOR);
+  if (probe) auth.releaseAccountById(probe.id);
+  assert.notEqual(probe?.id, acct.id,
+    'harness precondition failed: the account is still selectable after filling its RPM '
+    + 'window, so the transient arm would never be reached and the assertions that follow '
+    + 'would pass vacuously');
+  return acct._rpmHistory.length;
 }
 
 beforeEach(() => { sticky.resetAllBindings(); created.length = 0; });
