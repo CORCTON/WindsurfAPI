@@ -50,7 +50,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { resolve, relative, isAbsolute } from 'node:path';
 
 const RESET = '\x1b[0m';
 const RED = '\x1b[31m';
@@ -62,6 +62,12 @@ function git(args, opts = {}) {
   return execFileSync('git', args, { encoding: 'utf8', ...opts }).trim();
 }
 
+/**
+ * Exit 2 = the harness could not produce a trustworthy verdict (bad spec, dirty tree,
+ * truncated run). Exit 1 = the harness worked and a mutation behaved unexpectedly. Keeping
+ * those distinct matters because CI must be able to tell "your test has a gap" from
+ * "the tool broke"; an uncaught crash also exits 1 by default, so main() traps that too.
+ */
 function die(msg) {
   console.error(`${RED}mutate-verify: ${msg}${RESET}`);
   process.exit(2);
@@ -85,7 +91,46 @@ function assertCleanTree() {
   process.exit(2);
 }
 
-/** Run the suite; return { pass, fail, ok }. */
+/**
+ * A mutation's target must be a TRACKED file inside the repo.
+ *
+ * Without this the harness happily writes to anything the spec names — including a path
+ * outside the repo, or an untracked one inside it. Either is unrecoverable: the restore is
+ * `git checkout HEAD -- <path>`, which fails for both, and the failure escapes before the
+ * final tree check runs. Reproduced with file: "../outside.txt".
+ */
+function assertMutableTarget(file) {
+  if (isAbsolute(file)) die(`mutation target must be a repo-relative path, got "${file}"`);
+  const rel = relative(process.cwd(), resolve(file));
+  if (rel.startsWith('..')) die(`mutation target escapes the repo: "${file}"`);
+  let tracked = '';
+  try {
+    tracked = git(['ls-files', '--error-unmatch', '--', rel]);
+  } catch {
+    die(`mutation target is not tracked by git: "${file}". The restore step is `
+      + '`git checkout HEAD -- <file>`, which cannot recover an untracked file, so the '
+      + 'mutation would be permanent.');
+  }
+  if (!tracked) die(`mutation target is not tracked by git: "${file}"`);
+  return rel;
+}
+
+/**
+ * Test paths are spliced into node's argv, so an entry beginning with `-` would be parsed
+ * as a node OPTION — `--import` there is arbitrary code execution while the baseline still
+ * prints green. Specs are committed files rather than user input, so this is a footgun
+ * rather than an attack surface, but it costs one line to close.
+ */
+function assertPlainTestPaths(tests) {
+  for (const t of tests) {
+    if (typeof t !== 'string' || t.startsWith('-')) {
+      die(`spec.tests entry "${t}" starts with "-"; it would be parsed as a node option, `
+        + 'not a test file');
+    }
+  }
+}
+
+/** Run the suite; return { pass, fail, total, ok }. */
 function runSuite(tests) {
   const args = ['--import', './test/setup-env.mjs', '--test', '--test-force-exit', ...tests];
   let out = '';
@@ -99,7 +144,7 @@ function runSuite(tests) {
   const pass = sum(/^ℹ pass (\d+)$/gm);
   const fail = sum(/^ℹ fail (\d+)$/gm);
   const names = [...out.matchAll(/^✖ (.+?) \(\d/gm)].map((m) => m[1]);
-  return { pass, fail, ok: fail === 0 && pass > 0, failedNames: [...new Set(names)] };
+  return { pass, fail, total: pass + fail, ok: fail === 0 && pass > 0, failedNames: [...new Set(names)] };
 }
 
 function main() {
@@ -118,6 +163,10 @@ function main() {
   if (!Array.isArray(spec.mutations) || spec.mutations.length === 0) die('spec.mutations must be a non-empty array');
 
   assertCleanTree();
+  assertPlainTestPaths(spec.tests);
+  // Validate every target BEFORE running anything, so a bad path in mutation 9 does not
+  // surface only after eight mutations have already run.
+  for (const m of spec.mutations) if (m?.file) assertMutableTarget(m.file);
 
   // Guard 2: a SURVIVED verdict is meaningless if the suite was not passing to begin with.
   console.log(`${DIM}baseline: ${spec.tests.join(' ')}${RESET}`);
@@ -140,8 +189,19 @@ function main() {
     if (!m.file || typeof m.anchor !== 'string' || typeof m.replacement !== 'string') {
       die(`mutation "${label}" needs file, anchor and replacement`);
     }
-    const abs = resolve(m.file);
+    const relFile = assertMutableTarget(m.file);
+    const abs = resolve(relFile);
     const before = readFileSync(abs, 'utf8');
+    // A signal kills the process outright, so the `finally` restore below never runs and
+    // src/ is left mutated with nothing printed. Register a handler for the duration of the
+    // write so Ctrl-C / CI cancellation still restores.
+    const onSignal = (sig) => {
+      try { git(['checkout', 'HEAD', '--', relFile]); } catch { /* best effort */ }
+      console.error(`\n${RED}mutate-verify: ${sig} — restored ${relFile} before exiting.${RESET}`);
+      process.exit(130);
+    };
+    process.once('SIGINT', onSignal);
+    process.once('SIGTERM', onSignal);
 
     // Guard 3: an anchor that does not match exactly once is a silent no-op.
     const hits = before.split(m.anchor).length - 1;
@@ -157,7 +217,34 @@ function main() {
       r = runSuite(spec.tests);
     } finally {
       // Guard 4: HEAD, never the index.
-      git(['checkout', 'HEAD', '--', m.file]);
+      git(['checkout', 'HEAD', '--', relFile]);
+      process.removeListener('SIGINT', onSignal);
+      process.removeListener('SIGTERM', onSignal);
+    }
+
+    // Guard 5: the mutated run must have executed the SAME NUMBER of tests as the baseline.
+    //
+    // Without this a mutation that TRUNCATES the suite is reported as a clean survivor.
+    // Reproduced: a replacement containing `process.exit(0)` produced `pass=1 fail=0`
+    // against a baseline of 4 — verdict SURVIVED, while three tests silently never ran. A
+    // survivor is only meaningful if every assertion actually got the chance to fail, so
+    // this is the same class of lie guard 2 catches for the baseline, one level down.
+    if (r.total !== base.total) {
+      git(['checkout', 'HEAD', '--', relFile]);
+      die(`mutation "${label}" changed how many tests RAN: baseline ${base.total}, mutated `
+        + `${r.total} (pass=${r.pass} fail=${r.fail}). The verdict would be meaningless — a `
+        + 'truncated run reports SURVIVED because nothing failed, when in fact most '
+        + 'assertions never executed. Make the mutation narrower.');
+    }
+
+    // Guard 6: the mutation must not have left OTHER files dirty. The restore only covers
+    // the file we wrote; a replacement whose test run writes elsewhere would otherwise let
+    // every later mutation run under exactly the condition guard 1 forbids.
+    const strayAfter = git(['status', '--porcelain']);
+    if (strayAfter) {
+      die(`mutation "${label}" left the tree dirty after its restore:\n${strayAfter}\n`
+        + '  The mutated run wrote to a file the harness did not mutate, so it cannot be '
+        + 'undone automatically. Inspect and clean up before re-running.');
     }
 
     const expectCaught = m.expectCaught !== false;
@@ -201,4 +288,14 @@ function main() {
   process.exit(1);
 }
 
-main();
+try {
+  main();
+} catch (e) {
+  // An uncaught throw would exit 1, colliding with the legitimate "a mutation did not
+  // behave as expected" code. Re-map to 2 so a crashed harness is never mistaken for a
+  // real finding, and say plainly that the tree may need checking.
+  console.error(`${RED}mutate-verify: crashed — ${e?.message || e}${RESET}`);
+  console.error('  Run `git status --short` and restore any mutated file with '
+    + '`git checkout HEAD -- <file>`.');
+  process.exit(2);
+}
