@@ -19,7 +19,7 @@ import {
 } from '../src/auth.js';
 import {
   MODELS, listModels, mergeCloudModels, setActiveCloudCatalogAccounts,
-  clearCloudModelCatalogs,
+  clearCloudModelCatalogs, forgetCloudModelCatalog,
 } from '../src/models.js';
 
 const PHANTOM_UID = 'PHANTOM_EVICTION_TEST_MODEL';
@@ -169,6 +169,26 @@ describe('snapshot-injected models are withdrawn when unreachable', () => {
 
     assert.ok(!(PHANTOM_KEY in MODELS), "A's exclusive model goes");
     assert.ok(secondKey in MODELS, "B's model stays");
+  });
+
+  it('evicts when called directly, not only via removeAccount', () => {
+    // forgetCloudModelCatalog is exported as the "this account is genuinely gone" entry
+    // point, so a direct caller is a supported path — and it is the ONLY path where the
+    // ordering inside that function is load-bearing. Via removeAccount,
+    // invalidateModelCatalogForAccount has already dropped the catalog, so evicting
+    // first would still appear to work. Verified: swapping the order inside
+    // forgetCloudModelCatalog fails nothing without this test.
+    const a = mkActive('direct');
+    setActiveCloudCatalogAccounts([a.id]);
+    mergeCloudModels(fullSnapshotPlus(PHANTOM_UID), { accountId: a.id });
+    assert.ok(PHANTOM_KEY in MODELS, 'precondition: injected');
+
+    // Call it directly, with the account's catalog still registered.
+    forgetCloudModelCatalog(a.id);
+
+    assert.ok(!(PHANTOM_KEY in MODELS),
+      'forgetCloudModelCatalog must drop the catalog BEFORE deciding reachability; '
+      + 'evicting first sees the account\'s own UIDs and withdraws nothing');
   });
 
   it('leaves the lookup table consistent after eviction', () => {
