@@ -5,7 +5,7 @@
 
 import { createHash, randomUUID } from 'crypto';
 import { WindsurfClient, contentToString, isCascadeTransportError } from '../client.js';
-import { getApiKey, acquireAccountByKey, releaseAccountById, currentApiKeyForId, getAccountAvailability, reportError, reportSuccess, markRateLimited, markQuotaExhausted, reportInternalError, reportDeadToken, updateCapability, getAccountList, isAllRateLimited, isAllTemporarilyUnavailable, refundReservation, looksLikeBanSignal, reportBanSignal, clearBanSignals, isModelBlockedByDrought, getDroughtSummary, reLoginAccount, getAccountCount, hasConnectEntitledAccount, recordAccountSpend, ensureDeviceSeed } from '../auth.js';
+import { getApiKey, acquireAccountByKey, releaseAccountById, currentApiKeyForId, getAccountAvailability, reportError, reportSuccess, markRateLimited, markQuotaExhausted, reportInternalError, reportDeadToken, updateCapability, getAccountList, isAllRateLimited, isAllTemporarilyUnavailable, refundReservation, looksLikeBanSignal, reportBanSignal, clearBanSignals, isModelBlockedByDrought, isConnectSelectorBlockedByDrought, getDroughtSummary, reLoginAccount, getAccountCount, hasConnectEntitledAccount, recordAccountSpend, ensureDeviceSeed } from '../auth.js';
 import { isStickyEnabled, setStickyBinding } from '../account/sticky-session.js';
 import { resolveModel, getModelInfo, pickRateLimitFallback } from '../models.js';
 import { getLsFor, ensureLs } from '../langserver.js';
@@ -2634,6 +2634,48 @@ async function _handleChatCompletionsInner(body, context = {}) {
           param: 'model',
           code: 'model_not_found',
         } },
+      };
+    }
+    // Drought gate (#234). It has to live INSIDE this short-circuit block: every
+    // exit path of this block returns, so the Cascade-path gate further down
+    // (isModelBlockedByDrought, ~line 3700) is structurally unreachable whenever
+    // DEVIN_CONNECT is on — which is the production default. It had therefore
+    // never executed on the default backend.
+    //
+    // Placed here on purpose:
+    //   - AFTER selector resolution + the strict-model guard, so a junk model name
+    //     still gets its precise 400 model_not_found rather than a misleading 503.
+    //   - BEFORE the tool-emulation rewrite and account acquisition, so a blocked
+    //     request costs no prompt assembly and touches no account.
+    //
+    // Uses the CONNECT-namespace predicate. Reusing isModelBlockedByDrought here
+    // would block `swe-1-6-slow` (the only free-reachable connect selector) and
+    // admit `gemini-2.5-flash` (which connect cannot route to) — the two namespaces
+    // have zero overlap. See auth.js isConnectSelectorBlockedByDrought.
+    if (isConnectSelectorBlockedByDrought(selector)) {
+      const summary = getDroughtSummary({ env: process.env });
+      const freeList = (summary.freeTierModels || []).slice(0, 4).join(', ') || 'swe-1-6-slow';
+      const retryAfterSec = clientRetryAfterSeconds(30 * 60 * 1000);
+      log.warn(`Chat[${reqId}]: DEVIN_CONNECT drought blocking premium selector "${safeLogValue(selector)}" (lowestWeekly=${summary.lowestWeeklyPercent}%, ${summary.quotaKnownAccounts}/${summary.activeAccounts} accounts measured)`);
+      bumpConnect('drought_blocked');
+      return {
+        status: 503,
+        headers: { 'Retry-After': String(retryAfterSec) },
+        body: {
+          error: {
+            message: `账号池处于配额低水位（drought mode）：所有已测账号本周配额都低于 ${summary.threshold}%，已暂时屏蔽 premium 模型 ${reqModelName}。请改用免费层模型（${freeList}…），或等周配额重置。可在 Dashboard 实验性面板关闭 droughtRestrictPremium 强制下发（会消耗最后一点配额）。`,
+            type: 'drought_mode',
+            drought: {
+              lowestWeeklyPercent: summary.lowestWeeklyPercent,
+              lowestDailyPercent: summary.lowestDailyPercent,
+              threshold: summary.threshold,
+              activeAccounts: summary.activeAccounts,
+              quotaKnownAccounts: summary.quotaKnownAccounts,
+              allowedModels: summary.freeTierModels,
+            },
+            retry_after_ms: retryAfterSec * 1000,
+          },
+        },
       };
     }
     // Tool calling: connect selectors have no native function-calling slot, so
