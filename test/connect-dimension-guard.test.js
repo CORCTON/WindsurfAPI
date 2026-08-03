@@ -14,9 +14,23 @@
 //   v3.8.0 CAPACITY wrote its 60s cooldown under reqModelName → invisible, so the
 //         window never applied and sticky re-pinned the overloaded account.
 //
-// These tests are the tripwire for a fourth occurrence: they assert the INVARIANT
-// (a cooldown a connect request causes must gate a connect lookup), not the
-// specific line that happened to be wrong.
+// These tests are the tripwire for a fourth occurrence — but only partly, and the
+// distinction matters:
+//
+//   * The behavioural half below writes each cooldown BY HAND via markRateLimited
+//     and asserts auth.js honours it. That covers the auth-side dimension logic.
+//     It does NOT cover which dimension chat.js chooses, which is what was
+//     actually wrong all three times above.
+//   * The source half slices chat.js lexically. Measured: moving the CAPACITY
+//     write into a helper declared after `waitForAccount` — same defect, same
+//     reversed `model || selector` — leaves this whole file at 10/10.
+//
+// `connect-dimension-behaviour.test.js` closes that gap by driving the real
+// `finalizeConnectAccount` and asserting the pool outcome, with `model` and
+// `selector` deliberately different (they are the same string in the tests below,
+// so a write in either dimension looks identical here). Both files are kept: this
+// one also enforces "no new call site in the slice picks a bad dimension", which
+// is a real and different property.
 
 import { describe, it, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
