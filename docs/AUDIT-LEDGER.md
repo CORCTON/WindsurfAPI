@@ -282,3 +282,78 @@ UPPER_SNAKE → 加 socket 码 → 加透传 status → 放宽字符类含数字
 |---|---|
 | Dashboard 调用点 | 行为守卫验证了 `esc`/`escJsAttr` 两个 helper,但不验证 **207 个调用点** —— 拆掉某个 sink 的转义调用,两个守卫仍全绿 |
 | 冷却维度的写入位置 | `connect-dimension-guard` 只检查 `finalizeConnectAccount` 那一段源码,把冷却写到别处可逃 |
+
+---
+
+## 2026-08-03 第三轮:#234 / #235 / #239 主体 + 突变验证作为默认手段
+
+这一轮的做法变了:**每条修复都把缺陷重新引入一次**,确认断言真的会失败,而不是只看绿灯。
+成本不高,收获比对抗复核更直接 —— 它查的是"我的测试有没有在测东西",而对抗复核查的是
+"我的修复有没有引入新缺陷"。两者不重叠,都要做。
+
+| 子系统 | 结论 | 守卫 |
+|---|---|---|
+| 干旱判定覆盖率 | 1 个账号即可宣布全池干旱(实测 1 dry + 39 refresh-failed → true) | `drought-coverage-floor.test.js`(8 条,4 突变全 CAUGHT) |
+| 干旱谓词命名空间 | MODELS 空间谓词判 connect selector,两集合零重叠 | `drought-connect-namespace.test.js`(10 条,3 突变全 CAUGHT) |
+| 干旱门禁可达性 | 生产默认后端上结构性不可达,从未执行 | `drought-gate-reachability.test.js`(9 条,行为+结构双层,3 突变全 CAUGHT) |
+| 发现视图 | 只测存在性;只加 entitlement 过滤会打到 0 行 | `connect-discovery-rebuild.test.js`(7 条) |
+| connect 目录 latch | 模块级布尔永不清除;去 latch 后 clear-then-fill 会缩集合 | `connect-catalog-delatch.test.js`(5 条) |
+| credit 费率表 / 逐请求计费 | 解码器就绪、消费者零个,4 段断链 | `connect-rate-table-wiring.test.js`(12 条,6 突变全 CAUGHT) |
+
+### 新判别动作:突变验证前必须先证明 baseline 非零
+
+本轮连拿 **4 次**"SURVIVED —— 守卫是瞎的",全部是 harness 一个测试都没跑:
+
+- 本机 shell 是 zsh,`node --test $TESTS` 不对未加引号的变量做词分裂,两个路径当**一个**
+  参数传进去
+- `read A B < <(cmd)` 进程替换配 `read` 读不到值
+- `grep --include=*.js` 未加引号被 zsh 当 glob 吃掉
+
+`pass=0 fail=0` **不是**"守卫没抓到",是"没测量"。与台账里"confirmed:0 常是没跑成"同一条,
+但这次的伪装更好:它出现在一个看起来正常运行的突变循环里。**先证明 baseline 非零,再相信
+任何 SURVIVED 结论。**
+
+### 突变验证查出四条我自己写的空转测试
+
+1. **"两个行产出器都过滤"** —— live 目录在新进程里是空的,producer 2 压根不产行,断言无论
+   如何都过。去掉 producer 2 的过滤器不会让它失败
+2. **"空响应不缩小并集"** —— 带空贡献者的并集在算术上本来就不变,所以即使空响应被接受这条
+   也过。**断言错了后果**:真正的伤害是账号被记为已同步而无贡献,后来真的有 selector 时永不
+   重取
+3. **`sawTable ? free : null` 的区分没有任何断言钉住** —— 在保守回落下谓词对 null 与空集合
+   的回答相同,所以那条断言钉的是没有行为后果的实现细节。改成在
+   `getCurrentlyFreeConnectSelectors` 上钉(那里可见)
+4. **一条恒真断言** `assert.ok(x.length >= 0)`
+
+判别标准补一条:**问"这条断言在什么输入下会失败?"如果答不出具体输入,它就没在测东西。**
+比"功能坏掉这条断言会失败吗"更早生效 —— 后者需要先想象一个缺陷,前者只需要看断言本身。
+
+### 结构缺陷:去掉一个 latch 不够,外面还有一个
+
+`trySyncConnectCatalog` 只能从 `fetchAndMergeModelCatalog` 里被调到,而那个函数被 **Cascade**
+的 per-key 门禁挡着。一旦某账号的 Cascade 目录被记为已同步,connect 同步对它永久不可达 ——
+它自己的 per-key 资格压根没被查过。
+
+这是"只覆盖部分路径"的第五次,形态是新的:**我修的那一层之上还有一层同类门禁**。追问方式:
+修完一个 latch/gate 之后,问"到达这个 latch 的路径上还有几个 latch?"
+
+### 两条本轮自己引入的缺陷
+
+- `forgetConnectCatalogForAccount` 用动态 `import().then()` 写入:落在调用方返回之后(删号后
+  立刻读仍看得到 departed 账号的 selector),且绕过注入的 dep seam
+- rescue 重试时上一次尝试的计费被算进这一次(`attempt_reset` 未清 `billing`)
+
+### 元守卫必须按逃逸点枚举,不按 flow
+
+ACP vision 重路由不是 `selectBackend` 的 flow,是 `devin_connect` 逃进 `special_agent`,
+按 flow 枚举的守卫看不见它。`drought-gate-reachability` 因此枚举**块内门禁之上的每个
+`return`**,并要求每个都登记豁免理由;带"守卫的守卫"(枚举结果为 0 即失败),因为一个
+不再匹配任何真实 `return` 的枚举会永远通过。
+
+### 仍未 exhaustive 扫描 ⬜(第三轮更新)
+
+| 面 | 缺口 |
+|---|---|
+| `STRICT_MODEL=0` 的静默改写 | 仍在;且 `devin-connect-strict-model.test.js` 把该行为断言成期望行为,套件在强制执行 #234 验收标准的违反 |
+| 模块级 `MODELS` 表注入 | 已采纳快照永久注入 key 且无人移除,已删除账号的模型仍被宣传 |
+| 逐请求 billing tag 号 | `credit_cost` / `committed_acu_cost` 只有声明顺序推测,需付费 token 校准(已在 #239 请社区协助) |
