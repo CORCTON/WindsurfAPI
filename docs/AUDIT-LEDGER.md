@@ -715,3 +715,75 @@ belt-and-braces,不是承重件。
 
 修 stats 那条时改完没提交就跑突变循环,`git checkout HEAD -- src/` 把修复一起还原了。
 台账第四轮记过这条,这是第二次。**纪律没变:修复先 commit,再跑突变。**
+
+---
+
+## 2026-08-05 第九轮:把记过两次仍然违反的纪律做成工具
+
+台账把"修复先 commit,再跑突变"记了两次(第四轮、第八轮),**我两次都违反了** ——
+第七轮丢了一个 revert,第八轮丢了 stats 修复。写第三遍不会有用。
+
+**判别动作**:同一条纪律违反两次之后,不要再记第三遍。问"它能不能变成一个拒绝启动的
+前置检查"。这个仓库对"善意不可靠"的答案本来就是守卫,纪律不该例外。
+
+### `npm run mutate` —— 三条前置检查,每条对应一次真实事故
+
+`scripts/mutate-verify.mjs` + `test/mutations/*.json`。
+
+| 拒绝条件 | 对应事故 | 为什么必须拒绝而不是警告 |
+|---|---|---|
+| 工作树脏 | 第七、八轮 | 循环自己的 `git checkout HEAD --` 会连未提交的修复一起还原,之后每次突变测的是"修复缺失"而不是"突变生效" —— 而那个失败**看起来正是突变被抓到**。它伪造的是好消息,所以警告没用 |
+| baseline 不绿 / 条数不符 | 第三轮四次假 SURVIVED | SURVIVED 只在套件本来通过时才有意义。那四次全是套件压根没跑起来(路径错 / 模块级 env / import 期常量) |
+| anchor 匹配次数 ≠ 1 | 反复 | 匹配不上的 `replace` 是静默 no-op:测试全绿,报告写 SURVIVED,什么都没突变过 |
+
+另外用 `git checkout HEAD --` 而非 `git checkout --`:后者从**索引**恢复,中途暂存过的
+内容会被重新装回去。第七轮的 revert 就是这么丢的。
+
+**自证**:提交它之前它拒绝了我自己的运行(`package.json` 与 `test/mutations/` 未提交)。
+
+### spec 入库:让"5 次突变全 CAUGHT"这句话可复核
+
+此前每次突变结果只活在跑它的人的终端里。release notes 里的突变数字**下一个人无法复核**,
+而一条重构后悄悄失效的守卫会继续保有旧声誉。现在两个 spec 入库,重放本轮全部结果:
+
+```
+sticky-collapse-bypass.json    3 mutations,  全 CAUGHT
+sticky-queue-on-pin.json      13 mutations, 12 CAUGHT + 1 有据可查的漏网
+```
+
+`expectCaught: false` 是**一等公民**,不是待修项标记。queue-on-pin 的 `WAITABLE` 白名单
+就是这么记的 —— "这条守不住"本身是结论,理由写在 spec 的 name 里和第八轮。
+
+### 直接在 master 上提交:做成可选 hook,而不是第三条纪律
+
+本轮我把 6 个 commit 直接写在 master 上。为什么难自查:直接提交产生的历史与
+`git merge --ff-only` **字节级相同**,所以事后看不出异常。只能在发生的那一刻挡。
+
+`.githooks/pre-commit`,照 `.gitmessage` 的惯例**本地 opt-in**
+(`git config core.hooksPath .githooks`)。只挡 `git commit`,不挡 master 前进 ——
+`--ff-only` 不产生 commit,发版流程不受影响(两条都实测过)。
+
+**没有强制 `core.hooksPath`。** 那会改动每个贡献者的本地配置,而这条规则来自全局约定、
+不是本仓库的既有约定 —— 拿别人的工作流去修我自己的失误不成比例。
+
+### 顺带收尾一条只读推断:范围比交接写的窄
+
+交接 §5.2 记的是"cascade 的 `acquireAccountByKey` 路径不经 sticky 快路径,绑定被覆盖而
+全程无 clear",标为未复现。测完:
+
+| `stickyBindByUserOnly` | 结果 | 槽位 |
+|---|---|---|
+| 关(默认) | **不覆盖** | 2 个独立绑定 |
+| 开 | 覆盖,`fallbacks` 增量 **0** | 折叠成 1 个 |
+
+`bindingKey` 的注释是对的,两条路径默认不共享槽位。所以这不是 cascade 路径的普遍缺陷,
+是那个 flag 折叠槽位的**第三个**后果(前两个:跨后端零亲和、叠加 `stickyNoFallback`
+的楔子)。
+
+**不修** —— flag 要的就是"一个 caller 一个槽",最后写入者赢是该语义的直接推论;要修就得
+取消折叠,等于关掉这个 flag。钉住的是范围与不可见性:覆盖是 `setStickyBinding` 干的,而
+`clearStickyBinding` / `noteStickyFallback` 只能从 `getApiKey` 的 sticky 分支到达,这条
+路径压根不调 `getApiKey`,所以 `fallbacks` 不动、`creates` 不动、一行日志都没有。
+
+**动作**:交接里标"只读推断"的条目,下一轮优先测掉。它们不会自己变准,而**写宽了的范围
+比没写更糟** —— 它会让下一个人去修一个默认不存在的缺陷。
