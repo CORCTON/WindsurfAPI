@@ -3204,6 +3204,27 @@ export async function refreshCredits(id) {
     // failed" without losing the previously successful snapshot.
     if (account.credits) account.credits.lastError = msg;
     else account.credits = { lastError: msg, fetchedAt: Date.now() };
+    // A ban-shaped failure here is the CLEAREST signal the pool ever gets, and it was
+    // being discarded into lastError.
+    //
+    // Measured on a real account: GetUserStatus returned 403 permission_denied "Your
+    // subscription has been canceled. Resubscribe to continue.", while the catalog RPC
+    // (which does not check entitlement) still returned 167 selectors and chat failed
+    // with a GENERIC upstream "an internal error occurred". Because chat's failure is
+    // classified UPSTREAM_INTERNAL — deliberately not charged to the account, so one
+    // upstream wobble can't disable the pool — the account sat at status='active',
+    // errorCount=0, advertising 163 models, and failed 100% of chat requests forever.
+    // Nothing connected the one RPC that knew why to the account's state.
+    //
+    // looksLikeBanSignal already discriminates correctly here (verified against the real
+    // message: true, while 'an internal error occurred' and 'CAPACITY' are false), and
+    // reportBanSignal already requires two hits in 30 min before disabling. Since
+    // refreshAllCredits runs every 15 minutes, a genuinely cancelled subscription trips
+    // twice within the window on consecutive rounds while a deploy-time blip does not.
+    // So this is a wiring gap, not a missing mechanism — no new state, no new pattern.
+    if (looksLikeBanSignal(msg)) {
+      reportBanSignal(account.apiKey, msg);
+    }
     return { ok: false, error: msg };
   }
 }
