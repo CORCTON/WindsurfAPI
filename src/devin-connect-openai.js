@@ -251,6 +251,11 @@ export async function toChatCompletion(params, { id = newId(), created = nowSeco
   let reasoning = '';
   let finishReason = 'stop';
   let usage = null;
+  // Per-request billing detail (credit / ACU cost) when the operator has calibrated
+  // DEVIN_CONNECT_BILLING_TAGS. devin-connect.js has always yielded this on the
+  // finish event; it stopped here because the adapter never forwarded it, so the
+  // dashboard's lifetime-credit column could only ever render 0.
+  let billing = null;
   // Native tool calls (DEVIN_CONNECT_TOOL_CALL_TAGS calibrated) ride the terminal
   // finish event as ev.toolCalls (devin-connect.js:927). Null/empty on free tier
   // and un-calibrated deployments, where prompt emulation owns tool calls.
@@ -261,12 +266,13 @@ export async function toChatCompletion(params, { id = newId(), created = nowSeco
       for await (const ev of streamChatWithEmptyRetry(params, { rescueThinkingOnly: emulateTools })) {
         // A rescue attempt REPLACES the previous one; drop what it produced or the
         // client is handed every attempt concatenated.
-        if (ev.type === 'attempt_reset') { content = ''; reasoning = ''; nativeToolCalls = []; continue; }
+        if (ev.type === 'attempt_reset') { content = ''; reasoning = ''; nativeToolCalls = []; billing = null; continue; }
         if (ev.type === 'content') content += ev.text;
         else if (ev.type === 'reasoning') reasoning += ev.text;
         else if (ev.type === 'finish') {
           if (ev.reason) finishReason = ev.reason;
           if (ev.usage) usage = ev.usage;
+          if (ev.billing) billing = ev.billing;
           if (ev.toolCalls && ev.toolCalls.length) nativeToolCalls = ev.toolCalls;
         }
       }
@@ -380,6 +386,10 @@ export async function toChatCompletion(params, { id = newId(), created = nowSeco
     choices: [{ index: 0, message, finish_reason: finishReason }],
   };
   if (usage) body.usage = usage;
+  // Private field: per-request credit/ACU cost, absent unless the billing tags are
+  // calibrated. Under the _windsurf prefix so it can't be mistaken for an OpenAI
+  // field by a downstream relay that metering reads.
+  if (billing) body._windsurf_billing = billing;
   return { status: 200, body };
 }
 
@@ -430,6 +440,8 @@ export async function streamChatCompletion(params, send, { id = newId(), created
   let reasoning = '';
   let finishReason = 'stop';
   let usage = null;
+  // Same billing passthrough as the non-stream path.
+  let streamBilling = null;
   // Native tool calls (DEVIN_CONNECT_TOOL_CALL_TAGS calibrated) ride the terminal
   // finish event, not the content stream — captured here, emitted after the loop.
   let nativeToolCalls = [];
@@ -505,6 +517,7 @@ export async function streamChatCompletion(params, send, { id = newId(), created
     } else if (ev.type === 'finish') {
       if (ev.reason) finishReason = ev.reason;
       if (ev.usage) usage = ev.usage;
+      if (ev.billing) streamBilling = ev.billing;
       if (ev.toolCalls && ev.toolCalls.length) nativeToolCalls = ev.toolCalls;
     }
   }
@@ -597,7 +610,7 @@ export async function streamChatCompletion(params, send, { id = newId(), created
     send({ ...base, choices: [], usage });
   }
 
-  return { content, reasoning, finish_reason: finishReason, usage, toolCalls: collectedToolCalls };
+  return { content, reasoning, finish_reason: finishReason, usage, billing: streamBilling, toolCalls: collectedToolCalls };
 }
 
 export const __testing = {

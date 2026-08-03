@@ -2252,6 +2252,20 @@ export function shouldAutoFallback(body, context, result) {
   return true;
 }
 
+/**
+ * Credit cost of one connect request, from the calibrated billing passthrough.
+ *
+ * Returns 0 when the tags are not calibrated (the default) so per-account spend is
+ * unchanged on those deployments. `committed_acu_cost` is the ACU figure #239 asks
+ * for; `credit_cost` is the credit figure. They are different units, so prefer the
+ * credit one for the credit column and never add them together.
+ */
+function connectCreditCost(billing) {
+  if (!billing || typeof billing !== 'object') return 0;
+  const credit = Number(billing.credit_cost ?? billing.committed_credit_cost);
+  return Number.isFinite(credit) && credit > 0 ? credit : 0;
+}
+
 export async function handleChatCompletions(body, context = {}) {
   // Full-chain trace (gated WINDSURFAPI_TRACE=1): one traceId stitches client
   // request → routing → Devin wire bytes → client response. Reused as reqId so
@@ -3071,7 +3085,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
               // before → "Token 用量分布" empty on connect deployments.
               try { recordTokenUsage(_sr?.usage); } catch {}
               // K8: attribute the spend to THIS account (per-account lifetime total).
-              try { recordAccountSpend(a?.apiKey, _sr?.usage); } catch {}
+              try { recordAccountSpend(a?.apiKey, _sr?.usage, { creditCost: connectCreditCost(_sr?.billing) }); } catch {}
               finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: null });
               return { kind: 'ok', sr: _sr };
             } catch (err) {
@@ -3101,7 +3115,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
                 try {
                   const _sr2 = await streamChatCompletion(params, send, connectMeta);
                   try { recordTokenUsage(_sr2?.usage); } catch {}
-                  try { recordAccountSpend(a?.apiKey, _sr2?.usage); } catch {}
+                  try { recordAccountSpend(a?.apiKey, _sr2?.usage, { creditCost: connectCreditCost(_sr2?.billing) }); } catch {}
                   finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: null });
                   return { kind: 'ok', sr: _sr2 };
                 } catch (retryErr) {
@@ -3131,7 +3145,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
                   try {
                     const _sr3 = await streamChatCompletion({ ...connectParams, token: freshKey }, send, connectMeta);
                     try { recordTokenUsage(_sr3?.usage); } catch {}
-                    try { recordAccountSpend(currentApiKeyForId(a.id, a.apiKey), _sr3?.usage); } catch {}
+                    try { recordAccountSpend(currentApiKeyForId(a.id, a.apiKey), _sr3?.usage, { creditCost: connectCreditCost(_sr3?.billing) }); } catch {}
                     finalizeConnectAccount(a, { model: reqModelName, selector, startTime: ccStart, err: null });
                     return { kind: 'ok', sr: _sr3 };
                   } catch (retryErr) {
@@ -3341,7 +3355,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
         // when usage is absent (recordTokenUsage guards null).
         try { recordTokenUsage(r.out?.body?.usage); } catch {}
         // K8: per-account lifetime spend (non-stream connect path).
-        try { recordAccountSpend(acct ? currentApiKeyForId(acct.id, acct.apiKey) : null, r.out?.body?.usage); } catch {}
+        try { recordAccountSpend(acct ? currentApiKeyForId(acct.id, acct.apiKey) : null, r.out?.body?.usage, { creditCost: connectCreditCost(r.out?.body?._windsurf_billing) }); } catch {}
         // Session continuity: commit the completed request→response pair so the
         // next turn resolves to this session_id via pair-chain overlap. The
         // response tool_calls already ride the OpenAI function shape here.

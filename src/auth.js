@@ -277,7 +277,52 @@ export function isConnectSelectorBlockedByDrought(selector) {
   if (!selector) return false;
   if (!isDroughtRestrictEnabled()) return false;
   if (!isDroughtMode()) return false;
-  return !FREE_REACHABLE_SELECTORS.has(selector);
+  return !isConnectSelectorCurrentlyFree(selector);
+}
+
+/**
+ * Selectors the upstream currently charges nothing for, across active accounts.
+ *
+ * Union of every active account's paired rate table, keeping only `rate === 0`.
+ * Returns null when NO account has a usable table — distinct from an empty set,
+ * because "we have no data" and "nothing is free" must be handled differently.
+ */
+export function getCurrentlyFreeConnectSelectors() {
+  let sawTable = false;
+  const free = new Set();
+  for (const account of accounts) {
+    if (account.status !== 'active') continue;
+    const table = account.credits?.rateTable;
+    if (!table || Array.isArray(table)) continue;
+    sawTable = true;
+    for (const [selector, rate] of Object.entries(table)) {
+      // Strictly zero. A tiny non-zero rate still bills, and treating it as free is
+      // the exact failure that burns a user's quota.
+      if (typeof rate === 'number' && rate === 0) free.add(selector);
+    }
+  }
+  return sawTable ? free : null;
+}
+
+/**
+ * Is this connect selector free to call right now?
+ *
+ * Prefers the upstream rate table (authoritative, follows rolling promotions) and
+ * falls back to the hand-maintained whitelist when no account has one.
+ *
+ * The fallback is a UNION, not a replacement: a selector the static whitelist calls
+ * free stays free even if the rate table omits it. The rate table is keyed by
+ * catalog selector, and `swe-1-6-slow` appears in no catalog snapshot at all — so
+ * intersecting instead of unioning would drop the one selector every account can
+ * reach and black out a drought-mode pool.
+ */
+export function isConnectSelectorCurrentlyFree(selector) {
+  if (!selector) return false;
+  if (FREE_REACHABLE_SELECTORS.has(selector)) return true;
+  const currentlyFree = getCurrentlyFreeConnectSelectors();
+  // No table anywhere → conservative whitelist only. Never widen on absent data.
+  if (!currentlyFree) return false;
+  return currentlyFree.has(selector);
 }
 
 export function getDroughtSummary({ env = process.env } = {}) {
@@ -3087,11 +3132,38 @@ export async function refreshCredits(id) {
     // fetchUserStatus is a FREE read-only RPC (no chat / no billing fire).
     try {
       const { fetchUserStatus } = await import('./devin-connect-catalog.js');
-      const billing = await fetchUserStatus({ token: account.apiKey });
+      // withCatalog pairs the per-model credit rate table (#1.13.1.21) to catalog
+      // selectors, turning a bare float array into { selector → creditFloat }. The
+      // decoder has produced this since 2026-07; it had zero consumers because this
+      // call omitted the catalog, so `rate === 0` — the only authoritative answer to
+      // "which models are free RIGHT NOW" — was never available. GLM-5.2's free
+      // status is a rolling promotion while MODELS hardcodes credit: 1.5, which is
+      // why users burned paid quota on a model the app showed as free (#235).
+      const billing = await fetchUserStatus({ token: account.apiKey, withCatalog: true });
       if (billing) {
         if (billing.balance != null) account.credits.balance = billing.balance;
         if (billing.periodStart) account.credits.periodStart = billing.periodStart;
         if (billing.periodEnd) account.credits.periodEnd = billing.periodEnd;
+        // Only a PAIRED rate table (selector-keyed object) is usable. An unpaired
+        // array means the catalog fetch failed, and positional floats without their
+        // selectors cannot be attributed to a model.
+        //
+        // DISCIPLINE: a missing or unpaired field must never widen the free list.
+        // The rate table lives in a plan sub-message that free accounts may not send
+        // at all, so "no data" has to mean "keep the conservative whitelist", not
+        // "everything is free" — the latter bills the user's paid quota, which is the
+        // amplified version of the #235 trap. Absence therefore clears our cached
+        // view rather than producing an empty-and-therefore-permissive one.
+        const paired = billing.rateTable && !Array.isArray(billing.rateTable)
+          ? billing.rateTable
+          : null;
+        if (paired && Object.keys(paired).length > 0) {
+          account.credits.rateTable = paired;
+          account.credits.rateTableFetchedAt = Date.now();
+        } else {
+          delete account.credits.rateTable;
+          delete account.credits.rateTableFetchedAt;
+        }
       }
     } catch (billingErr) {
       log.warn(`refreshCredits ${id}: billing decode failed: ${billingErr.message}`);
