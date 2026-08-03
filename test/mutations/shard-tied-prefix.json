@@ -1,6 +1,10 @@
 {
-  "tests": ["test/shard-tied-prefix.test.js", "test/scatter-attribution.test.js", "test/sticky-concurrency-tension.test.js"],
-  "expectBaselinePass": 16,
+  "tests": [
+    "test/shard-tied-prefix.test.js",
+    "test/scatter-attribution.test.js",
+    "test/sticky-concurrency-tension.test.js"
+  ],
+  "expectBaselinePass": 17,
   "mutations": [
     {
       "name": "the original defect: shard indexes the WHOLE array again",

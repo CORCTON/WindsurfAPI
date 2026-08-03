@@ -105,6 +105,38 @@ describe('a concurrent burst spreads regardless of the caller hash', () => {
       + 'than the pool has — the issue #37 pile-up, re-introduced by the shard.');
   });
 
+  it('in-flight alone bounds the shard when every other metric ties', () => {
+    // Isolates the in-flight term of the tie test. Without this case the term reads as
+    // redundant: measured, deleting it from tiedWithFirst left the rest of this file green,
+    // because lastUsed happened to discriminate in every other fixture.
+    //
+    // It is NOT redundant. A burst completing inside one millisecond gives every account
+    // the same lastUsed, and if the RPM window is also even, in-flight is the only thing
+    // left that can tell a busy account from an idle one. Reproduced here by erasing every
+    // other discriminator between acquisitions.
+    const POOL = 8;
+    seedPool(POOL);
+    const caller = 'api:1111111111111111:user:alice'; // hashes to a HIGH bucket at pool 8
+    const held = [];
+    for (let i = 0; i < POOL; i++) {
+      const x = auth.getApiKey([], null, caller, SELECTOR);
+      assert.ok(x, `acquire ${i} must succeed`);
+      held.push(x);
+      // Flatten lastUsed and the RPM trace, leaving in-flight as the sole signal.
+      for (const id of created) {
+        const a = auth.getAccountInternal(id);
+        a.lastUsed = 0;
+        a._rpmHistory = [];
+      }
+    }
+    const distinct = new Set(held.map((h) => h.id)).size;
+    for (const h of held) auth.releaseAccountById(h.id);
+    assert.equal(distinct, POOL,
+      `with lastUsed and the RPM ratio flattened, in-flight is the only discriminator left; `
+      + `the burst still had to spread across all ${POOL} accounts, got ${distinct}. A lower `
+      + 'number means the shard is treating a busy account as tied with an idle one.');
+  });
+
   it('the busiest account is never promoted while an idle peer exists', () => {
     // The invariant behind the above, stated directly. Acquire without releasing so
     // in-flight counts genuinely differ, then assert the next pick is never the account
