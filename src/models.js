@@ -626,6 +626,20 @@ const _cloudCatalogQuarantineRoundsByAccount = new Map();
 // from removeAccount) or on a full reset. Keeping it is the safe direction: a stale
 // marker only makes the empty-response guard STRICTER.
 const _cloudCatalogEverFilteredAccounts = new Set();
+// Model keys that came from a live catalog snapshot rather than the static table.
+//
+// applyCloudModels adds keys for UIDs the static table doesn't know, and nothing ever
+// removed them: a deleted account's models stayed advertised forever. Measured —
+// inject one account-only UID, removeAccount, then pool total is 0 while the key is
+// still in MODELS and still returned by listModels.
+//
+// Deliberately NOT keyed by account. applyCloudModels skips a UID that already exists,
+// so only the FIRST account to report it would get an injection record — and then
+// removing the SECOND account (the last real holder) would withdraw nothing and leak
+// the key anyway. Measured that exact failure while building this. So the set is global
+// and eviction asks the only question that actually matters: does any remaining
+// account's catalog still contain this UID?
+const _injectedModelKeys = new Set();
 const CLOUD_CATALOG_CONFIRM_RATIO = 0.5;
 // How many consecutive UNCONFIRMED shrink rounds the caller keeps re-checking
 // before it gives up and leaves the last-known-good in place. This bounds the
@@ -693,12 +707,18 @@ export function removeCloudModelCatalog(accountId) {
 
 /** Drop every trace of an account, including that it ever had a catalog. */
 export function forgetCloudModelCatalog(accountId) {
+  const accountKey = cloudCatalogAccountKey(accountId);
+  // Order matters, opposite to the first attempt: drop this account's catalog FIRST so
+  // its own UIDs stop counting as reachable, THEN evict whatever no surviving account
+  // still claims. Evicting first would always see this account's UIDs and keep everything.
   removeCloudModelCatalog(accountId);
-  _cloudCatalogEverFilteredAccounts.delete(cloudCatalogAccountKey(accountId));
+  _cloudCatalogEverFilteredAccounts.delete(accountKey);
+  evictUnreachableInjectedModels();
 }
 
 /** Clear all in-memory catalog state. Primarily useful for deterministic tests. */
 export function clearCloudModelCatalogs() {
+  _injectedModelKeys.clear();
   _cloudCatalogUidsByAccount.clear();
   _pendingCloudCatalogUidsByAccount.clear();
   _cloudCatalogQuarantineRoundsByAccount.clear();
@@ -879,9 +899,48 @@ function applyCloudModels(configs, { accountId = null } = {}) {
     _lookup.set(key, key);
     _lookup.set(uid, key);
     _lookup.set(uid.toLowerCase(), key);
+    // Mark this key as snapshot-derived so it can be withdrawn once no account reaches
+    // its UID. Without this the table only ever grows.
+    _injectedModelKeys.add(key);
     added++;
   }
   return added;
+}
+
+/**
+ * Withdraw snapshot-derived models that no remaining account can reach.
+ *
+ * Called after an account's catalog has been dropped. Reachability is decided from the
+ * surviving accounts' UID sets, NOT from who originally injected the key — see the note
+ * on _injectedModelKeys for why an injector-based rule leaks the last-holder case.
+ *
+ * Static-table models are never touched: only keys in _injectedModelKeys are candidates.
+ */
+function evictUnreachableInjectedModels() {
+  if (!_injectedModelKeys.size) return 0;
+
+  const reachableUids = new Set();
+  for (const uids of _cloudCatalogUidsByAccount.values()) {
+    for (const uid of uids) reachableUids.add(uid);
+  }
+
+  let removed = 0;
+  for (const key of [..._injectedModelKeys]) {
+    const model = MODELS[key];
+    if (!model) { _injectedModelKeys.delete(key); continue; }
+    const uid = normalizeCloudCatalogUid(model.modelUid);
+    if (uid && reachableUids.has(uid)) continue; // some account still reaches it
+    const rawUid = typeof model.modelUid === 'string' ? model.modelUid.trim() : '';
+    delete MODELS[key];
+    _lookup.delete(key);
+    if (rawUid) {
+      _lookup.delete(rawUid);
+      _lookup.delete(rawUid.toLowerCase());
+    }
+    _injectedModelKeys.delete(key);
+    removed++;
+  }
+  return removed;
 }
 
 /**
