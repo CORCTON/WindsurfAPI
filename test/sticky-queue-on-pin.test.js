@@ -415,6 +415,37 @@ describe('end to end: the caller stays on its own account', () => {
     assert.ok(elapsed < 2000, `must notice the abort promptly — took ${elapsed}ms`);
   });
 
+  it('the WAIT LOOP itself does not inflate hit/miss stats', async () => {
+    // The three peekStickyBinding tests above verify the FUNCTION. They do not verify that
+    // the wait loop calls it: swapping the loop's peek for the mutating getStickyBinding
+    // left all of them green (measured). This asserts the use site instead — one queued
+    // turn must cost exactly the stats of one acquisition, no matter how many times the
+    // loop polled while waiting.
+    const A = seed('stats-loop-a');
+    seed('stats-loop-b');
+    sticky.setStickyBinding(CALLER, null, A.id, A.apiKey, SELECTOR);
+    blockOnRpm(A, RPM_WINDOW_MS - 2500); // ~2.5s: guarantees several polls before it frees
+    setBudget(5000);
+
+    const before = sticky.getStickyStats();
+    const chat = await import('../src/handlers/chat.js');
+    const acct = await chat.__testing.waitForAccount([], null, 8000, null, CALLER, SELECTOR);
+    assert.ok(acct && acct.id === A.id, 'precondition: the wait must have succeeded on the pin');
+    auth.releaseAccountById(acct.id);
+    const after = sticky.getStickyStats();
+
+    // The successful resolve is one real lookup, so exactly one hit. Every failed poll in
+    // between must be invisible.
+    assert.equal(after.hits - before.hits, 1,
+      `a queued turn recorded ${after.hits - before.hits} hits. Each failed poll is leaking `
+      + 'into the stats, so the hit rate an operator reads now depends on how long callers '
+      + 'waited rather than on how well affinity worked.');
+    assert.equal(after.misses - before.misses, 0,
+      `a queued turn recorded ${after.misses - before.misses} misses — polls must not count`);
+    assert.equal(after.fallbacks - before.fallbacks, 0,
+      'and nothing rotated, so the fallback counter must be untouched');
+  });
+
   it('a caller with no pin is unaffected by the knob', async () => {
     const A = seed('nopin-e2e');
     setBudget(3000);

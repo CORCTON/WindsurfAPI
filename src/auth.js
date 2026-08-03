@@ -11,7 +11,7 @@
  */
 
 import { createHash, randomUUID, randomBytes, timingSafeEqual } from 'crypto';
-import { isStickyEnabled, getStickyBinding, setStickyBinding, clearStickyBinding, noteStickyFallback } from './account/sticky-session.js';
+import { isStickyEnabled, getStickyBinding, peekStickyBinding, setStickyBinding, clearStickyBinding, noteStickyFallback } from './account/sticky-session.js';
 import { isExperimentalEnabled, getDroughtThresholdPercent, getIpLockThreshold, getIpLockMs, getBackendSwitch, getBreakerTunable, getQuotaTunable } from './runtime-config.js';
 import { readFileSync, existsSync, unlinkSync, readdirSync } from 'fs';
 import { config, log } from './config.js';
@@ -1760,7 +1760,15 @@ export function getApiKey(excludeKeys = [], modelKey = null, callerKey = null, c
     // Pass the connect selector through as its own dimension. getApiKey has always
     // RECEIVED it (the connect path acquires with modelKey=null + a selector) but the
     // binding key ignored it, so all of a caller's connect selectors shared one slot.
-    const bound = getStickyBinding(callerKey, modelKey, connectSelector);
+    // pinOnly resolves the binding SILENTLY. getStickyBinding counts the lookup and
+    // refreshes LRU order, which is right for an acquisition and wrong for a poll: a
+    // failed poll still resolves the binding successfully (only the usability test below
+    // fails), so counting it would score a hit per poll and make the hit rate an operator
+    // reads a function of how long callers waited rather than of how well affinity worked.
+    // The successful resolve is promoted to a real, counted lookup further down.
+    const bound = pinOnly
+      ? peekStickyBinding(callerKey, modelKey, connectSelector)
+      : getStickyBinding(callerKey, modelKey, connectSelector);
     if (bound) {
       // Match by account id ONLY — never by the apiKey snapshot taken at bind time.
       // A background re-login swaps account.apiKey in place (keeping the id and
@@ -1789,6 +1797,11 @@ export function getApiKey(excludeKeys = [], modelKey = null, callerKey = null, c
         if (limit > 0 && used < limit && !isCooledForRequest(acct, modelKey, connectSelector, now) && !isAccountInMaintenance(acct)) {
           if ((!modelKey || isModelAllowedForAccount(acct, modelKey))
               && (!connectSelector || isConnectSelectorAllowedForAccount(acct, connectSelector))) {
+            // A pinOnly poll that SUCCEEDS is a real acquisition, so record it as one now
+            // (the silent peek above deliberately did not). Without this a queued turn
+            // would report zero hits and under-state affinity by exactly the turns
+            // queue-on-pin rescued — the opposite bias to counting every poll.
+            if (pinOnly) getStickyBinding(callerKey, modelKey, connectSelector);
             const reservationTimestamp = nextReservationToken(now);
             acct._rpmHistory.push(reservationTimestamp);
             acct.lastUsed = now;
