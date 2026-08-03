@@ -2009,10 +2009,23 @@ export function getApiKey(excludeKeys = [], modelKey = null, callerKey = null, c
       // don't stack on the same one) while making it structurally unable to promote a
       // worse account. strictPin still shards across everything: that mode is explicitly
       // "pin per user regardless of quota/RPM/tier differences".
+      // The predicate must mirror EVERY term the sort compares, with the same bucketing.
+      // The first version omitted the recent-trouble bucket — the sort's SECOND-most
+      // significant key — which broke the invariant this block exists to establish, in two
+      // ways at once: an account the sort demoted for a recent failure cluster counted as
+      // tied and could be promoted to slot 0, and because that term outranks the rest, a
+      // genuinely-tied account could sit AFTER a non-tied one, so the scan stopped early and
+      // under-sharded. Measured: an account with two hard failures (trouble score 6, bucket
+      // 2) was still selected for 2 of 6 sampled callerKeys.
+      //
+      // Any term added to the sort must be added here too. That coupling is the price of
+      // bounding the shard by the sort's own notion of "equally good".
       const tiedWithFirst = (c) => {
         const a = candidates[0];
         return (accountInflight(c.account) + accountMaintenance(c.account))
              === (accountInflight(a.account) + accountMaintenance(a.account))
+          && Math.floor(recentTroubleScore(c.account, now) / 3)
+             === Math.floor(recentTroubleScore(a.account, now) / 3)
           && Math.floor(quotaScore(c.account) / 5) === Math.floor(quotaScore(a.account) / 5)
           && ((c.limit - c.used) / c.limit || 0) === ((a.limit - a.used) / a.limit || 0)
           && (c.account.lastUsed || 0) === (a.account.lastUsed || 0);
@@ -2023,12 +2036,17 @@ export function getApiKey(excludeKeys = [], modelKey = null, callerKey = null, c
       } else {
         while (span < candidates.length && tiedWithFirst(candidates[span])) span++;
       }
-      const hash = createHash('sha256').update(callerKey).digest();
-      const bucket = hash.readUInt32BE(0) % span;
-      if (bucket > 0) {
-        const chosen = candidates[bucket];
-        candidates[bucket] = candidates[0];
-        candidates[0] = chosen;
+      // Hash only when a shard can actually happen. An earlier version computed sha256 on
+      // every getApiKey call carrying a callerKey, including the common case where nothing
+      // ties and the result is discarded; the pre-fix code had it inside the gate.
+      if (span > 1) {
+        const hash = createHash('sha256').update(callerKey).digest();
+        const bucket = hash.readUInt32BE(0) % span;
+        if (bucket > 0) {
+          const chosen = candidates[bucket];
+          candidates[bucket] = candidates[0];
+          candidates[0] = chosen;
+        }
       }
     }
   }
