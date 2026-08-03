@@ -137,6 +137,47 @@ describe('a concurrent burst spreads regardless of the caller hash', () => {
       + 'number means the shard is treating a busy account as tied with an idle one.');
   });
 
+  it('an account loaded by OTHER callers is never promoted into the shard', () => {
+    // Isolates the RPM-ratio term of the tie test, which also read as redundant until this
+    // case existed: measured, deleting it left the rest of this file green, and yet the
+    // account sitting at 50/60 RPM was then selected on every single request.
+    //
+    // The scenario is ordinary on a shared pool: one account has absorbed a lot of traffic
+    // from OTHER callers, so its RPM window is nearly full — but those requests have
+    // finished, so its in-flight is 0, and lastUsed can easily match its peers. Only the
+    // remaining-ratio distinguishes it. Promoting it wastes the headroom of three idle
+    // peers and pushes it toward its ceiling.
+    const POOL = 4;
+    seedPool(POOL);
+    makeAllTied();
+    const loaded = auth.getAccountInternal(created[0]);
+    const now = Date.now();
+    loaded._rpmHistory = [];
+    for (let i = 0; i < 50; i++) loaded._rpmHistory.push(now - 1000 + i); // 50 of 60 (pro)
+
+    const picks = [];
+    for (let r = 0; r < 6; r++) {
+      const x = auth.getApiKey([], null, 'api:1111111111111111:user:alice', SELECTOR);
+      assert.ok(x);
+      picks.push(x.id);
+      auth.releaseAccountById(x.id);
+      // Re-flatten in-flight and lastUsed but PRESERVE the RPM asymmetry, so the ratio is
+      // the only signal separating the loaded account from its peers.
+      for (const id of created) {
+        const a = auth.getAccountInternal(id);
+        a.lastUsed = 0;
+        a._inflight = 0;
+        if (id !== loaded.id) a._rpmHistory = [];
+      }
+      loaded._rpmHistory = loaded._rpmHistory.slice(0, 50);
+    }
+
+    assert.ok(!picks.includes(loaded.id),
+      `the account at 50/60 RPM was selected ${picks.filter((p) => p === loaded.id).length} `
+      + `of ${picks.length} times while three peers sat at 0. The shard is treating it as `
+      + 'tied with them, so it can be promoted despite materially less headroom.');
+  });
+
   it('the busiest account is never promoted while an idle peer exists', () => {
     // The invariant behind the above, stated directly. Acquire without releasing so
     // in-flight counts genuinely differ, then assert the next pick is never the account

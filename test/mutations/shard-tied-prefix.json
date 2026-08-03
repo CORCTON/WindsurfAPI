@@ -4,7 +4,7 @@
     "test/scatter-attribution.test.js",
     "test/sticky-concurrency-tension.test.js"
   ],
-  "expectBaselinePass": 17,
+  "expectBaselinePass": 18,
   "mutations": [
     {
       "name": "the original defect: shard indexes the WHOLE array again",
