@@ -248,7 +248,39 @@ export function isModelBlockedByDrought(modelKey) {
   return !freeModels.has(modelKey);
 }
 
-export function getDroughtSummary() {
+/**
+ * Drought gate for the DEVIN_CONNECT namespace.
+ *
+ * Deliberately NOT isModelBlockedByDrought with a flag: the two functions judge
+ * disjoint namespaces, and the MODELS-space one gives actively harmful answers
+ * about connect selectors. Measured, on a drought-active pool:
+ *
+ *   isModelBlockedByDrought('swe-1-6-slow')     = true   ← the ONE free-reachable
+ *                                                          connect selector
+ *   isModelBlockedByDrought('gemini-2.5-flash') = false  ← connect cannot route to it
+ *   isModelBlockedByDrought('TOTAL-GARBAGE')    = true   ← "not in the free table",
+ *                                                          not "is premium"
+ *
+ * The two sets have zero overlap (all 20 connect selectors are MODELS keys, none
+ * of them free-tier), so there is no accidentally-correct case: reusing the old
+ * predicate blocks the only model that still runs during a drought and admits one
+ * that cannot run at all.
+ *
+ * No empty-set fail-open branch here on purpose. FREE_REACHABLE_SELECTORS is a
+ * module-level frozen literal with no .add/.delete/.clear anywhere in the repo,
+ * so `size === 0` is unreachable — a guard for it would be dead code, and a test
+ * covering that guard would be a fake test. If this ever becomes dynamic (the
+ * rateTable wiring in #235 is the likely path), add the fail-open THEN, together
+ * with a test that can actually reach it.
+ */
+export function isConnectSelectorBlockedByDrought(selector) {
+  if (!selector) return false;
+  if (!isDroughtRestrictEnabled()) return false;
+  if (!isDroughtMode()) return false;
+  return !FREE_REACHABLE_SELECTORS.has(selector);
+}
+
+export function getDroughtSummary({ env = process.env } = {}) {
   const eligible = accounts.filter(a => a.status === 'active');
   let lowestWeekly = null;
   let lowestDaily = null;
@@ -269,7 +301,18 @@ export function getDroughtSummary() {
   }
   const drought = isDroughtMode();
   const restrictEnabled = isDroughtRestrictEnabled();
-  const freeTierModels = getTierModels('free');
+  // Which namespace's free list applies depends on the ACTIVE backend, and that
+  // must be read through getBackendSwitch rather than process.env.DEVIN_CONNECT:
+  // the Dashboard can hot-switch devinConnect while the env var is unset, and
+  // reading env directly reports the wrong namespace in exactly that case.
+  //
+  // Callers that serve a request (handleModels) pass their per-request env; the
+  // Dashboard and /health call this with no argument and get process.env. The
+  // arity difference is why the two used to disagree.
+  const connectBackend = getBackendSwitch('devinConnect', env);
+  const freeTierModels = connectBackend
+    ? [...FREE_REACHABLE_SELECTORS]
+    : getTierModels('free');
   // The drought decision's OWN inputs. Deliberately reported separately from
   // knownAccounts above: the two counts answer different questions and used to
   // share one name, so the banner could read "knownAccounts=40" while the

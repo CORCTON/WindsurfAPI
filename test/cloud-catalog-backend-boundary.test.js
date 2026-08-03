@@ -21,6 +21,11 @@ import {
 
 const CASCADE_FREE_KEY = 'gemini-2.5-flash';
 const CASCADE_ONLY_KEY = 'claude-4-sonnet';
+// The Connect-namespace counterpart of CASCADE_FREE_KEY. Written literally rather
+// than imported from FREE_REACHABLE_SELECTORS on purpose: importing the set the
+// implementation reads would make this assertion pass no matter what that set
+// contains, which is the "guard satisfied by its own source" antipattern.
+const CONNECT_FREE_SELECTOR = 'swe-1-6-slow';
 const ACCOUNT_ID = 'catalog-backend-boundary';
 const ORIGINAL_ALLOW_NO_AUTH = process.env.DASHBOARD_ALLOW_NO_AUTH;
 const ORIGINAL_DEVIN_CONNECT = process.env.DEVIN_CONNECT;
@@ -179,6 +184,23 @@ describe('Cascade cloud catalog backend boundary', () => {
     const summary = getDroughtSummary();
     assert.equal(summary.drought, true);
     assert.equal(summary.restrictionFailOpen, false);
-    assert.ok(summary.freeTierModels.includes(CASCADE_FREE_KEY));
+    // The point of this assertion is that the free list is NON-EMPTY, which is
+    // what keeps restrictionFailOpen false. It used to check for the Cascade key
+    // because MODELS was the only namespace getDroughtSummary knew about.
+    //
+    // Since #234 the list resolves per active backend, and this test runs with
+    // DEVIN_CONNECT=1 — so the correct expectation is the Connect free list.
+    // Asserting the Cascade key here would pin the very defect #234 fixes:
+    // connect cannot route to gemini-2.5-flash, so offering it as the drought
+    // fallback sends clients at a model that returns an error.
+    assert.ok(summary.freeTierModels.length > 0, 'a non-empty free list is what avoids fail-open');
+    assert.ok(
+      summary.freeTierModels.includes(CONNECT_FREE_SELECTOR),
+      'in DEVIN_CONNECT mode the drought fallback must be a connect-reachable selector',
+    );
+    assert.ok(
+      !summary.freeTierModels.includes(CASCADE_FREE_KEY),
+      'the Cascade free model is not reachable through connect and must not be offered',
+    );
   });
 });
