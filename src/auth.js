@@ -1990,8 +1990,46 @@ export function getApiKey(excludeKeys = [], modelKey = null, callerKey = null, c
         (first.account.lastUsed || 0) === (second.account.lastUsed || 0);
     }
     if (doShard) {
+      // Shard only among the candidates that are ACTUALLY TIED with candidates[0].
+      //
+      // The check above establishes that [0] and [1] tie, and the previous version then
+      // indexed `hash % candidates.length` across the WHOLE array — so it could promote an
+      // account that ties with nothing, including the worst one present. During a
+      // concurrent burst that is exactly what happened: the account already serving sorts
+      // LAST on in-flight, the two idle accounts at the front tie, so the gate opened and
+      // the swap pulled the busiest account back to position 0. Measured on a pool of 8
+      // with tier=pro: a caller whose bucket landed on the last index served the SAME
+      // account 8 times while seven peers sat at zero in-flight — the precise pile-up
+      // issue #37's inflight-first ordering exists to prevent, re-introduced by its own
+      // tiebreaker.
+      //
+      // It was invisible because the outcome depends entirely on sha256(callerKey) % pool:
+      // buckets 0–1 spread across all 8, bucket 7 spread across 1. The pinning test
+      // happens to use a callerKey that hashes to bucket 0 — the best case — so it read as
+      // "8 concurrent → 8 distinct, by design". Of 8 realistic callerKeys sampled, only 2
+      // spread across the whole pool.
+      //
+      // Bounding the permutation to the tied prefix keeps what sharding is for (a caller
+      // deterministically prefers its own slot among EQUALLY GOOD accounts, so two callers
+      // don't stack on the same one) while making it structurally unable to promote a
+      // worse account. strictPin still shards across everything: that mode is explicitly
+      // "pin per user regardless of quota/RPM/tier differences".
+      const tiedWithFirst = (c) => {
+        const a = candidates[0];
+        return (accountInflight(c.account) + accountMaintenance(c.account))
+             === (accountInflight(a.account) + accountMaintenance(a.account))
+          && Math.floor(quotaScore(c.account) / 5) === Math.floor(quotaScore(a.account) / 5)
+          && ((c.limit - c.used) / c.limit || 0) === ((a.limit - a.used) / a.limit || 0)
+          && (c.account.lastUsed || 0) === (a.account.lastUsed || 0);
+      };
+      let span = 1;
+      if (strictPin) {
+        span = candidates.length;
+      } else {
+        while (span < candidates.length && tiedWithFirst(candidates[span])) span++;
+      }
       const hash = createHash('sha256').update(callerKey).digest();
-      const bucket = hash.readUInt32BE(0) % candidates.length;
+      const bucket = hash.readUInt32BE(0) % span;
       if (bucket > 0) {
         const chosen = candidates[bucket];
         candidates[bucket] = candidates[0];
