@@ -1,0 +1,42 @@
+#!/bin/sh
+#
+# Refuse to author a commit while master/main is checked out.
+#
+# OPT-IN. Nothing installs this for you:
+#     git config core.hooksPath .githooks
+# and to bypass it once, for a deliberate exception:
+#     git commit --no-verify
+#
+# Why: the project's flow is branch → review → `git merge --ff-only` → push. Landing
+# commits by authoring them directly on master skips the point where a branch name and a
+# diff get looked at as a unit. The resulting history is IDENTICAL to the ff-merge, which
+# is exactly why the mistake is easy to make and invisible afterwards.
+#
+# This blocks `git commit`, not master advancing. `git merge --ff-only` moves the branch
+# ref without creating a commit, so the release flow ("推 master → 打 tag → 推 tag") is
+# untouched. Merge commits and rebases onto master are likewise unaffected.
+
+branch=$(git symbolic-ref --short -q HEAD) || exit 0   # detached HEAD: not our business
+
+case "$branch" in
+  master|main)
+    printf '\033[31mpre-commit: refusing to author a commit on %s.\033[0m\n' "$branch" >&2
+    cat >&2 <<'EOF'
+
+  The flow is: branch → review → git merge --ff-only → push. Committing straight to
+  master produces byte-identical history to that merge, so nothing looks wrong
+  afterwards — which is what makes it worth blocking at the moment it happens rather
+  than noticing later.
+
+    git switch -c <type>/<short-description>
+    git commit ...
+    git switch master && git merge --ff-only <branch>
+
+  Deliberate exception: git commit --no-verify
+
+EOF
+    exit 1
+    ;;
+esac
+
+exit 0

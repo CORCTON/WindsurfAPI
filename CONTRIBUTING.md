@@ -32,6 +32,13 @@
 - 一个 commit / 一个 PR 解决一件事，多件事按主题拆开
 - **绝不在 commit message 里加任何 AI / 助手署名尾注**（`Co-Authored-By: Claude`、`Generated with…` 等一律不写）
 - 标题写清楚改了啥，body 写为什么改，而不是怎么改（diff 自己会说）
+- 本地启用 commit 模板：`git config commit.template .gitmessage`
+- 可选：本地启用 hook，禁止直接在 master 上写 commit（流程是 分支 → 评审 →
+  `git merge --ff-only` → 推）：`git config core.hooksPath .githooks`。
+  它只挡 `git commit`，不挡 master 前进 —— `--ff-only` 不产生 commit，所以发版流程不受
+  影响。刻意例外用 `git commit --no-verify`。
+  值得装的理由：直接在 master 上提交产生的历史与 ff 合并**字节级相同**，所以事后看不出
+  任何异常，只能在发生的那一刻挡
 
 ### 测试
 
@@ -84,6 +91,13 @@ GitHub Actions 跑 `npm run test:release`（语法校验 + 核心回归）。本
 - **Never add any AI / assistant attribution trailer** to a commit message (`Co-Authored-By: Claude`, `Generated with…`, etc.).
 - Title = what changed. Body = why (the diff speaks for how).
 - Enable the commit template locally: `git config commit.template .gitmessage`
+- Optional: enable the hook that refuses commits authored directly on master — the flow is
+  branch → review → `git merge --ff-only` → push: `git config core.hooksPath .githooks`.
+  It blocks `git commit` only, not master advancing (`--ff-only` creates no commit, so the
+  release flow is untouched). Deliberate exception: `git commit --no-verify`.
+  Worth installing because committing straight to master yields history that is
+  **byte-identical** to the ff-merge — nothing looks wrong afterwards, so the only useful
+  moment to catch it is when it happens.
 
 ### Testing
 
