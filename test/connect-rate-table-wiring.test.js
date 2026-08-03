@@ -48,11 +48,27 @@ afterEach(() => {
 });
 
 describe('rate table → currently-free selectors (#235)', () => {
-  it('reports null, not an empty set, when no account has a table', () => {
-    // The distinction matters: an empty set would read as "nothing is free" and an
-    // absent table as "we do not know". Only the latter may fall back.
+  it('reports null when no account has a table', () => {
     mk({ weeklyPercent: 50 });
     assert.equal(getCurrentlyFreeConnectSelectors(), null);
+  });
+
+  it('distinguishes "we do not know" from "we know, nothing is free"', () => {
+    // null = no account ever returned a usable table.
+    // empty Set = a table WAS returned and nothing in it costs zero.
+    //
+    // Pinned on getCurrentlyFreeConnectSelectors rather than the predicate on
+    // purpose: with the current conservative fallback the predicate answers false
+    // either way, so a predicate-only assertion cannot tell the two apart and would
+    // pass even if the distinction were collapsed. Verified — collapsing
+    // `sawTable ? free : null` into `free.size ? free : null` does not fail any
+    // predicate test.
+    mk({ weeklyPercent: 50, rateTable: { [PAID_SELECTOR]: 1.5 } });
+
+    const known = getCurrentlyFreeConnectSelectors();
+    assert.ok(known instanceof Set,
+      'a table that returned only paid entries is DATA — it must not read as "no data"');
+    assert.equal(known.size, 0);
   });
 
   it('does NOT treat an unknown selector as free when no table exists', () => {
