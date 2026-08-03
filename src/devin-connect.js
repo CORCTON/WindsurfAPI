@@ -1796,10 +1796,20 @@ export function normalizeConnectUsage(lastUsage) {
   const cacheWrite = lastUsage.cache_write_tokens || 0;
   const completion = lastUsage.completion || 0;
   const promptTokens = fresh + cacheRead;
+  // WINDSURFAPI_STRICT_USAGE_TOTAL=1 restores OpenAI's arithmetic identity
+  // (total == prompt + completion) for clients that validate it. Off by default: the
+  // identity break is cosmetic for nearly every consumer, whereas dropping cache_write
+  // from the total under-reports real spend, so spec-strictness is the opt-in. Both
+  // protocol families read this one object, so the switch lands on all of them at once.
+  // Read live rather than snapshotted at import so it is testable and so a restart with
+  // a new env actually takes effect.
+  const strictTotal = String(process.env.WINDSURFAPI_STRICT_USAGE_TOTAL || '0') === '1';
   return {
     prompt_tokens: promptTokens,
     completion_tokens: completion,
-    total_tokens: promptTokens + completion + cacheWrite,
+    total_tokens: strictTotal
+      ? promptTokens + completion
+      : promptTokens + completion + cacheWrite,
     ...(lastUsage.cache_read_tokens != null
       ? { prompt_tokens_details: { cached_tokens: cacheRead } }
       : {}),

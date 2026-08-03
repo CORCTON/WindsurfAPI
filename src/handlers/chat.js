@@ -1704,6 +1704,47 @@ function ttlHintFromCachePolicy(cachePolicy) {
   return 90 * 60 * 1000;
 }
 
+/**
+ * True when the operator asked for OpenAI's arithmetic identity
+ * (total_tokens == prompt_tokens + completion_tokens) instead of the grand total that
+ * includes generation-side cache-write.
+ *
+ * Off by default — see the note at the totalTokens computation for why the asymmetry
+ * makes spec-strictness the opt-in rather than the default. Read live on every call so a
+ * test (and an operator restarting with a new env) actually takes effect; an import-time
+ * const would freeze it and silently make one arm of the branch unreachable.
+ */
+export function strictUsageTotal(env = process.env) {
+  return String(env.WINDSURFAPI_STRICT_USAGE_TOTAL || '0') === '1';
+}
+
+/**
+ * Full billable cost of a request, independent of whatever shape total_tokens is in.
+ *
+ * Cost accounting must NOT read total_tokens: with WINDSURFAPI_STRICT_USAGE_TOTAL=1 that
+ * field deliberately excludes cache-write, so metering off it would make an operator's
+ * own spend tally under-report the moment they opted into spec compliance — a silent
+ * financial cost for a cosmetic wire change. The cache-write figure is already on the
+ * wire as `cache_creation_input_tokens` (unconditional on the Cascade path, present on
+ * the connect path whenever the upstream reported it), so the full cost is always
+ * recoverable without a new field.
+ *
+ * Falls back to total_tokens when the breakdown is absent, which is the pre-existing
+ * behaviour for usage blocks that never had cache fields (estimated usage, env-token
+ * path, special-agent).
+ */
+export function fullBillableTokens(usage) {
+  if (!usage) return 0;
+  const prompt = Number(usage.prompt_tokens) || 0;
+  const completion = Number(usage.completion_tokens) || 0;
+  const cacheWrite = Number(usage.cache_creation_input_tokens) || 0;
+  const total = Number(usage.total_tokens) || 0;
+  // The grand total already includes cache-write unless the strict flag stripped it.
+  // Taking the max covers both shapes without having to know which one produced this
+  // object — including a caller that hands us a total from some other path entirely.
+  return Math.max(total, prompt + completion + cacheWrite);
+}
+
 export function buildUsageBody(serverUsage, messages, completionText, thinkingText = '', cachePolicy = null) {
   if (serverUsage && (serverUsage.inputTokens || serverUsage.outputTokens)) {
     const inputTokens = serverUsage.inputTokens || 0;
@@ -1722,7 +1763,23 @@ export function buildUsageBody(serverUsage, messages, completionText, thinkingTe
     // (auth.js usage tally, dashboard charts) still reflects the full
     // cascade-side cost — only the per-bucket fields follow strict
     // OpenAI/Anthropic semantics.
-    const totalTokens = promptTokens + outputTokens + cacheWrite;
+    //
+    // This deliberately breaks OpenAI's arithmetic identity
+    // (total == prompt + completion) whenever cache_write > 0, and #118 chose that
+    // on purpose: the alternative was cache_write inside prompt_tokens, which made
+    // relays bill it as ordinary input and burned trial quotas in hours.
+    //
+    // A client that VALIDATES the identity sees a violation, so
+    // WINDSURFAPI_STRICT_USAGE_TOTAL=1 restores it. Default stays 0 because the
+    // failure modes are not symmetric: the identity break is cosmetic for almost
+    // every consumer, while dropping cache_write from the total under-reports real
+    // spend — a relay metering on total_tokens would silently undercharge. Cosmetic
+    // beats financial, so spec-strictness is the opt-in.
+    // Read live rather than snapshotted at import: a module-level const here cannot
+    // be flipped by a test, which is how a previous flag became untestable.
+    const totalTokens = strictUsageTotal()
+      ? promptTokens + outputTokens
+      : promptTokens + outputTokens + cacheWrite;
     // Anthropic prompt-caching split: when the client tagged any block
     // with ttl='1h' the creation tokens go to ephemeral_1h, otherwise to
     // ephemeral_5m. Cascade doesn't separate the pools so we can't

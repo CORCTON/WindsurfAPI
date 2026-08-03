@@ -2791,7 +2791,18 @@ export function recordAccountSpend(apiKey, usage, { creditCost = 0 } = {}) {
   const s = account._totalSpend;
   const prompt = Number(usage?.prompt_tokens) || 0;
   const completion = Number(usage?.completion_tokens) || 0;
-  const total = Number(usage?.total_tokens) || (prompt + completion);
+  // Cost accounting must not read total_tokens directly. With
+  // WINDSURFAPI_STRICT_USAGE_TOTAL=1 that field deliberately drops generation-side
+  // cache-write to satisfy OpenAI's arithmetic identity, so metering off it would make
+  // this tally under-report the moment an operator opted into spec compliance — they
+  // would pay for cache-writes that never appear in their own spend chart. The
+  // cache-write figure is on the wire as cache_creation_input_tokens either way, so the
+  // full cost stays recoverable regardless of which shape total_tokens is in.
+  const cacheWrite = Number(usage?.cache_creation_input_tokens) || 0;
+  const total = Math.max(
+    Number(usage?.total_tokens) || 0,
+    prompt + completion + cacheWrite,
+  ) || (prompt + completion);
   s.requests += 1;
   s.promptTokens += prompt;
   s.completionTokens += completion;
