@@ -5,9 +5,10 @@
 1. **[HANDOFF-2026-08-05.md](HANDOFF-2026-08-05.md)** — the current handoff: branch state,
    the still-unfixed list (with `file:line` and measured numbers), what needs a maintainer
    decision, and the methodology this round produced. **When there is unreleased work, this
-   is where it is described** — and there IS unreleased work right now (master carries 14
-   tests and doc corrections past v3.9.11). Its §2.2 says plainly that one backlog item must
-   NOT be fixed the obvious way; read it before touching the sticky path.
+   is where it is described.** Read its header note first: §3 and §4 were superseded WITHIN
+   the same session (queue-on-pin shipped in v3.9.12 as an opt-in knob), and the superseded
+   text is kept on purpose. Its §2.2 says plainly that one backlog item must NOT be fixed
+   the obvious way — read that before touching the sticky path.
 2. **[AUDIT-LEDGER.md](AUDIT-LEDGER.md)** — which subsystems were *actually probed*, what the
    conclusion was, and where the guard lives. It exists because "scanned and clean" is itself
    an asset: without the record, the next person burns the same time again.
