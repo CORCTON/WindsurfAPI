@@ -44,13 +44,13 @@ describe('toChatCompletion (non-stream)', () => {
     assert.equal(body.model, 'claude-sonnet-4-6');
   });
 
-  it('emits content:"" (never undefined) when the model returns no answer text', async () => {
+  it('promotes reasoning to content when the model returns no answer text', async () => {
     __setStreamChatForTest(fakeStream([
       { type: 'reasoning', text: 'hmm' },
       { type: 'finish', reason: 'stop', usage: null },
     ]));
     const { body } = await toChatCompletion({ model: 'm', messages: [] });
-    assert.equal(body.choices[0].message.content, '');
+    assert.equal(body.choices[0].message.content, 'hmm');
     assert.equal(body.choices[0].message.reasoning_content, 'hmm');
   });
 
@@ -697,3 +697,103 @@ describe('proto-openai-03: stop enforcement', () => {
     assert.equal(streamText(frames), 'a STOP b');
   });
 });
+
+describe('thinking-only rescue & promotion', () => {
+  it('rescues thinking-only response in streamChatCompletion when emulateTools is true', async () => {
+    let callCount = 0;
+    let lastParams = null;
+    __setStreamChatForTest(async function* (params) {
+      callCount++;
+      lastParams = params;
+      if (callCount === 1) {
+        yield { type: 'reasoning', text: "I'll use the read_file tool" };
+        yield { type: 'finish', reason: 'stop', usage: null };
+      } else {
+        yield {
+          type: 'finish',
+          reason: 'stop',
+          usage: null,
+          toolCalls: [{ id: 't1', name: 'read_file', arguments: '{"path":"/tmp/x"}' }],
+        };
+      }
+    });
+
+    const initialMessages = [
+      { role: 'user', content: 'hello' },
+      { role: 'assistant', content: '   ' },
+    ];
+    const frames = [];
+    const send = (frame) => frames.push(frame);
+
+    const result = await streamChatCompletion(
+      { model: 'swe-1-7', messages: initialMessages },
+      send,
+      { emulateTools: true },
+    );
+
+    assert.equal(callCount, 2);
+    const passedMsgs = lastParams.messages;
+    assert.equal(passedMsgs.length, 2);
+    assert.equal(passedMsgs[0].role, 'user');
+    assert.equal(passedMsgs[0].content, 'hello');
+    assert.equal(passedMsgs[1].role, 'user');
+    assert.equal(passedMsgs[1].content, 'Stop reasoning. Emit the tool call markup now.');
+    assert.equal(result.finish_reason, 'tool_calls');
+  });
+
+  it('respects rescue budget when DEVIN_CONNECT_RESCUE_MAX=0', async () => {
+    let callCount = 0;
+    __setStreamChatForTest(async function* () {
+      callCount++;
+      yield { type: 'reasoning', text: 'thinking only' };
+      yield { type: 'finish', reason: 'stop', usage: null };
+    });
+
+    const frames = [];
+    const send = (frame) => frames.push(frame);
+
+    const oldVal = process.env.DEVIN_CONNECT_RESCUE_MAX;
+    process.env.DEVIN_CONNECT_RESCUE_MAX = '0';
+    try {
+      await streamChatCompletion(
+        { model: 'swe-1-7', messages: [{ role: 'user', content: 'hi' }] },
+        send,
+        { emulateTools: true },
+      );
+    } finally {
+      if (oldVal === undefined) delete process.env.DEVIN_CONNECT_RESCUE_MAX;
+      else process.env.DEVIN_CONNECT_RESCUE_MAX = oldVal;
+    }
+
+    assert.equal(callCount, 1);
+  });
+
+  it('promotes reasoning to content in toChatCompletion when content is empty and no tool calls', async () => {
+    __setStreamChatForTest(fakeStream([
+      { type: 'reasoning', text: 'standalone reasoning answer' },
+      { type: 'finish', reason: 'stop', usage: null },
+    ]));
+
+    const { body } = await toChatCompletion({ model: 'swe-1-7', messages: [] }, { emulateTools: false });
+    assert.equal(body.choices[0].message.content, 'standalone reasoning answer');
+  });
+
+  it('promotes reasoning to content in streamChatCompletion when content is empty and no tool calls', async () => {
+    __setStreamChatForTest(fakeStream([
+      { type: 'reasoning', text: 'streamed reasoning answer' },
+      { type: 'finish', reason: 'stop', usage: null },
+    ]));
+
+    const frames = [];
+    const send = (frame) => frames.push(frame);
+
+    const result = await streamChatCompletion({ model: 'swe-1-7', messages: [] }, send, { emulateTools: false });
+    assert.equal(result.content, 'streamed reasoning answer');
+    const contentDeltas = frames
+      .flatMap((f) => f.choices || [])
+      .map((c) => c.delta?.content)
+      .filter(Boolean);
+    assert.ok(contentDeltas.includes('streamed reasoning answer'));
+  });
+});
+

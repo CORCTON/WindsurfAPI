@@ -230,6 +230,21 @@ describe('buildGetChatMessageRequest', () => {
     assert.match(text, /42/);
   });
 
+  it('drops empty assistant turns without tool_calls but keeps ones with tool_calls', () => {
+    const proto = buildGetChatMessageRequest({
+      token: TOKEN,
+      model: 'm',
+      messages: [
+        { role: 'user', content: 'hello' },
+        { role: 'assistant', content: '  ' },
+        { role: 'assistant', content: '', tool_calls: [{ id: 'tc1', name: 'bash', arguments: '{}' }] },
+      ],
+    });
+    const chats = getAllFields(parseFields(proto), 3).filter((f) => f.wireType === 2);
+    // User message + assistant message with tool calls = 2 messages (empty assistant dropped)
+    assert.equal(chats.length, 2);
+  });
+
   it('concatenates multiple system turns', () => {
     const proto = buildGetChatMessageRequest({
       token: TOKEN, model: 'm',
