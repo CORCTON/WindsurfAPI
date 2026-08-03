@@ -2,11 +2,12 @@
 
 ## Taking this project over? Read in this order
 
-1. **[HANDOFF-2026-08-04.md](HANDOFF-2026-08-04.md)** — the current handoff: branch state,
+1. **[HANDOFF-2026-08-05.md](HANDOFF-2026-08-05.md)** — the current handoff: branch state,
    the still-unfixed list (with `file:line` and measured numbers), what needs a maintainer
    decision, and the methodology this round produced. **When there is unreleased work, this
-   is where it is described.** Its §3 CORRECTS four claims made in the earlier handoffs —
-   read it before acting on any older item.
+   is where it is described** — and there IS unreleased work right now (master carries 14
+   tests and doc corrections past v3.9.11). Its §2.2 says plainly that one backlog item must
+   NOT be fixed the obvious way; read it before touching the sticky path.
 2. **[AUDIT-LEDGER.md](AUDIT-LEDGER.md)** — which subsystems were *actually probed*, what the
    conclusion was, and where the guard lives. It exists because "scanned and clean" is itself
    an asset: without the record, the next person burns the same time again.
@@ -14,8 +15,9 @@
    `DEVIN_CONNECT` is the **default production backend**, so this is not optional reading.
    Includes the paid wire-calibration procedure (§8).
 
-Earlier handoffs: [HANDOFF-2026-08-03-B.md](HANDOFF-2026-08-03-B.md) (v3.9.8) ·
-[HANDOFF-2026-08-03.md](HANDOFF-2026-08-03.md) (the #234 analysis) ·
+Earlier handoffs: [HANDOFF-2026-08-04.md](HANDOFF-2026-08-04.md) (v3.9.9–v3.9.11; its §3
+corrects four claims in the handoffs before it) · [HANDOFF-2026-08-03-B.md](HANDOFF-2026-08-03-B.md)
+(v3.9.8) · [HANDOFF-2026-08-03.md](HANDOFF-2026-08-03.md) (the #234 analysis) ·
 [HANDOFF-2026-07-27.md](HANDOFF-2026-07-27.md) (v3.9.0–v3.9.6).
 Handoff docs are **append-only** — an older one's "still unfixed" list may have gone stale, so
 the newest one wins.
