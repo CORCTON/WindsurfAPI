@@ -168,6 +168,14 @@ async function* streamChatWithEmptyRetry(params, { env = process.env, rescueThin
         { role: 'user', content: 'Stop reasoning. Emit the tool call markup now.' },
       ];
       attemptParams = { ...attemptParams, messages: rescued };
+      // Tell the consumer to discard what it accumulated: the next attempt REPLACES
+      // this one, it does not continue it. Without this every rescue attempt's
+      // reasoning was concatenated into a single answer — measured
+      // "PASS1. PASS2. PASS3. " for three attempts, i.e. the user was shown all
+      // three tries glued together. The outer retry loops in toChatCompletion /
+      // streamChatCompletion reset their accumulators per THEIR OWN attempt, but the
+      // rescue loop lives in here, so they never saw an attempt boundary.
+      yield { type: 'attempt_reset' };
       continue;
     }
 
@@ -229,6 +237,9 @@ export async function toChatCompletion(params, { id = newId(), created = nowSeco
     try {
       content = ''; reasoning = ''; finishReason = 'stop'; usage = null; nativeToolCalls = [];
       for await (const ev of streamChatWithEmptyRetry(params, { rescueThinkingOnly: emulateTools })) {
+        // A rescue attempt REPLACES the previous one; drop what it produced or the
+        // client is handed every attempt concatenated.
+        if (ev.type === 'attempt_reset') { content = ''; reasoning = ''; nativeToolCalls = []; continue; }
         if (ev.type === 'content') content += ev.text;
         else if (ev.type === 'reasoning') reasoning += ev.text;
         else if (ev.type === 'finish') {
@@ -418,6 +429,17 @@ export async function streamChatCompletion(params, send, { id = newId(), created
   };
 
   for await (const ev of streamChatWithEmptyRetry(params, { rescueThinkingOnly: emulateTools })) {
+    // A rescue attempt REPLACES the previous one. The deltas already sent cannot be
+    // retracted (documented at the promotion site below), but the accumulators must
+    // not keep the abandoned attempt — otherwise `content` ends up holding every
+    // attempt concatenated, and the promotion re-sends that pile as the answer.
+    if (ev.type === 'attempt_reset') {
+      reasoning = '';
+      content = '';
+      collectedToolCalls.length = 0;
+      nativeToolCalls = [];
+      continue;
+    }
     if (ev.type === 'reasoning') {
       prime(); // first real delta: emit the deferred role chunk first
       reasoning += ev.text;

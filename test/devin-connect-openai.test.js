@@ -834,6 +834,71 @@ describe('thinking-only rescue & promotion', () => {
     assert.equal(message.reasoning_content, undefined, 'the promoted copy must be dropped');
   });
 
+  // A rescue attempt REPLACES the previous one; it must not be appended to it.
+  //
+  // The rescue loop lives inside streamChatWithEmptyRetry, while the accumulators
+  // live in its two consumers — which reset per THEIR OWN retry, so they never saw a
+  // rescue boundary. Measured before the fix: three thinking-only attempts produced
+  // `"PASS1. PASS2. PASS3. "`, i.e. the user was shown all three tries glued
+  // together as the answer. The generator now emits an `attempt_reset` sentinel.
+  for (const [label, run] of [
+    ['non-stream', async (params, opts) => {
+      const { body } = await toChatCompletion(params, opts);
+      return body.choices[0].message.content;
+    }],
+    ['stream', async (params, opts) => {
+      const result = await streamChatCompletion(params, () => {}, opts);
+      return result.content;
+    }],
+  ]) {
+    it(`discards an abandoned rescue attempt instead of concatenating it (${label})`, async () => {
+      let attempts = 0;
+      __setStreamChatForTest(async function* () {
+        attempts++;
+        yield { type: 'reasoning', text: `PASS${attempts}. ` };
+        yield { type: 'finish', reason: 'stop', usage: { completion_tokens: 10 } };
+      });
+      const content = await run(
+        { model: 'swe-1-7', messages: [{ role: 'user', content: 'x' }], tools: [{ type: 'function', function: { name: 'f', parameters: {} } }] },
+        { emulateTools: true },
+      );
+      assert.ok(attempts > 1, `precondition: the rescue must have fired (attempts=${attempts})`);
+      assert.doesNotMatch(
+        String(content || ''), /PASS1/,
+        `the first attempt's output leaked into the final answer (${JSON.stringify(content)}) — each `
+        + 'rescue replaces the previous attempt, it does not continue it',
+      );
+      assert.match(String(content || ''), new RegExp(`PASS${attempts}`),
+        'the LAST attempt is the one whose output the client should see');
+    });
+  }
+
+  it('a successful rescue delivers the tool call with no stale reasoning attached', async () => {
+    let attempts = 0;
+    __setStreamChatForTest(async function* () {
+      attempts++;
+      if (attempts === 1) {
+        yield { type: 'reasoning', text: 'I should use read_file.' };
+        yield { type: 'finish', reason: 'stop', usage: { completion_tokens: 10 } };
+        return;
+      }
+      yield { type: 'content', text: '<tool_call>\n{"name":"read_file","arguments":{"path":"a.js"}}\n</tool_call>' };
+      yield { type: 'finish', reason: 'stop', usage: { completion_tokens: 20 } };
+    });
+    const { body } = await toChatCompletion(
+      { model: 'swe-1-7', messages: [{ role: 'user', content: 'read a.js' }], tools: [{ type: 'function', function: { name: 'read_file', parameters: {} } }] },
+      { emulateTools: true },
+    );
+    const message = body.choices[0].message;
+    assert.equal(attempts, 2, 'the rescue should heal on the first retry');
+    assert.equal(body.choices[0].finish_reason, 'tool_calls');
+    assert.equal((message.tool_calls || []).length, 1);
+    assert.doesNotMatch(
+      String(message.content || ''), /I should use read_file/,
+      "the abandoned attempt's reasoning must not ride along with the healed turn",
+    );
+  });
+
   it('keeps reasoning_content when there is a real answer to distinguish it from', async () => {
     // The promotion must not fire when the model DID answer: reasoning and content
     // are genuinely different text and both belong in the response.
