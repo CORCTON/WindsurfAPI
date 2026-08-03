@@ -44,8 +44,11 @@
  *     current choice so the change cannot happen by accident.
  *
  *   - Bindings expire by TTL. Nothing clears them on session reset or client
- *     disconnect: clearCallerBindings exists but has no production call site
- *     (see its own note below).
+ *     disconnect: clearCallerBindings exists but has no production call site, and
+ *     deliberately so — clearing on disconnect would destroy the affinity this
+ *     module exists to provide, and there is no conversation-end event to hook
+ *     instead. That is a settled conclusion, not an open item; see its own note
+ *     below for the full reasoning and the measurements behind it.
  *   - The binding table is in-memory only (no persistence needed)
  *
  * Why this matters:
@@ -297,8 +300,36 @@ export function clearStickyBinding(callerKey, modelKey = '', selector = null) {
  * away only by TTL or by clearStickyBinding on an unusable account. Anyone
  * reasoning about sticky cleanup on disconnect was reading a guarantee that does
  * not exist — the function is correct, its documented lifecycle hook is fiction.
- * Kept (with the claim corrected) because wiring it into the disconnect path is
- * the open follow-up, not because it runs today.
+ *
+ * It also has no correct trigger to be wired to, so this is a settled answer and
+ * not an open follow-up (the previous version of this comment said the opposite;
+ * that was investigated and refuted):
+ *
+ *   - Client disconnect is the obvious candidate and is actively WRONG. The hook
+ *     exists (server.js res.on('close') → abort), so this is a live temptation.
+ *     But agent clients cancel mid-turn constantly, and the rest of the codebase
+ *     deliberately treats a cancelled turn as "nothing happened": the connect
+ *     finalizer exempts aborts from every penalty, and poolCheckin RESTORES the
+ *     checked-out cascade entry. Clearing the pin there manufactures the exact
+ *     context loss this module exists to prevent — the restored entry still
+ *     carries account X's apiKey, so the next turn's checkout asks for Y, misses
+ *     on the apiKey comparison in conversation-pool.js, and replays the whole
+ *     history.
+ *   - There is no session-reset event. The only caller-scoped DELETE is
+ *     DELETE /v1/responses/{id}, which drops one stored record and carries no
+ *     "conversation over" meaning.
+ *   - Account departure IS real cleanup, but it is account-scoped, so it would
+ *     need a different function — and it is not worth adding either. A binding
+ *     whose account left is never refreshed again (auth.js clears it in the same
+ *     call that resolves it), so it ages monotonically toward the LRU front and
+ *     is handed to eviction FIRST. Measured: 4 dead + 6 live at capacity, 4 new
+ *     inserts → all 4 dead evicted, all 6 live survived. Dead bindings act as a
+ *     free eviction buffer; reaping them eagerly would evict LIVE bindings
+ *     instead. status='error' is also the wrong trigger regardless, because
+ *     maybeRecoverErrorAccount half-opens it back to 'active'.
+ *
+ * Kept because the tests cover it and it is the natural primitive if a real
+ * conversation-end signal ever arrives — not because anything calls it today.
  *
  * @param {string} callerKey
  */
