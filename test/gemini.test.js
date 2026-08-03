@@ -353,6 +353,30 @@ describe('handleGemini streaming', () => {
   // The translator is built with the REQUESTED name (it exists before the upstream call),
   // so a degraded connect request — WINDSURFAPI_STRICT_MODEL=0 rewriting an unmapped paid
   // name to the free selector — used to report the paid name it never ran.
+  it('non-stream modelVersion reports what ran, not what was requested', async () => {
+    // The non-stream twin of the streaming test below. Separate because the two paths
+    // build modelVersion in different places (openAIToGemini vs the frame builder), and a
+    // precedence flip in one is invisible to a test that only drives the other.
+    const result = await handleGemini('claude-opus-4.9', {
+      contents: [{ role: 'user', parts: [{ text: 'hi' }] }],
+    }, {
+      async handleChatCompletions() {
+        return {
+          status: 200,
+          body: {
+            id: 'x', object: 'chat.completion', created: 0,
+            model: 'swe-1-6-slow',
+            choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+          },
+        };
+      },
+    }, {});
+
+    assert.equal(result.body.modelVersion, 'swe-1-6-slow',
+      'modelVersion must name what ran, not the requested claude-opus-4.9');
+  });
+
   it('adopts the upstream model name into modelVersion', async () => {
     const result = await handleGemini('claude-opus-4.9', {
       contents: [{ role: 'user', parts: [{ text: 'hi' }] }],
