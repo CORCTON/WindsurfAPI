@@ -60,6 +60,10 @@ function finalize(label, { err, aborted = false }) {
     quotaResetMs: fresh.quotaResetAt ? fresh.quotaResetAt - Date.now() : 0,
     errorCount: fresh.errorCount || 0,
     status: fresh.status,
+    // The consecutive-internal-error streak reportInternalError maintains. Non-zero
+    // means the error was classified as a fault of SOME kind; zero means nothing was
+    // recorded, which is the client-disconnect signature.
+    healthEvents: fresh.internalErrorStreak || 0,
   };
 }
 
@@ -177,15 +181,35 @@ describe('an upstream fault mentioning "aborted" is not a client disconnect', ()
 
     const err = Object.assign(new Error(upstream.message), { code: upstream.code });
     const graded = finalize('grpc-aborted', { err, aborted: false });
-    // No named arm claims code 'aborted', so it reaches the account-fault
-    // fallthrough. What matters is that it was NOT waved through as an abort.
-    assert.equal(graded.errorCount, 1, 'an upstream aborted trailer must be graded, not exempted');
-
     const realAbort = finalize('real-abort', {
       err: Object.assign(new Error('This operation was aborted'), { name: 'AbortError' }),
       aborted: false,
     });
-    assert.equal(realAbort.errorCount, 0, 'a genuine AbortError must stay exempt');
+
+    // Neither charges the error budget — an upstream `aborted` is a transport fault
+    // (the call was aborted, which says nothing about this account's token), so it is
+    // exempt from eviction just like a client disconnect is.
+    //
+    // This assertion originally read `graded.errorCount === 1`, because at the time
+    // `aborted` had no classification and fell to the account-fault fallthrough. That
+    // froze a defect into a contract: classifying it correctly then made this test
+    // fail. The distinguishing property is not the error budget, it is whether the
+    // error was CLASSIFIED at all — a transport fault records a health event so a
+    // genuinely sick account is still de-prioritized by selection, while a client
+    // disconnect records nothing because the client leaving is not evidence about the
+    // account.
+    assert.equal(graded.errorCount, 0, 'a transport fault must not charge the error budget');
+    assert.equal(realAbort.errorCount, 0, 'and neither must a genuine AbortError');
+
+    assert.ok(
+      graded.healthEvents > 0,
+      'an upstream aborted trailer must be GRADED — it should record a health event, which is what '
+      + 'distinguishes "classified as a transport fault" from "waved through as a client disconnect"',
+    );
+    assert.equal(
+      realAbort.healthEvents, 0,
+      'a genuine client disconnect must record nothing at all — it is not evidence about the account',
+    );
   });
 
   it('a 429 whose body mentions "aborted" still gets its reset window', () => {

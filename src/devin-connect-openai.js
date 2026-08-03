@@ -124,7 +124,29 @@ async function* streamChatWithEmptyRetry(params, { env = process.env, rescueThin
   // bounded retry, where an empty is more likely genuine capacity jitter.
   const weak = isWeakEmulationModel(params?.model || '');
   const max = (retryOnEmptyEnabled(env) && !weak) ? retryOnEmptyMax(env) : 0;
-  const rescueMax = Number(env.DEVIN_CONNECT_RESCUE_MAX ?? 2);
+  // Same sanitisation as every sibling knob in this file. Without it `Infinity` and
+  // `1e9` both defeated the `rescueAttempt < rescueMax` bound — and the loop uses
+  // `continue`, so one client request became an unbounded sequence of upstream calls
+  // that burns the account into a rate limit. A non-numeric value produced NaN,
+  // which silently turned the whole feature OFF with no log line.
+  //
+  // The rescue also honours the empty-retry master off switch: an operator who set
+  // DEVIN_CONNECT_RETRY_ON_EMPTY=0 to stop speculative re-issues on a rate-limited
+  // account meant that, and it would be a surprise for a new speculative re-issue to
+  // ignore it. RESCUE_MAX=0 remains the way to disable just this one.
+  // Number.isFinite alone is not enough: 1e9 passes it and still hangs the request
+  // for hours of upstream calls (measured — the probe had to be killed). A rescue is
+  // a speculative re-issue against a live account, so its ceiling is hard.
+  const RESCUE_MAX_CEILING = 5;
+  const rescueRaw = Number(env.DEVIN_CONNECT_RESCUE_MAX);
+  const rescueConfigured = Number.isFinite(rescueRaw) && rescueRaw >= 0
+    ? Math.min(rescueRaw, RESCUE_MAX_CEILING)
+    : 2;
+  // Weak models are excluded for the same measured reason the empty-retry is: paid
+  // E2E proved retrying the fable family never heals it and only triples upstream
+  // load into a 3h rate limit. Whether fable produces reasoning-only finishes is
+  // unproven either way, so this errs toward the documented account-protection.
+  const rescueMax = (retryOnEmptyEnabled(env) && !weak) ? rescueConfigured : 0;
   let attemptParams = params;
   let rescueAttempt = 0;
   for (let attempt = 0; ; attempt++) {
@@ -305,8 +327,34 @@ export async function toChatCompletion(params, { id = newId(), created = nowSeco
   // client (kimi CLI) displays. Nothing is lost by dropping the duplicate: the
   // text is still delivered, just once, in the field the client will actually
   // render as the answer.
-  const promotedReasoning = !toolCalls.length && !content && !!reasoning;
-  if (promotedReasoning) content = reasoning;
+  // The promoted text must go through the SAME tool-call extraction the content
+  // path just ran. The rescue nudge literally asks the model to "Emit the tool call
+  // markup now", so a model that complies but keeps writing into the reasoning
+  // channel produces exactly this shape — and promoting it unparsed delivered raw
+  // `<tool_call>` XML to the client as the visible answer with finish_reason='stop'.
+  // The agent loop does not advance and the user sees markup, which is worse than
+  // the empty turn the promotion exists to prevent.
+  let promotedReasoning = !toolCalls.length && !content && !!reasoning;
+  if (promotedReasoning) {
+    if (emulateTools && !stopHit) {
+      const promotedParse = parseToolCallsFromText(reasoning, {
+        modelKey: params.model, provider: null, route: 'devin_connect',
+      });
+      if (promotedParse.toolCalls.length) {
+        // It was a tool call all along. Deliver it as one; keep any surrounding prose
+        // as content, and leave reasoning_content in place since nothing was moved
+        // out of it into the answer.
+        toolCalls = promotedParse.toolCalls;
+        content = promotedParse.text;
+        finishReason = 'tool_calls';
+        promotedReasoning = false;
+      } else {
+        content = reasoning;
+      }
+    } else {
+      content = reasoning;
+    }
+  }
 
   // OpenAI convention: content is a string (may be empty), never undefined.
   const message = { role: 'assistant', content: content || '' };
@@ -513,8 +561,24 @@ export async function streamChatCompletion(params, send, { id = newId(), created
   // can dedupe at the translator layer (messages.js already knows whether the
   // text block equals the thinking block), that is the place to do it.
   if (!content && !collectedToolCalls.length && !nativeToolCalls.length && reasoning && !stopHit) {
-    sendContent(reasoning);
-    content = reasoning;
+    // Same extraction the content path uses, for the same reason as the non-stream
+    // path: the rescue nudge asks for tool markup, so a model that complies while
+    // still writing into the reasoning channel would otherwise have raw
+    // `<tool_call>` XML streamed to it as the visible answer.
+    const promotedParse = emulateTools
+      ? parseToolCallsFromText(reasoning, { modelKey: params.model, provider: null, route: 'devin_connect' })
+      : { toolCalls: [], text: reasoning };
+    if (promotedParse.toolCalls.length) {
+      if (promotedParse.text) sendContent(promotedParse.text);
+      emitToolCalls(promotedParse.toolCalls.map((tc) => ({
+        id: tc.id, name: tc.name, argumentsJson: tc.argumentsJson ?? tc.arguments,
+      })));
+      content = promotedParse.text;
+      finishReason = 'tool_calls';
+    } else {
+      sendContent(reasoning);
+      content = reasoning;
+    }
   }
 
   // 4. Terminal finish chunk. Reaching here means streamChat drained cleanly

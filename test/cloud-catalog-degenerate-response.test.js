@@ -48,6 +48,8 @@ import {
   mergeCloudCatalogSnapshot,
   filterModelKeysByCloudCatalog,
   clearCloudModelCatalogs,
+  removeCloudModelCatalog,
+  forgetCloudModelCatalog,
   setActiveCloudCatalogAccounts,
 } from '../src/models.js';
 
@@ -108,42 +110,176 @@ describe('a degenerate catalog response does not wipe the last-known-good', () =
     assert.equal(visible(), TOTAL_KEYS, 'a no-filter account sees the full catalog');
   });
 
-  it('treats an empty response over an existing snapshot as the maximal shrink', () => {
+  it('never adopts an empty response over an existing snapshot, however many arrive', () => {
+    // An earlier version of this fix routed the empty case through the same
+    // confirmation as any other shrink, on the theory that empty is just the
+    // maximal shrink. Adversarial review measured why that is wrong: the accept
+    // path calls applyCloudModels with no UIDs, which DELETES the snapshot — so a
+    // confirmed empty response produced a FULL fail-open (148/163 -> 163/163),
+    // which is #231's own symptom, merely delayed by one retry interval. And
+    // confirmation is the wrong instrument anyway: a throttled upstream returns
+    // empty repeatedly, so a second identical empty body is the same non-answer
+    // twice, not evidence.
+    const seeded = seedAcceptedCatalog();
+    for (let round = 1; round <= 5; round++) {
+      const r = mergeCloudCatalogSnapshot([], { accountId: ACCOUNT });
+      assert.equal(r.accepted, false, `empty round ${round} must not be accepted`);
+      assert.equal(r.reason, 'empty_over_snapshot');
+      assert.equal(r.preservedLastKnownGood, true);
+      assert.equal(
+        visible(), seeded,
+        `empty round ${round} changed the catalog view (${visible()} vs ${seeded}) — an empty body `
+        + 'must never delete the filter, or the account re-advertises models it may not have',
+      );
+    }
+  });
+
+  it('an account that ever had a filter keeps the guard across a lifecycle event', () => {
+    // The guard used to key on the live snapshot alone, and the snapshot is dropped
+    // by every routine re-fetch event (key rotation, status flip, leaving the active
+    // set). Measured: one disable/enable cycle plus one empty body took an account
+    // from 148/163 to 163/163 with ZERO confirmation rounds, because the empty
+    // response then read as "this deployment has no cloud filter".
     seedAcceptedCatalog();
+    removeCloudModelCatalog(ACCOUNT);   // what a key rotation / status flip does
+
     const r = mergeCloudCatalogSnapshot([], { accountId: ACCOUNT });
-    assert.equal(r.reason, 'confirmation_required',
-      'zero UIDs over an accepted snapshot must go through the same confirmation as any shrink');
+    assert.equal(r.accepted, false,
+      'after a lifecycle event the account is still the same account under the same upstream '
+      + 'restriction, so an empty response must not be adopted as "no filter"');
+    assert.equal(r.reason, 'empty_over_snapshot');
+  });
+
+  it('forgetting the account does clear the marker (a genuinely new account fails open)', () => {
+    // The counterpart: a brand-new account with no history must still get the
+    // documented immediate fail-open, or a recycled id would inherit a stranger's
+    // restriction.
+    seedAcceptedCatalog();
+    forgetCloudModelCatalog(ACCOUNT);
+
+    const r = mergeCloudCatalogSnapshot([], { accountId: ACCOUNT });
+    assert.equal(r.accepted, true, 'a forgotten account starts clean');
+    assert.equal(r.reason, 'no_filter');
+  });
+});
+
+// The POOL dimension. Every test above runs with one active account, but the reason
+// the empty case matters is the union rule: applicableCloudCatalogUids returns null
+// the moment ANY active account lacks a catalog, so deleting ONE account's snapshot
+// un-filters the listing for EVERY account. A single-account suite cannot see that,
+// and the file's own rationale names it.
+describe('one account\'s degenerate response does not un-filter the whole pool', () => {
+  const A = 'pool-acct-a';
+  const B = 'pool-acct-b';
+  const poolVisible = () => filterModelKeysByCloudCatalog(undefined, CASCADE_ENV).length;
+
+  it('an empty response for one account leaves the pool filter intact', () => {
+    clearCloudModelCatalogs();
+    setActiveCloudCatalogAccounts([A, B]);
+    // Both accounts get an accepted catalog, so the pool is genuinely filtered.
+    const half = ALL_UIDS.slice(0, Math.floor(ALL_UIDS.length * 0.8));
+    assert.equal(mergeCloudCatalogSnapshot(configs(half), { accountId: A }).accepted, true);
+    assert.equal(mergeCloudCatalogSnapshot(configs(half), { accountId: B }).accepted, true);
+    const filtered = poolVisible();
+    assert.ok(filtered < TOTAL_KEYS, `precondition: the pool must be filtered (got ${filtered})`);
+
+    // Account A's upstream goes empty, repeatedly.
+    for (let i = 0; i < 3; i++) {
+      const r = mergeCloudCatalogSnapshot([], { accountId: A });
+      assert.equal(r.accepted, false, 'an empty response must not be adopted');
+    }
+
+    assert.equal(
+      poolVisible(), filtered,
+      `one account's empty response un-filtered the POOL listing (${poolVisible()} vs ${filtered}). `
+      + 'The union rule means a single deleted snapshot drops the filter for every account, so this '
+      + 'is the blast radius that makes the empty case matter.',
+    );
+  });
+
+  it('a malformed response for one account leaves the pool filter intact', () => {
+    clearCloudModelCatalogs();
+    setActiveCloudCatalogAccounts([A, B]);
+    const half = ALL_UIDS.slice(0, Math.floor(ALL_UIDS.length * 0.8));
+    mergeCloudCatalogSnapshot(configs(half), { accountId: A });
+    mergeCloudCatalogSnapshot(configs(half), { accountId: B });
+    const filtered = poolVisible();
+
+    mergeCloudCatalogSnapshot(null, { accountId: A });
+    assert.equal(poolVisible(), filtered, 'a malformed body must not widen the pool listing either');
+  });
+
+  it('an unconfirmed shrink for one account leaves the pool filter intact', () => {
+    clearCloudModelCatalogs();
+    setActiveCloudCatalogAccounts([A, B]);
+    const half = ALL_UIDS.slice(0, Math.floor(ALL_UIDS.length * 0.8));
+    mergeCloudCatalogSnapshot(configs(half), { accountId: A });
+    mergeCloudCatalogSnapshot(configs(half), { accountId: B });
+    const filtered = poolVisible();
+
+    for (let i = 1; i <= 5; i++) {
+      mergeCloudCatalogSnapshot(configs([ALL_UIDS[0], ALL_UIDS[i]]), { accountId: A });
+    }
+    assert.equal(poolVisible(), filtered,
+      'an unconfirmed candidate must not reach the pool listing at any round count');
   });
 });
 
 describe('a shrunken catalog converges instead of wedging on a stale snapshot', () => {
-  it('accepts the newest snapshot after a bounded number of varying rounds', () => {
+  it('never adopts a candidate that changed on every round, but stops re-checking', () => {
+    // An earlier version of this fix adopted the newest candidate once a round
+    // budget ran out ("the upstream has said it is small several times"). Two
+    // measured reasons that was worse than the wedge it replaced:
+    //
+    //   - the counter is per-ACCOUNT, not per-candidate, so two unrelated rounds
+    //     paid for a third candidate that was then adopted the first time it was
+    //     ever seen — including an empty body, i.e. a full fail-open from a single
+    //     never-confirmed observation;
+    //   - once adopted, auth.js records the account as synced and stops
+    //     re-fetching, so a 90-second upstream wobble permanently pinned an account
+    //     to a never-confirmed model list (measured 6/163) with no self-healing.
+    //
+    // An upstream that keeps changing its answer has no stable answer to adopt.
+    // Refusing to adopt one is correct; the budget now bounds only the polling.
     const seeded = seedAcceptedCatalog();
 
-    // The upstream keeps reporting a small catalog, but never the same one twice —
-    // so the repeat check can never be satisfied.
     const rounds = [];
-    let accepted = null;
     for (let i = 1; i <= 8; i++) {
       const r = mergeCloudCatalogSnapshot(
         configs([ALL_UIDS[0], ALL_UIDS[5 + i]]), { accountId: ACCOUNT },
       );
       rounds.push(r);
-      if (r.accepted) { accepted = r; break; }
+      assert.equal(r.accepted, false,
+        `round ${i} adopted a candidate that has never been confirmed (reason=${r.reason})`);
     }
 
-    assert.ok(accepted, `a small-and-varying catalog never converged in ${rounds.length} rounds — the `
-      + 'stale larger snapshot stays authoritative forever, so the proxy keeps routing models the '
-      + 'account has lost');
-    assert.equal(accepted.reason, 'converged_small');
-    assert.ok(
-      visible() < seeded,
-      `expected the view to narrow to the new catalog, got ${visible()} vs the stale ${seeded}`,
+    assert.equal(
+      visible(), seeded,
+      'the last-known-good view must be preserved throughout — nothing unconfirmed is adopted',
     );
-    // Bounded, and not on the first round either — one degenerate response still
-    // must not shrink the catalog.
-    assert.ok(rounds.length >= 2, 'a single small response must NOT be accepted immediately');
-    assert.ok(rounds.length <= 4, `convergence took ${rounds.length} rounds, expected a small bound`);
+    // The polling is bounded: the caller is told to stop after the cap.
+    const exhausted = rounds.filter((r) => r.recheckExhausted);
+    assert.ok(exhausted.length > 0,
+      'after the cap the caller must be told to stop re-checking, or a permanently flapping '
+      + 'upstream polls forever');
+    assert.equal(rounds[0].recheckExhausted, false, 'the cap must not fire on the first round');
+  });
+
+  it('accepts a genuine downgrade in two rounds — the case the ceiling was meant to serve', () => {
+    // The wedge that motivated the ceiling is handled by the ordinary path: a REAL
+    // downgrade is stable, so it repeats and confirms. This is the assertion that
+    // proves removing the ceiling did not restore the wedge.
+    const seeded = seedAcceptedCatalog();
+    const downgraded = configs([ALL_UIDS[0], ALL_UIDS[1]]);
+
+    const first = mergeCloudCatalogSnapshot(downgraded, { accountId: ACCOUNT });
+    assert.equal(first.accepted, false, 'round 1 of any shrink is quarantined');
+    assert.equal(visible(), seeded, 'and the old view is kept meanwhile');
+
+    const second = mergeCloudCatalogSnapshot(downgraded, { accountId: ACCOUNT });
+    assert.equal(second.accepted, true, 'an identical repeat confirms — this is how a real downgrade lands');
+    assert.equal(second.reason, 'confirmed_small');
+    assert.ok(visible() < seeded, `expected the view to narrow, got ${visible()} vs ${seeded}`);
   });
 
   it('still confirms a stable small catalog in exactly two rounds', () => {
@@ -237,16 +373,26 @@ describe('mergeCloudCatalogSnapshot never applies a snapshot it did not accept',
     );
   });
 
-  it('the quarantine is bounded by an explicit round cap', () => {
+  it('the round budget bounds re-checking, never the acceptance bar', () => {
     assert.match(
-      SRC, /CLOUD_CATALOG_CONFIRM_MAX_ROUNDS\s*=\s*\d+/,
-      'the quarantine needs an explicit ceiling, or a small-and-varying upstream wedges the '
-      + 'stale last-known-good in place forever',
+      SRC, /CLOUD_CATALOG_RECHECK_MAX_ROUNDS\s*=\s*\d+/,
+      'a bound on re-checking is needed, or a permanently flapping upstream polls forever',
     );
-    assert.match(body, /CLOUD_CATALOG_CONFIRM_MAX_ROUNDS/, 'the merge path must consult the ceiling');
+    assert.match(body, /CLOUD_CATALOG_RECHECK_MAX_ROUNDS/, 'the merge path must consult the bound');
+    // The load-bearing part: the bound must NOT appear in any accept decision. An
+    // earlier version used it to adopt the newest candidate on exhaustion, which
+    // promoted a single never-confirmed observation to authoritative policy.
+    const acceptRegions = [...body.matchAll(/accepted: true[\s\S]{0,400}?\}/g)].map((m) => m[0]);
+    const contaminated = acceptRegions.filter((r) => /RECHECK_MAX_ROUNDS|exhausted/.test(r));
+    assert.deepEqual(
+      contaminated, [],
+      'an accept path consults the round budget. The budget may only decide whether to keep '
+      + 'POLLING; adopting an unconfirmed candidate because the budget ran out is how a flapping '
+      + 'upstream permanently pinned an account to a wrong model list.',
+    );
   });
 
-  it('a quarantined round always leaves a re-check armed', () => {
+  it('an unconfirmed round leaves a re-check armed until the bound is reached', () => {
     // models.js can only converge if auth.js keeps re-checking, and there is NO
     // periodic catalog refresh to fall back on (trySyncModelCatalog fires on
     // account-lifecycle events only). Arming the delayed confirmation on the first
@@ -254,17 +400,39 @@ describe('mergeCloudCatalogSnapshot never applies a snapshot it did not accept',
     const AUTH = readFileSync(new URL('../src/auth.js', import.meta.url), 'utf8');
     const start = AUTH.indexOf('const snapshot = mergeCloudCatalogSnapshot');
     assert.ok(start !== -1, 'the merge call site must exist');
-    // The quarantine branch is the one after the malformed early-return.
-    const malformedEnd = AUTH.indexOf('return false;', AUTH.indexOf("snapshot.reason === 'malformed'", start));
-    const region = AUTH.slice(malformedEnd, AUTH.indexOf('return false;', malformedEnd + 20) + 20);
+    // The unconfirmed branch is the one after the two early-returns (malformed and
+    // empty-over-snapshot).
+    const emptyBranch = AUTH.indexOf("snapshot.reason === 'empty_over_snapshot'", start);
+    assert.ok(emptyBranch !== -1, 'the empty-over-snapshot branch must exist');
+    const afterEmpty = AUTH.indexOf('return false;', emptyBranch);
+    const region = AUTH.slice(afterEmpty, AUTH.indexOf('return false;', afterEmpty + 20) + 20);
+
     assert.doesNotMatch(
       region, /if \(!confirmationAttempt\) scheduleModelCatalogRetry/,
-      'the delayed confirmation is armed only on the first round, so a quarantined candidate stops '
+      'the delayed confirmation is armed only on the first round, so an unconfirmed candidate stops '
       + 'being re-checked and the stale snapshot stays authoritative — with no periodic refresh to '
       + 'recover it',
     );
     assert.match(region, /scheduleModelCatalogRetry\(accountId, apiKey\)/,
-      'every quarantined round must arm the next re-check');
+      'an unconfirmed round must arm the next re-check');
+    // ...and must stop once the bound is reached, or a permanently flapping upstream
+    // polls every retry interval for the lifetime of the process.
+    assert.match(region, /recheckExhausted/,
+      'the re-check must stop once models.js reports the round bound reached');
+  });
+
+  it('an empty response over a snapshot is handled like no data, not like a shrink', () => {
+    const AUTH = readFileSync(new URL('../src/auth.js', import.meta.url), 'utf8');
+    const at = AUTH.indexOf("snapshot.reason === 'empty_over_snapshot'");
+    assert.ok(at !== -1,
+      'auth.js must handle the empty-over-snapshot verdict explicitly — otherwise it falls into the '
+      + 'shrink branch and arms a confirmation timer for something that can never be confirmed');
+    const region = AUTH.slice(at, AUTH.indexOf('return false;', at));
+    assert.match(region, /cancelModelCatalogRetry/,
+      'nothing to confirm, so leave the account re-fetchable rather than timer-gated');
+    assert.match(region, /WINDSURFAPI_IGNORE_CLOUD_FILTER/,
+      'the log must point the operator at the documented escape hatch, since the consequence of this '
+      + 'verdict is that a stale filter keeps over-restricting');
   });
 
   it('a malformed response leaves the account re-fetchable rather than timer-gated', () => {

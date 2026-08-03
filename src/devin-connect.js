@@ -1641,7 +1641,15 @@ export function classifyUpstreamError(text, code = null, status = null) {
   if (/\/upgrade|upgrade to access|insufficient.*entitlement|requires? .*(paid|pro|team|enterprise)/i.test(lc)) {
     return { code: 'MODEL_BLOCKED', message: body || 'model requires a paid Devin entitlement' };
   }
-  if (status === 401 || status === 403 || /permission_denied|unauthenticated|invalid.*token/i.test(lc) || code === 'permission_denied') {
+  // `code === 'unauthenticated'` is claimed here alongside 'permission_denied'. The
+  // body-text arm already caught the common shape, but a bare gRPC status with a
+  // body that does not repeat the word fell through to the verbatim passthrough at
+  // the end — where it reached the account-fault fallthrough in
+  // finalizeConnectAccount and evicted the account WITHOUT the re-login attempt
+  // that a retired session token needs. Same verdict, but now via the arm that
+  // knows what to do about it.
+  if (status === 401 || status === 403 || /permission_denied|unauthenticated|invalid.*token/i.test(lc)
+      || code === 'permission_denied' || code === 'unauthenticated') {
     return { code: 'UNAUTHORIZED', message: body || 'DEVIN_CONNECT: authentication failed' };
   }
   if (status === 429 || /rate.?limit|too many requests|resource_exhausted/i.test(lc) || code === 'resource_exhausted') {

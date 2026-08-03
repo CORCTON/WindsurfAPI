@@ -726,8 +726,19 @@ async function route(req, res) {
       // accepts BOTH spellings: the README documents the six signals with the
       // header spelling and then says the same names work as query parameters, so
       // `?conversation-id=` was documented but 404'd while only `?conversation_id=`
-      // worked. Accepting both is strictly more permissive and derives the exact
-      // same identity, so it closes the gap for anyone who followed the doc.
+      // worked.
+      //
+      // Precisely what this does and does not change. Per NAME it is a pure alias —
+      // the underscore form wins, and either spelling of one name derives the same
+      // identity. What it is NOT is "strictly more permissive": a spelling that was
+      // previously inert can now FILL a scope slot, and a caller that supplies
+      // several DIFFERENT scope vocabularies has all of them folded into one
+      // identity, so adding a slot changes the derived key. That folding is
+      // pre-existing — on master `?conversation=A&conversation_id=B` already
+      // differed from `?conversation=A` alone, because both underscore spellings
+      // were accepted — this just makes a third spelling able to reach it. The
+      // practical rule for callers, now stated in the README, is to send ONE scope
+      // signal and send it consistently.
       const pick = (name) => {
         const hyphen = name.replace(/_/g, '-');
         return h[`x-response-${hyphen}`] || q.get(name) || q.get(hyphen) || '';

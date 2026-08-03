@@ -126,11 +126,41 @@ describe('structural guard — every upstream code has an explicit blame decisio
   // devin-connect.js's own RETRYABLE_CODES list is the authoritative enumeration of
   // (b): it exists precisely because the transport layer already decided these are
   // retryable transport conditions, which is incompatible with blaming the account.
+  // The gRPC statuses classifyUpstreamError PASSES THROUGH verbatim.
+  //
+  // Its last line is `code: code || 'UPSTREAM_ERROR'`, so any status the named
+  // branches above did not claim exits with its original lowercase spelling and no
+  // literal anywhere names it. That is a THIRD blind spot, one layer below the two
+  // this guard already closed: enumerating `code: 'X'` literals plus RETRYABLE_CODES
+  // still could not see `aborted` / `cancelled` / `deadline_exceeded`, and measured,
+  // three of each flipped a healthy account to status='error'.
+  //
+  // The character class covers digits and hyphens too: this file's own history is a
+  // sequence of vocabularies that could not SEE a family (UPPER_SNAKE only, then
+  // lowercase, now digits/hyphens), and an upstream is free to introduce
+  // `ERR_HTTP2_STREAM_ERROR` or `http2-goaway` at any time.
+  //
+  // These cannot be derived from the source — the passthrough is by construction
+  // open-ended — so the canonical gRPC status set is listed here, and a separate
+  // assertion below pins that the passthrough still exists so this list stays
+  // load-bearing rather than quietly becoming decorative.
+  const GRPC_STATUSES = [
+    'cancelled', 'unknown', 'invalid_argument', 'deadline_exceeded', 'not_found',
+    'already_exists', 'permission_denied', 'resource_exhausted', 'failed_precondition',
+    'aborted', 'out_of_range', 'unimplemented', 'internal', 'unavailable', 'data_loss',
+    'unauthenticated',
+  ];
+
   function codesReachingBlame(connectSrc) {
-    const constructed = [...connectSrc.matchAll(/code:\s*'([A-Za-z_]+)'/g)].map(m => m[1]);
+    const constructed = [...connectSrc.matchAll(/code:\s*'([A-Za-z0-9_-]+)'/g)].map(m => m[1]);
     const retryable = (connectSrc.match(/const RETRYABLE_CODES = new Set\(\[([^\]]*)\]/) || [, ''])[1];
-    const propagated = [...retryable.matchAll(/'([A-Za-z_]+)'/g)].map(m => m[1]);
-    return new Set([...constructed, ...propagated]);
+    const propagated = [...retryable.matchAll(/'([A-Za-z0-9_-]+)'/g)].map(m => m[1]);
+    // A passthrough status only reaches blame if no named branch claims it first.
+    const claimedByName = new Set(
+      [...connectSrc.matchAll(/code === '([a-z_]+)'/g)].map(m => m[1]),
+    );
+    const passthrough = GRPC_STATUSES.filter((s) => !claimedByName.has(s));
+    return new Set([...constructed, ...propagated, ...passthrough]);
   }
 
   it('no code reaches the silent `else reportError` fallthrough unclassified', () => {
@@ -139,13 +169,26 @@ describe('structural guard — every upstream code has an explicit blame decisio
 
     const emitted = codesReachingBlame(connectSrc);
     assert.ok(emitted.size >= 10, `expected the real code vocabulary, got ${emitted.size}`);
-    // Meta-check on the collector itself: a vocabulary that silently loses the
-    // socket codes is how this guard passed the defect. Pin that it sees them.
-    for (const c of ['ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'ECONNREFUSED', 'unavailable']) {
+    // Meta-check on the collector itself: a vocabulary that silently loses a whole
+    // family is how this guard passed the defect twice. Pin all three families.
+    for (const c of [
+      'ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'ECONNREFUSED',   // Node socket codes
+      'aborted', 'cancelled', 'deadline_exceeded',            // passed-through gRPC statuses
+      'UPSTREAM_ERROR', 'RATE_LIMITED',                      // constructed literals
+    ]) {
       assert.ok(emitted.has(c),
         `the code vocabulary must include ${c} — it reaches finalizeConnectAccount with .code `
         + 'set and a guard that cannot see it cannot protect against it');
     }
+
+    // ...and pin that the passthrough it models still exists. If classifyUpstreamError
+    // ever stops returning the raw code, the GRPC_STATUSES list becomes decorative and
+    // this assertion says so instead of letting it rot silently.
+    assert.match(
+      connectSrc, /return \{ code: code \|\| 'UPSTREAM_ERROR'/,
+      'classifyUpstreamError is expected to pass an unrecognised code through verbatim; if that '
+      + 'changed, the passed-through gRPC status list in this guard needs revisiting',
+    );
 
     // Everything finalizeConnectAccount decides explicitly: either an `err.code ===`
     // arm, or a member of the TRANSPORT_FAULT_CODES set. Read from the set
@@ -158,9 +201,9 @@ describe('structural guard — every upstream code has an explicit blame decisio
     // Same character class on both sides, or a lowercase code would look
     // "unclassified" even after being handled.
     const classified = new Set([
-      ...[...body.matchAll(/err\.code === '([A-Za-z_]+)'/g)].map(m => m[1]),
+      ...[...body.matchAll(/err\.code === '([A-Za-z0-9_-]+)'/g)].map(m => m[1]),
       ...[...(body.match(/const TRANSPORT_FAULT_CODES = new Set\(\[([^\]]*)\]/) || [, ''])[1]
-        .matchAll(/'([A-Za-z_]+)'/g)].map(m => m[1]),
+        .matchAll(/'([A-Za-z0-9_-]+)'/g)].map(m => m[1]),
     ]);
 
     const unclassified = [...emitted].filter(c => !classified.has(c));
@@ -180,6 +223,7 @@ describe('structural guard — every upstream code has an explicit blame decisio
   it('a transport fault does not evict a healthy account, but an auth fault does', async () => {
     const { addAccountByKey, removeAccount, setAccountTier, getAccountInternal } =
       await import('../src/auth.js');
+    const { getBreakerTunable } = await import('../src/runtime-config.js');
     const { finalizeConnectAccount } = await import('../src/handlers/chat.js');
 
     const made = [];
@@ -201,7 +245,18 @@ describe('structural guard — every upstream code has an explicit blame decisio
           },
         );
       }
-      return getAccountInternal(acct.id);
+      const fresh = getAccountInternal(acct.id);
+      return {
+        status: fresh.status,
+        errorCount: fresh.errorCount || 0,
+        // A classification can be "present but wired to the wrong outcome" in more
+        // ways than an eviction: swapping the exemption for a long account-wide
+        // cooldown leaves status and errorCount untouched while still benching the
+        // account. Measure every dimension the arm could write.
+        cooldownMs: fresh.rateLimitedUntil ? fresh.rateLimitedUntil - Date.now() : 0,
+        quotaResetMs: fresh.quotaResetAt ? fresh.quotaResetAt - Date.now() : 0,
+        modelCooldowns: Object.keys(fresh._modelRateLimits || {}).length,
+      };
     };
 
     try {
@@ -213,13 +268,30 @@ describe('structural guard — every upstream code has an explicit blame decisio
         const after = hammer(victim, code);
         assert.equal(after.status, 'active',
           `${code} is a transport fault and must not evict the account (status became ${after.status})`);
-        assert.equal(after.errorCount || 0, 0,
+        assert.equal(after.errorCount, 0,
           `${code} must not charge the error budget (got ${after.errorCount})`);
+        // A transport fault DOES record a health event, and reportInternalError
+        // quarantines after a consecutive streak — that is the documented other half
+        // of the exemption ("a genuinely sick account is still de-prioritized by
+        // selection"). So the bar is not "no cooldown at all", it is "nothing longer
+        // than that bounded, self-healing quarantine": swapping the exemption for a
+        // rate-limit-length window would leave status and errorCount untouched while
+        // still benching the account for hours, and the original two-field assertion
+        // could not see that.
+        const quarantineCeiling = getBreakerTunable('internalQuarantineMs') + 5_000;
+        assert.ok(
+          after.cooldownMs <= quarantineCeiling,
+          `${code} wrote a ${after.cooldownMs}ms account-wide cooldown, beyond the bounded `
+          + `internal-error quarantine (${quarantineCeiling}ms). A transport fault must not bench `
+          + 'the account for longer than that self-healing window.',
+        );
+        assert.equal(after.quotaResetMs, 0, `${code} must not write a quota cooldown`);
+        assert.equal(after.modelCooldowns, 0, `${code} must not write a model/selector cooldown`);
       }
 
       const authVictim = seed('auth');
       const after = hammer(authVictim, 'UNAUTHORIZED', 3);
-      assert.ok((after.errorCount || 0) >= 3,
+      assert.ok(after.errorCount >= 3,
         'a genuine auth fault MUST still charge the error budget — the exemption must not be '
         + 'so broad that real account failures stop counting');
     } finally {

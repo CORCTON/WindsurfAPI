@@ -873,6 +873,54 @@ describe('thinking-only rescue & promotion', () => {
     });
   }
 
+  // Promotion must run the promoted text through the SAME tool-call extraction the
+  // content path uses.
+  //
+  // The rescue nudge literally says "Emit the tool call markup now." A model that
+  // complies but keeps writing into the REASONING channel produces markup that the
+  // promotion previously delivered unparsed: raw `<tool_call>` XML as the visible
+  // answer with finish_reason='stop'. The agent loop does not advance and the user
+  // sees markup — worse than the empty turn the promotion exists to prevent, and on
+  // the exact model this whole change set targets.
+  for (const [label, run] of [
+    ['non-stream', async (params, opts) => {
+      const { body } = await toChatCompletion(params, opts);
+      return {
+        finish: body.choices[0].finish_reason,
+        toolCalls: (body.choices[0].message.tool_calls || []).length,
+        content: String(body.choices[0].message.content || ''),
+      };
+    }],
+    ['stream', async (params, opts) => {
+      const frames = [];
+      const result = await streamChatCompletion(params, (f) => frames.push(f), opts);
+      const deltas = frames.flatMap((f) => f.choices || []);
+      return {
+        finish: deltas.map((c) => c.finish_reason).filter(Boolean).join(','),
+        toolCalls: deltas.reduce((n, c) => n + (c.delta?.tool_calls?.length || 0), 0),
+        content: deltas.map((c) => c.delta?.content).filter(Boolean).join(''),
+      };
+    }],
+  ]) {
+    it(`extracts a tool call that arrived in the reasoning channel (${label})`, async () => {
+      __setStreamChatForTest(fakeStream([
+        { type: 'reasoning', text: '<tool_call>\n{"name":"read_file","arguments":{"path":"a.js"}}\n</tool_call>' },
+        { type: 'finish', reason: 'stop', usage: { completion_tokens: 20 } },
+      ]));
+      const out = await run(
+        { model: 'swe-1-7', messages: [{ role: 'user', content: 'read a.js' }], tools: [{ type: 'function', function: { name: 'read_file', parameters: {} } }] },
+        { emulateTools: true },
+      );
+      assert.doesNotMatch(
+        out.content, /<tool_call>/,
+        'raw tool markup reached the client as the visible answer — the promoted text must go '
+        + 'through the same extraction the content path uses',
+      );
+      assert.equal(out.toolCalls, 1, 'the tool call must be delivered as a tool call');
+      assert.match(String(out.finish), /tool_calls/, 'and the finish reason must say so');
+    });
+  }
+
   it('a successful rescue delivers the tool call with no stale reasoning attached', async () => {
     let attempts = 0;
     __setStreamChatForTest(async function* () {
@@ -897,6 +945,71 @@ describe('thinking-only rescue & promotion', () => {
       String(message.content || ''), /I should use read_file/,
       "the abandoned attempt's reasoning must not ride along with the healed turn",
     );
+  });
+
+  // The rescue budget must be bounded and must honour the existing off switches.
+  //
+  // Measured before this was hardened: DEVIN_CONNECT_RESCUE_MAX=Infinity and =1e9
+  // both defeated the `rescueAttempt < rescueMax` bound (the 1e9 probe had to be
+  // killed), a non-numeric value produced NaN and silently turned the whole feature
+  // OFF with no log line, the documented empty-retry master off switch did not cover
+  // the rescue at all, and the weak-model veto — written against a paid E2E that
+  // proved retrying the fable family only burns the account into a 3h rate limit —
+  // was bypassed.
+  for (const [label, env, expected] of [
+    ['default', {}, 3],
+    ['RESCUE_MAX=Infinity', { DEVIN_CONNECT_RESCUE_MAX: 'Infinity' }, 3],
+    ['RESCUE_MAX=1e9 (hard ceiling)', { DEVIN_CONNECT_RESCUE_MAX: '1e9' }, 6],
+    ['RESCUE_MAX=abc (must stay ON at the default)', { DEVIN_CONNECT_RESCUE_MAX: 'abc' }, 3],
+    ['RESCUE_MAX=0 (explicit off)', { DEVIN_CONNECT_RESCUE_MAX: '0' }, 1],
+    ['RETRY_ON_EMPTY=0 (master off switch)', { DEVIN_CONNECT_RETRY_ON_EMPTY: '0' }, 1],
+  ]) {
+    it(`bounds upstream calls: ${label}`, async () => {
+      const saved = {};
+      for (const k of Object.keys(env)) { saved[k] = process.env[k]; process.env[k] = env[k]; }
+      process.env.DEVIN_CONNECT_RETRY_ON_EMPTY_MS = '0';
+      try {
+        let calls = 0;
+        __setStreamChatForTest(async function* () {
+          calls++;
+          yield { type: 'reasoning', text: 'thinking. ' };
+          yield { type: 'finish', reason: 'stop', usage: { completion_tokens: 5 } };
+        });
+        await toChatCompletion(
+          { model: 'swe-1-7', messages: [{ role: 'user', content: 'x' }], tools: [{ type: 'function', function: { name: 'f', parameters: {} } }] },
+          { emulateTools: true },
+        );
+        assert.equal(calls, expected,
+          `${label}: expected ${expected} upstream call(s), got ${calls} — an unbounded rescue turns `
+          + 'one client request into a loop that burns the account into a rate limit');
+      } finally {
+        for (const k of Object.keys(saved)) {
+          if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k];
+        }
+        delete process.env.DEVIN_CONNECT_RETRY_ON_EMPTY_MS;
+      }
+    });
+  }
+
+  it('does not rescue a weak model, honouring the paid-probe account-burn veto', async () => {
+    process.env.DEVIN_CONNECT_RETRY_ON_EMPTY_MS = '0';
+    try {
+      let calls = 0;
+      __setStreamChatForTest(async function* () {
+        calls++;
+        yield { type: 'reasoning', text: 'thinking. ' };
+        yield { type: 'finish', reason: 'stop', usage: { completion_tokens: 5 } };
+      });
+      await toChatCompletion(
+        { model: 'claude-5-fable-medium', messages: [{ role: 'user', content: 'x' }], tools: [{ type: 'function', function: { name: 'f', parameters: {} } }] },
+        { emulateTools: true },
+      );
+      assert.equal(calls, 1,
+        'the fable family must not be retried — a paid E2E (27/27) proved retries never heal it and '
+        + 'only triple upstream load into a 3h rate limit');
+    } finally {
+      delete process.env.DEVIN_CONNECT_RETRY_ON_EMPTY_MS;
+    }
   });
 
   it('keeps reasoning_content when there is a real answer to distinguish it from', async () => {

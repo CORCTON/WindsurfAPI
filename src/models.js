@@ -608,21 +608,32 @@ const DEFAULT_CLOUD_CATALOG_ACCOUNT = Symbol('default-cloud-catalog-account');
 const _cloudCatalogUidsByAccount = new Map();
 const _activeCloudCatalogAccounts = new Set();
 const _pendingCloudCatalogUidsByAccount = new Map();
-// Consecutive rounds this account's shrunken snapshot has been quarantined
-// without ever repeating the same UID set. See CLOUD_CATALOG_CONFIRM_MAX_ROUNDS.
+// Consecutive rounds this account's shrunken snapshot has gone unconfirmed without
+// ever repeating the same UID set. See CLOUD_CATALOG_RECHECK_MAX_ROUNDS.
 const _cloudCatalogQuarantineRoundsByAccount = new Map();
+// Accounts observed at least once to have a NON-EMPTY upstream catalog.
+//
+// Separate from the snapshot itself because the snapshot is deliberately dropped
+// whenever the account needs a re-fetch — a key rotation, a status flip, leaving
+// and re-entering the active set. If the "did this account ever have a filter?"
+// question were answered from the snapshot alone, every one of those routine
+// events would reopen the unguarded path: the next empty response would read as
+// "this deployment has no cloud filter", fail open, and re-advertise everything.
+// Measured before this existed: one disable/enable cycle plus one empty body took
+// an account from 148/163 to 163/163 with zero confirmation rounds.
+//
+// Cleared only when the account is genuinely gone (forgetCloudModelCatalog, called
+// from removeAccount) or on a full reset. Keeping it is the safe direction: a stale
+// marker only makes the empty-response guard STRICTER.
+const _cloudCatalogEverFilteredAccounts = new Set();
 const CLOUD_CATALOG_CONFIRM_RATIO = 0.5;
-// The quarantine exists so one degenerate response cannot shrink a catalog, and
-// it clears when the same small UID set comes back twice. But an upstream that
-// keeps returning a SMALL and VARYING set never repeats itself, so the candidate
-// was re-quarantined forever and a stale, larger last-known-good stayed
-// authoritative indefinitely — the proxy kept advertising and routing models the
-// account had lost (a plan downgrade or entitlement revocation genuinely shrinks
-// a catalog by more than half, which is precisely this case). After this many
-// consecutive quarantined rounds, the newest snapshot is accepted: "the upstream
-// has told us it is small several times running, in varying ways" is better
-// evidence than an old snapshot nothing has confirmed since.
-const CLOUD_CATALOG_CONFIRM_MAX_ROUNDS = 3;
+// How many consecutive UNCONFIRMED shrink rounds the caller keeps re-checking
+// before it gives up and leaves the last-known-good in place. This bounds the
+// polling only — nothing unconfirmed is ever adopted, no matter how many rounds
+// pass. See the long note at the confirmation branch for why an earlier version
+// of this counter (which DID adopt the newest candidate on exhaustion) was worse
+// than the wedge it was meant to fix.
+const CLOUD_CATALOG_RECHECK_MAX_ROUNDS = 4;
 
 function normalizeCloudCatalogUid(uid) {
   return typeof uid === 'string' ? uid.trim().toLowerCase() : '';
@@ -665,7 +676,14 @@ export function setActiveCloudCatalogAccounts(accountIds) {
   for (const accountId of nextActiveAccounts) _activeCloudCatalogAccounts.add(accountId);
 }
 
-/** Remove one account's catalog when it leaves the active pool or its key changes. */
+/**
+ * Remove one account's catalog when it leaves the active pool or its key changes.
+ *
+ * Deliberately does NOT clear the "this account has had a filter" marker: the
+ * account is still the same account and still subject to the same upstream
+ * restriction, so an empty response after this must not be read as "no filter".
+ * Use forgetCloudModelCatalog when the account itself is gone.
+ */
 export function removeCloudModelCatalog(accountId) {
   const accountKey = cloudCatalogAccountKey(accountId);
   _cloudCatalogUidsByAccount.delete(accountKey);
@@ -673,11 +691,18 @@ export function removeCloudModelCatalog(accountId) {
   _cloudCatalogQuarantineRoundsByAccount.delete(accountKey);
 }
 
+/** Drop every trace of an account, including that it ever had a catalog. */
+export function forgetCloudModelCatalog(accountId) {
+  removeCloudModelCatalog(accountId);
+  _cloudCatalogEverFilteredAccounts.delete(cloudCatalogAccountKey(accountId));
+}
+
 /** Clear all in-memory catalog state. Primarily useful for deterministic tests. */
 export function clearCloudModelCatalogs() {
   _cloudCatalogUidsByAccount.clear();
   _pendingCloudCatalogUidsByAccount.clear();
   _cloudCatalogQuarantineRoundsByAccount.clear();
+  _cloudCatalogEverFilteredAccounts.clear();
   _activeCloudCatalogAccounts.clear();
 }
 
@@ -899,7 +924,12 @@ function cloudCatalogSetsEqual(left, right) {
 export function mergeCloudCatalogSnapshot(configs, { accountId = null } = {}) {
   const accountKey = cloudCatalogAccountKey(accountId);
   const currentUids = _cloudCatalogUidsByAccount.get(accountKey);
-  const hasAcceptedSnapshot = !!currentUids?.size;
+  // "Has this account ever been under an upstream restriction?" — answered from the
+  // durable marker as well as the live snapshot, because the snapshot is dropped by
+  // routine re-fetch events (key rotation, status flip, leaving the active set) and
+  // answering from it alone let every one of those reopen the empty-response hole.
+  const everFiltered = _cloudCatalogEverFilteredAccounts.has(accountKey);
+  const hasAcceptedSnapshot = !!currentUids?.size || everFiltered;
 
   // A malformed response is NO DATA, not "this account has no filter". It used to
   // call applyCloudModels([]) — which DELETES the account's snapshot — so a single
@@ -920,15 +950,31 @@ export function mergeCloudCatalogSnapshot(configs, { accountId = null } = {}) {
 
   const nextUids = cloudCatalogUidSet(configs);
   if (nextUids.size === 0) {
-    // Zero UIDs is ambiguous, and the two readings need opposite handling:
+    // Zero UIDs is ambiguous, and the two readings need OPPOSITE handling —
+    // because the consequences are asymmetric, not because one is rarer:
     //
     //  - No snapshot accepted yet → "this deployment has no cloud filter". That
-    //    is the documented fail-open, and it stays immediate.
-    //  - A snapshot WAS accepted before → an empty response is the maximal
-    //    shrink. It used to be accepted with NO confirmation at all, while a
-    //    one-UID response needed two rounds — a pure asymmetry that left the one
-    //    most-likely degenerate shape (empty body) as the only unguarded path.
-    //    Route it through the same confirmation as any other shrink.
+    //    is the documented fail-open and stays immediate: for such a deployment
+    //    an empty response is the normal steady state.
+    //  - A snapshot WAS accepted before → this is NO DATA, and it must never
+    //    delete the filter. An earlier attempt at this routed the empty case
+    //    through the same confirmation as any other shrink, reasoning that empty
+    //    is just the maximal shrink. That was wrong on both counts. (a) Accepting
+    //    a small NON-EMPTY snapshot over-restricts — it fails CLOSED, the operator
+    //    sees fewer models and can act. Accepting an EMPTY one DELETES the
+    //    snapshot (applyCloudModels with no UIDs), which fails OPEN and
+    //    re-advertises every model the account may not have — #231's own symptom,
+    //    and via the pool union it drops the filter for every OTHER account too.
+    //    (b) Confirmation is the wrong instrument here: a throttled or blipped
+    //    upstream returns empty repeatedly, so a second identical empty body is
+    //    not evidence, it is the same non-answer twice.
+    //
+    // If an account genuinely loses its upstream restriction, the cost of this
+    // rule is that a stale filter keeps over-restricting until the upstream sends
+    // a non-empty catalog again — visible to the operator, and
+    // WINDSURFAPI_IGNORE_CLOUD_FILTER=1 is the documented escape hatch. That is
+    // the trade this project's own recurring lesson asks for: an absent answer is
+    // "I don't know", never "it's fine".
     if (!hasAcceptedSnapshot) {
       _pendingCloudCatalogUidsByAccount.delete(accountKey);
       _cloudCatalogQuarantineRoundsByAccount.delete(accountKey);
@@ -940,6 +986,15 @@ export function mergeCloudCatalogSnapshot(configs, { accountId = null } = {}) {
         baselineCount: 0,
       };
     }
+    return {
+      accepted: false,
+      added: 0,
+      reason: 'empty_over_snapshot',
+      receivedCount: 0,
+      baselineCount: currentUids?.size || 0,
+      baselineSource: 'last_accepted',
+      preservedLastKnownGood: true,
+    };
   }
 
   const baselineCount = currentUids?.size || STATIC_CLOUD_CATALOG_UID_COUNT;
@@ -950,11 +1005,25 @@ export function mergeCloudCatalogSnapshot(configs, { accountId = null } = {}) {
   if (needsConfirmation) {
     const pendingUids = _pendingCloudCatalogUidsByAccount.get(accountKey);
     const repeated = cloudCatalogSetsEqual(pendingUids, nextUids);
-    const rounds = (_cloudCatalogQuarantineRoundsByAccount.get(accountKey) || 0) + 1;
-    // Converge rather than wedge: a small-and-varying upstream never satisfies
-    // the repeat check, so cap how long the stale last-known-good can win.
-    const exhausted = rounds >= CLOUD_CATALOG_CONFIRM_MAX_ROUNDS;
-    if (!repeated && !exhausted) {
+    if (!repeated) {
+      // Count rounds only to bound how long we keep RE-CHECKING, never to lower
+      // the bar for acceptance. An earlier attempt used this counter to accept the
+      // newest candidate once the budget ran out, on the theory that "the upstream
+      // has said it is small several times" beats a stale snapshot. Measured, that
+      // was worse than the wedge it replaced: the counter is per-account, not per
+      // candidate, so two unrelated rounds paid for a third candidate that was then
+      // adopted the first time it was ever seen — including an empty body, which
+      // fails wide open. And once adopted, auth.js records the account as synced and
+      // stops re-fetching, so a 90-second upstream wobble permanently pinned an
+      // account to a never-confirmed model list with no self-healing path.
+      //
+      // The wedge that motivated the ceiling is already gone: auth.js now arms the
+      // delayed re-check on EVERY quarantined round (it used to arm only the first),
+      // and a GENUINE downgrade is stable, so it repeats and gets confirmed in two
+      // rounds by the ordinary path. An upstream that keeps changing its answer has
+      // no stable answer to adopt — refusing to adopt one is the correct behaviour,
+      // not a wedge.
+      const rounds = (_cloudCatalogQuarantineRoundsByAccount.get(accountKey) || 0) + 1;
       _pendingCloudCatalogUidsByAccount.set(accountKey, nextUids);
       _cloudCatalogQuarantineRoundsByAccount.set(accountKey, rounds);
       return {
@@ -965,25 +1034,30 @@ export function mergeCloudCatalogSnapshot(configs, { accountId = null } = {}) {
         baselineCount,
         baselineSource,
         quarantineRounds: rounds,
-        quarantineRoundsMax: CLOUD_CATALOG_CONFIRM_MAX_ROUNDS,
+        // Past this many consecutive unconfirmed rounds the caller stops arming a
+        // new re-check and leaves the last-known-good in place. This bounds the
+        // polling, NOT the correctness bar — nothing unconfirmed is ever adopted.
+        recheckRoundsMax: CLOUD_CATALOG_RECHECK_MAX_ROUNDS,
+        recheckExhausted: rounds >= CLOUD_CATALOG_RECHECK_MAX_ROUNDS,
         preservedLastKnownGood: hasAcceptedSnapshot,
       };
     }
     _pendingCloudCatalogUidsByAccount.delete(accountKey);
     _cloudCatalogQuarantineRoundsByAccount.delete(accountKey);
+    _cloudCatalogEverFilteredAccounts.add(accountKey);
     return {
       accepted: true,
       added: applyCloudModels(configs, { accountId }),
-      reason: repeated ? 'confirmed_small' : 'converged_small',
+      reason: 'confirmed_small',
       receivedCount: nextUids.size,
       baselineCount,
       baselineSource,
-      ...(repeated ? {} : { quarantineRounds: rounds }),
     };
   }
 
   _pendingCloudCatalogUidsByAccount.delete(accountKey);
   _cloudCatalogQuarantineRoundsByAccount.delete(accountKey);
+  _cloudCatalogEverFilteredAccounts.add(accountKey);
   return {
     accepted: true,
     added: applyCloudModels(configs, { accountId }),

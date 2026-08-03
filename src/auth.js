@@ -28,6 +28,7 @@ import {
   clearCloudModelCatalogs,
   mergeCloudCatalogSnapshot,
   removeCloudModelCatalog,
+  forgetCloudModelCatalog,
   setActiveCloudCatalogAccounts,
 } from './models.js';
 import { FREE_REACHABLE_SELECTORS } from './devin-connect-models.js';
@@ -832,24 +833,42 @@ async function fetchAndMergeModelCatalog(accountId, apiKey) {
         log.warn(`Model catalog returned malformed configs for ${safeAccountRef(acct)}; preserving the last-known-good view, will re-fetch on the next sync trigger`);
         return false;
       }
-      // Keep re-checking while the candidate is quarantined. Arming the retry only
+      if (snapshot.reason === 'empty_over_snapshot') {
+        // The upstream returned no models at all for an account that HAS an
+        // accepted catalog. models.js refuses to let that delete the filter (it
+        // would fail open and re-advertise everything, #231's symptom, and via the
+        // pool union it would drop the filter for every other account too). Same
+        // handling as malformed: nothing to confirm, so leave the account unsynced
+        // for the next ordinary trigger rather than arming a timer that would make
+        // trySyncModelCatalog skip it meanwhile.
+        cancelModelCatalogRetry(accountId);
+        log.warn(`Model catalog for ${safeAccountRef(acct)} returned NO models while ${snapshot.baselineCount} were previously accepted; treating that as no data and keeping the last-known-good view. If this account genuinely lost its upstream restriction, set WINDSURFAPI_IGNORE_CLOUD_FILTER=1.`);
+        return false;
+      }
+      // Keep re-checking while the candidate is unconfirmed. Arming the retry only
       // on the FIRST round meant a small-but-VARYING upstream stopped being
       // re-checked after one attempt, so the stale larger snapshot stayed
       // authoritative until some unrelated account-lifecycle event happened to
-      // trigger another sync — and there is no periodic catalog refresh to fall
-      // back on. models.js caps the quarantine at a fixed number of rounds and
-      // then accepts the newest snapshot, so this converges instead of polling
-      // forever.
-      scheduleModelCatalogRetry(accountId, apiKey);
+      // trigger another sync — and there is no periodic catalog refresh to fall back
+      // on. The round budget in models.js bounds this polling; it never lowers the
+      // bar for acceptance, so an upstream that keeps changing its answer is simply
+      // never adopted (it has no stable answer to adopt).
+      if (snapshot.recheckExhausted) {
+        cancelModelCatalogRetry(accountId);
+      } else {
+        scheduleModelCatalogRetry(accountId, apiKey);
+      }
       const baseline = snapshot.baselineSource === 'last_accepted'
         ? `the last accepted ${snapshot.baselineCount}`
         : `the static baseline of ${snapshot.baselineCount}`;
       const rounds = snapshot.quarantineRounds
-        ? ` (quarantine round ${snapshot.quarantineRounds}/${snapshot.quarantineRoundsMax})`
+        ? ` (unconfirmed round ${snapshot.quarantineRounds}/${snapshot.recheckRoundsMax})`
         : '';
-      const nextStep = confirmationAttempt
-        ? `the delayed confirmation differed, so the candidate remains quarantined${rounds} and will be re-checked in ${MODEL_CATALOG_CONFIRM_RETRY_MS / 1000}s`
-        : `retrying in ${MODEL_CATALOG_CONFIRM_RETRY_MS / 1000}s`;
+      const nextStep = snapshot.recheckExhausted
+        ? `the candidate has changed on every one of ${snapshot.quarantineRounds} rounds, so it is NOT being adopted; keeping the last-known-good view and stopping the re-check until the next ordinary sync trigger`
+        : (confirmationAttempt
+          ? `the delayed confirmation differed, so the candidate remains unconfirmed${rounds} and will be re-checked in ${MODEL_CATALOG_CONFIRM_RETRY_MS / 1000}s`
+          : `retrying in ${MODEL_CATALOG_CONFIRM_RETRY_MS / 1000}s`);
       log.warn(`Model catalog for ${safeAccountRef(acct)} returned ${snapshot.receivedCount} unique models versus ${baseline}; preserving the current fail-open/last-known-good view and ${nextStep}`);
       return false;
     }
@@ -1413,6 +1432,10 @@ export function removeAccount(id) {
   const account = accounts[idx];
   accounts.splice(idx, 1);
   invalidateModelCatalogForAccount(id);
+  // The account itself is gone — drop the "had a filter" marker too, unlike a key
+  // rotation or status flip where the same account is still under the same upstream
+  // restriction.
+  forgetCloudModelCatalog(id);
   trySyncModelCatalog();
   saveAccounts();
   // Drop any Cascade conversations owned by this key so future requests

@@ -1912,22 +1912,57 @@ function isAbortError(err) {
 // — the `else reportError` fallthrough is silent, and every code that landed there
 // by accident (STREAM_TRUNCATED, then these three) evicted healthy accounts.
 //
-// The socket-level codes are the same class and were the next ones sitting in that
-// fallthrough. They are not produced by classifyUpstreamError — they arrive from
-// Node with `.code` already set and propagate through the connect generator
-// untouched, which is exactly why the guard that enumerates
-// classifyUpstreamError's own UPPER_SNAKE vocabulary could not see them.
-// Measured with a healthy peer seeded (so lastAccountExempt cannot mask it):
-// three ECONNRESET / ETIMEDOUT / EPIPE / ECONNREFUSED / `unavailable` calls each
-// flipped a healthy account to status='error' with persisted backoff — a flaky
-// network path or an upstream dropping connections walks the pool offline three
-// faults at a time. devin-connect.js already treats all of these as RETRYABLE_CODES,
-// so blaming the account for them contradicts the transport layer's own verdict.
-// `unavailable` is the lowercase gRPC status for the same condition.
+// Two further families were sitting in that same fallthrough, and NEITHER is
+// visible to a guard that only enumerates classifyUpstreamError's own UPPER_SNAKE
+// literals — which is why v3.9.6's enumeration of "all 12 codes" missed them:
+//
+//   1. Node socket codes. They arrive with `.code` already set and travel through
+//      the connect generator untouched, so no literal in devin-connect.js names
+//      them. For THESE, devin-connect.js's own RETRYABLE_CODES already treats them
+//      as retryable transport conditions, so blaming the account contradicts the
+//      transport layer's own verdict.
+//   2. LOWERCASE gRPC statuses that classifyUpstreamError PASSES THROUGH. Its last
+//      line is `code: code || 'UPSTREAM_ERROR'`, so any status without a named
+//      branch — `aborted`, `cancelled`, `deadline_exceeded` — exits verbatim.
+//      Note the retryability argument above does NOT extend to these: measured,
+//      isRetryable is false for all three (only `unavailable` is in
+//      RETRYABLE_CODES). They belong here for a different reason — every one of
+//      them describes the CALL or the UPSTREAM, not the caller's credentials.
+//      `aborted` is a concurrency conflict, `cancelled` means someone hung up,
+//      `deadline_exceeded` means it took too long. None of them is evidence that
+//      this account's session token is bad, which is the only thing the error
+//      budget should be measuring.
+//
+// Measured with a healthy peer seeded (so lastAccountExempt cannot mask it): three
+// calls of ECONNRESET / ETIMEDOUT / EPIPE / ECONNREFUSED, and three of the
+// lowercase `aborted` / `cancelled` / `deadline_exceeded`, each flipped a healthy
+// account to status='error' with persisted backoff. An upstream shedding load with
+// gRPC statuses walks the pool offline three faults at a time.
+//
+// `unavailable` is listed for completeness even though classifyUpstreamError maps
+// it to CAPACITY before it can reach here — if that mapping is ever narrowed, the
+// raw status must not fall through to an eviction.
+// The set's test is "is this the ACCOUNT's fault?", not "is it a transport error"
+// — NO_TOKEN has always been a configuration fault, and the request-shaped gRPC
+// statuses below join it on the same reasoning: a malformed or unsupported request
+// says nothing about the health of the session token that carried it. Leaving them
+// in the fallthrough meant a client looping on a bad request could walk the pool
+// offline three calls at a time, which is the failure mode the CONTENT_BLOCKED and
+// UPSTREAM_ERROR exemptions were added to remove.
+//
+// `unauthenticated` is deliberately NOT here: it IS an account fault, and
+// classifyUpstreamError now claims it explicitly so it gets the UNAUTHORIZED arm's
+// re-login attempt rather than a bare eviction.
 const TRANSPORT_FAULT_CODES = new Set([
   'TIMEOUT', 'DEADLINE_EXCEEDED', 'NO_TOKEN',
   'ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'ECONNREFUSED', 'ENOTFOUND', 'EHOSTUNREACH',
-  'ENETUNREACH', 'EAI_AGAIN', 'ECONNABORTED', 'unavailable',
+  'ENETUNREACH', 'EAI_AGAIN', 'ECONNABORTED',
+  // Passed-through gRPC statuses: upstream load-shedding / stalls.
+  'unavailable', 'aborted', 'cancelled', 'deadline_exceeded', 'internal',
+  'unknown', 'data_loss',
+  // Passed-through gRPC statuses: faults in the REQUEST, not in the account.
+  'invalid_argument', 'not_found', 'already_exists', 'failed_precondition',
+  'out_of_range', 'unimplemented',
 ]);
 
 // `abortedHint` lets a caller say "the client went away" WITHOUT discarding the
