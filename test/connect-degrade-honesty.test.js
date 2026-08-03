@@ -18,17 +18,37 @@
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { handleChatCompletions, __setConnectDeps } from '../src/handlers/chat.js';
+import { addAccountByKey, removeAccount, getAccountInternal } from '../src/auth.js';
 
 const FREE_SELECTOR = 'swe-1-6-slow';
 const UNMAPPED_PAID = 'claude-opus-4.9';
 const MAPPED_ALIAS = 'claude-sonnet-4.6';
 
 const SAVED = {};
-const ENV_KEYS = ['DEVIN_CONNECT', 'WINDSURFAPI_STRICT_MODEL', 'DEVIN_CONNECT_TOKEN', 'WINDSURF_API_KEY'];
+const ENV_KEYS = ['DEVIN_CONNECT', 'WINDSURFAPI_STRICT_MODEL', 'DEVIN_CONNECT_TOKEN', 'WINDSURF_API_KEY', 'DEVIN_CONNECT_ASSIGN_MODEL'];
 for (const k of ENV_KEYS) SAVED[k] = process.env[k];
 
 /** Records what the adapter was handed, so we can compare wire vs echoed name. */
 let seen = null;
+const seeded = [];
+
+/**
+ * Put one usable account in the pool.
+ *
+ * Required for the AssignModel router-hop tests: connectParams.token is only set from an
+ * ACQUIRED account (chat.js, `if (ccAcct) connectParams.token = ccAcct.apiKey`), and the
+ * hop is gated on that token being present. With an env token alone the hop is skipped
+ * and the router assertions fail on their own precondition rather than on the contract —
+ * which is indistinguishable from a passing mutation if you only read pass/fail counts.
+ */
+function seedAccount() {
+  const a = addAccountByKey('sk-honesty-' + Math.random().toString(36).slice(2, 12), 'honesty');
+  const acct = getAccountInternal(a.id);
+  acct.status = 'active';
+  acct.tier = 'pro';
+  seeded.push(a.id);
+  return acct;
+}
 
 function stubAdapter() {
   seen = null;
@@ -71,6 +91,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  while (seeded.length) removeAccount(seeded.pop());
   __setConnectDeps(null);
   seen = null;
   for (const k of ENV_KEYS) {
@@ -127,6 +148,53 @@ describe('degrade honesty: the echoed model must be what ran (#234)', () => {
     assert.equal(r.status, 400);
     assert.equal(r.errCode, 'model_not_found');
     assert.equal(r.wire, null, 'nothing reached the adapter');
+  });
+
+  it('reports the ROUTER-ASSIGNED model, not the free selector, after an AssignModel hop', async () => {
+    // The trap. A router name like `adaptive` also resolves mapped:false, so it takes the
+    // same branch — but the AssignModel hop reassigns connectParams.model to a concrete
+    // uid AFTER `selector` was captured. Reporting `selector` here (which is what
+    // HANDOFF-2026-08-03-B.md §3.6 literally prescribed) swaps one lie for another: a
+    // request that really ran claude-opus-4-8-medium gets reported as the free
+    // swe-1-6-slow. Reproduced both ways before choosing connectParams.model.
+    //
+    // Without this test the distinction is invisible: a mutation replacing
+    // connectParams.model with selector passes every other assertion in this file.
+    process.env.WINDSURFAPI_STRICT_MODEL = '0';
+    process.env.DEVIN_CONNECT_ASSIGN_MODEL = '1';
+
+    seedAccount();
+    const ASSIGNED = 'claude-opus-4-8-medium';
+    __setConnectDeps({
+      assignModel: async () => ({ model_uid: ASSIGNED }),
+    });
+
+    const r = await chat('adaptive');
+
+    assert.equal(r.wire, ASSIGNED,
+      'precondition: the router hop put the assigned uid on the wire');
+    assert.equal(r.bodyModel, ASSIGNED,
+      'the echoed name must be the model the router actually assigned — reporting the '
+      + 'pre-hop selector would report a free model for a paid run');
+    assert.notEqual(r.bodyModel, FREE_SELECTOR);
+    assert.notEqual(r.bodyModel, 'adaptive');
+  });
+
+  it('falls back to the selector when the AssignModel hop fails', async () => {
+    // A failed resolve degrades to the original selector, so THAT is what ran and what
+    // must be reported. Pins the other side of the branch.
+    process.env.WINDSURFAPI_STRICT_MODEL = '0';
+    process.env.DEVIN_CONNECT_ASSIGN_MODEL = '1';
+
+    seedAccount();
+    __setConnectDeps({
+      assignModel: async () => { throw Object.assign(new Error('nope'), { code: 'ASSIGN_FAILED' }); },
+    });
+
+    const r = await chat('adaptive');
+
+    assert.equal(r.wire, FREE_SELECTOR, 'precondition: it degraded to the selector');
+    assert.equal(r.bodyModel, FREE_SELECTOR, 'and that is what must be reported');
   });
 
   it('derives system_fingerprint from the echoed name, not the requested one', async () => {

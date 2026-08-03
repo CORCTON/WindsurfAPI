@@ -56,7 +56,7 @@ import { selectBackend, usesCascadeFlow } from '../backend-router.js';
 import { toChatCompletion as _toChatCompletion, streamChatCompletion as _streamChatCompletion } from '../devin-connect-openai.js';
 import { resolveConnectSelector } from '../devin-connect-models.js';
 import { isRetryable as isConnectRetryable, getToolDefTags, parseToolCallTagMap } from '../devin-connect.js';
-import { isRouterModel, assignModel } from '../devin-connect-catalog.js';
+import { isRouterModel, assignModel as _assignModel } from '../devin-connect-catalog.js';
 import { bumpConnect } from '../devin-connect-metrics.js';
 import { resolveSessionId as resolveConnectSessionId, commitAfterResponse as commitConnectSession } from '../session-continuity.js';
 import { newTraceId, traceClientRequest, traceRouting, traceClientResponse, traceEnabled } from '../trace.js';
@@ -1781,12 +1781,18 @@ export function buildUsageBody(serverUsage, messages, completionText, thinkingTe
 let _connectDeps = {
   toChatCompletion: _toChatCompletion,
   streamChatCompletion: _streamChatCompletion,
+  // assignModel is here purely so the router hop is testable. It performs a real
+  // unaryCall, so without a seam the ONLY way to reach the post-hop state is a paid
+  // account — which left the router branch of the degrade-honesty contract unguarded
+  // (a mutation swapping connectParams.model back to `selector` passed every test).
+  assignModel: _assignModel,
 };
 function toChatCompletion(...args) { return _connectDeps.toChatCompletion(...args); }
 function streamChatCompletion(...args) { return _connectDeps.streamChatCompletion(...args); }
+function assignModel(...args) { return _connectDeps.assignModel(...args); }
 export function __setConnectDeps(overrides = {}) { _connectDeps = { ..._connectDeps, ...overrides }; }
 export function __resetConnectDeps() {
-  _connectDeps = { toChatCompletion: _toChatCompletion, streamChatCompletion: _streamChatCompletion };
+  _connectDeps = { toChatCompletion: _toChatCompletion, streamChatCompletion: _streamChatCompletion, assignModel: _assignModel };
 }
 
 // The connect path is token-based: it needs a Windsurf session key, which the
