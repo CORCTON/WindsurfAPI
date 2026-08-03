@@ -44,14 +44,23 @@ describe('toChatCompletion (non-stream)', () => {
     assert.equal(body.model, 'claude-sonnet-4-6');
   });
 
-  it('promotes reasoning to content when the model returns no answer text', async () => {
+  it('MOVES reasoning into content when the model returns no answer text', async () => {
     __setStreamChatForTest(fakeStream([
       { type: 'reasoning', text: 'hmm' },
       { type: 'finish', reason: 'stop', usage: null },
     ]));
     const { body } = await toChatCompletion({ model: 'm', messages: [] });
-    assert.equal(body.choices[0].message.content, 'hmm');
-    assert.equal(body.choices[0].message.reasoning_content, 'hmm');
+    const message = body.choices[0].message;
+    assert.equal(message.content, 'hmm', 'the answer must be visible to the client');
+    // Moved, not copied. This assertion used to require BOTH fields to carry the
+    // same text, which made every client that renders reasoning show the answer
+    // twice — and on the Anthropic route produced a `thinking` block and a `text`
+    // block with byte-identical content. Nothing is lost by dropping the duplicate:
+    // the text is still delivered, once, in the field the client renders as the
+    // answer.
+    assert.equal(message.reasoning_content, undefined,
+      'reasoning_content must be dropped once its text has been promoted into content, '
+      + 'or the same answer is rendered twice');
   });
 
   it('omits usage when the upstream gave none', async () => {
@@ -624,8 +633,13 @@ describe('retry-on-empty (fable capacity-jitter self-heal)', () => {
       yield { type: 'finish', reason: 'stop', usage: { prompt_tokens: 8, completion_tokens: 1, total_tokens: 9 } };
     });
     const { body } = await toChatCompletion({ model: 'swe-1-6-slow', messages: [] });
-    assert.equal(calls, 1);
-    assert.equal(body.choices[0].message.reasoning_content, 'thinking…');
+    assert.equal(calls, 1, 'a reasoning-only turn must not trigger the empty-completion retry');
+    // This test's subject is the retry decision above. It used to assert the text
+    // sits in `reasoning_content`, which was incidental — a reasoning-only turn is
+    // now PROMOTED (the text moves into content so the client is never handed an
+    // empty answer), so pin what actually matters here: the text is not lost.
+    const message = body.choices[0].message;
+    assert.equal(message.content, 'thinking…', 'the reasoning text must still reach the client');
   });
 
   it('treats a stop with no usage (free tier) + no content as empty and heals it', async () => {
@@ -794,6 +808,45 @@ describe('thinking-only rescue & promotion', () => {
       .map((c) => c.delta?.content)
       .filter(Boolean);
     assert.ok(contentDeltas.includes('streamed reasoning answer'));
+  });
+
+  // Promotion MOVES the text; it must not leave a copy behind.
+  //
+  // The review of #238 measured the duplicate on all three surfaces: non-stream
+  // (`content === reasoning_content`), stream (same after accumulating deltas), and
+  // the Anthropic route, where it became a `thinking` block and a `text` block with
+  // byte-identical content — i.e. the reporter's own client (kimi CLI) rendering the
+  // answer twice. The non-stream half is fixed here; the stream half cannot be
+  // (deltas already left) and is documented as an accepted cost at the call site.
+  it('does not leave a reasoning_content copy behind after promoting (non-stream)', async () => {
+    __setStreamChatForTest(fakeStream([
+      { type: 'reasoning', text: 'the whole answer lives in reasoning' },
+      { type: 'finish', reason: 'stop', usage: { completion_tokens: 12 } },
+    ]));
+    const { body } = await toChatCompletion({ model: 'swe-1-7', messages: [] });
+    const message = body.choices[0].message;
+    assert.equal(message.content, 'the whole answer lives in reasoning');
+    assert.notEqual(
+      message.content, message.reasoning_content,
+      'content and reasoning_content must not carry the same text — a client that renders '
+      + 'reasoning would show the answer twice',
+    );
+    assert.equal(message.reasoning_content, undefined, 'the promoted copy must be dropped');
+  });
+
+  it('keeps reasoning_content when there is a real answer to distinguish it from', async () => {
+    // The promotion must not fire when the model DID answer: reasoning and content
+    // are genuinely different text and both belong in the response.
+    __setStreamChatForTest(fakeStream([
+      { type: 'reasoning', text: 'let me think' },
+      { type: 'content', text: 'the answer is 255' },
+      { type: 'finish', reason: 'stop', usage: { completion_tokens: 20 } },
+    ]));
+    const { body } = await toChatCompletion({ model: 'swe-1-7', messages: [] });
+    const message = body.choices[0].message;
+    assert.equal(message.content, 'the answer is 255');
+    assert.equal(message.reasoning_content, 'let me think',
+      'a genuine reasoning trace must survive alongside a real answer');
   });
 });
 

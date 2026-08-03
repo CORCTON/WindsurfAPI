@@ -286,11 +286,20 @@ export async function toChatCompletion(params, { id = newId(), created = nowSeco
 
   // Fallback promotion: promote reasoning to content when no tool calls and no content exist
   // so plain prompts never return an empty visible answer to clients.
-  if (!toolCalls.length && !content && reasoning) content = reasoning;
+  //
+  // MOVED, not copied. Emitting the same text as both `content` and
+  // `reasoning_content` made every client that renders reasoning show the answer
+  // twice — and on the Anthropic route it produced a `thinking` block and a `text`
+  // block with byte-identical content, which is exactly what the reporter's own
+  // client (kimi CLI) displays. Nothing is lost by dropping the duplicate: the
+  // text is still delivered, just once, in the field the client will actually
+  // render as the answer.
+  const promotedReasoning = !toolCalls.length && !content && !!reasoning;
+  if (promotedReasoning) content = reasoning;
 
   // OpenAI convention: content is a string (may be empty), never undefined.
   const message = { role: 'assistant', content: content || '' };
-  if (reasoning) message.reasoning_content = reasoning;
+  if (reasoning && !promotedReasoning) message.reasoning_content = reasoning;
   if (toolCalls.length) {
     message.tool_calls = toolCalls.map((tc, i) => ({
       id: tc.id || `call_${i}_${Date.now().toString(36)}`,
@@ -460,6 +469,27 @@ export async function streamChatCompletion(params, send, { id = newId(), created
 
   // Fallback promotion: promote reasoning to content when no tool calls and no content exist
   // so plain prompts never return an empty visible answer to clients.
+  //
+  // KNOWN AND ACCEPTED COST, unlike the non-stream path above where the duplicate
+  // is simply removed. Here the reasoning deltas have ALREADY gone out on the wire
+  // as `reasoning_content`, and a stream cannot retract what it emitted — so a
+  // client that renders reasoning will show this text twice. The alternatives were
+  // weighed and are worse:
+  //
+  //   - Buffer reasoning and decide at end-of-stream: kills the reason streaming
+  //     exists (watching the model think in real time) for EVERY turn, to spare a
+  //     duplicate on the minority that end up reasoning-only.
+  //   - Emit a short marker instead of the text: a strict client
+  //     (kimi CLI: "response containing only thinking content") is satisfied by
+  //     any text, but the user then loses the actual answer — the reasoning IS the
+  //     answer on a plain prompt, which is the whole case this branch serves.
+  //   - Don't promote on the stream path at all: leaves the original bug in place
+  //     for streaming clients, which is the common configuration.
+  //
+  // So the duplicate is the price of rescuing a strict client mid-stream. It is
+  // recorded here rather than left to look like an oversight; if a future change
+  // can dedupe at the translator layer (messages.js already knows whether the
+  // text block equals the thinking block), that is the place to do it.
   if (!content && !collectedToolCalls.length && !nativeToolCalls.length && reasoning && !stopHit) {
     sendContent(reasoning);
     content = reasoning;
