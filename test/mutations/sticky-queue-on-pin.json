@@ -1,0 +1,85 @@
+{
+  "tests": ["test/sticky-queue-on-pin.test.js"],
+  "expectBaselinePass": 26,
+  "mutations": [
+    {
+      "name": "default flipped ON — an existing deploy would change behaviour",
+      "file": "src/runtime-config.js",
+      "anchor": "kind: 'int', def: 0,      min: 0,    max: 30000 }",
+      "replacement": "kind: 'int', def: 2000,   min: 0,    max: 30000 }"
+    },
+    {
+      "name": "pinOnly may fall through and answer with a SUBSTITUTE",
+      "file": "src/auth.js",
+      "anchor": "  if (pinOnly) return null;\n\n  const candidates = [];",
+      "replacement": "  const candidates = [];"
+    },
+    {
+      "name": "pinOnly becomes destructive — a poll clears the pin",
+      "file": "src/auth.js",
+      "anchor": "      if (pinOnly) return null;\n      if (isExperimentalEnabled(",
+      "replacement": "      if (isExperimentalEnabled("
+    },
+    {
+      "name": "every poll counted as a hit — stats become a function of wait time",
+      "file": "src/auth.js",
+      "anchor": "    const bound = pinOnly\n      ? peekStickyBinding(callerKey, modelKey, connectSelector)\n      : getStickyBinding(callerKey, modelKey, connectSelector);",
+      "replacement": "    const bound = getStickyBinding(callerKey, modelKey, connectSelector);"
+    },
+    {
+      "name": "successful queued turn records NO hit — affinity under-reported",
+      "file": "src/auth.js",
+      "anchor": "            if (pinOnly) getStickyBinding(callerKey, modelKey, connectSelector);",
+      "replacement": "            /* mutation: success not counted */"
+    },
+    {
+      "name": "budget check dropped — waits regardless of stated recovery",
+      "file": "src/handlers/chat.js",
+      "anchor": "  if (!Number.isFinite(avail.retryAfterMs) || avail.retryAfterMs > budgetMs) return NO_WAIT;",
+      "replacement": "  /* mutation: budget check dropped */"
+    },
+    {
+      "name": "budget comparison inverted",
+      "file": "src/handlers/chat.js",
+      "anchor": "avail.retryAfterMs > budgetMs) return NO_WAIT;",
+      "replacement": "avail.retryAfterMs <= budgetMs) return NO_WAIT;"
+    },
+    {
+      "name": "selector dimension dropped — the modelKey=null trap",
+      "file": "src/handlers/chat.js",
+      "anchor": "  const avail = getAccountAvailability(pin.apiKey, connectSelector || modelKey);",
+      "replacement": "  const avail = getAccountAvailability(pin.apiKey, modelKey);"
+    },
+    {
+      "name": "waits on a key already burned by THIS request",
+      "file": "src/handlers/chat.js",
+      "anchor": "  if (tried?.includes(pin.apiKey)) return NO_WAIT;",
+      "replacement": "  /* mutation: burned check dropped */"
+    },
+    {
+      "name": "aborted wait still acquires an account nobody will consume",
+      "file": "src/handlers/chat.js",
+      "anchor": "  if (pinWait.aborted) return null;",
+      "replacement": "  /* mutation: abort bail dropped */"
+    },
+    {
+      "name": "hook removed entirely",
+      "file": "src/handlers/chat.js",
+      "anchor": "  const pinWait = await waitForOwnPin(tried, signal, modelKey, callerKey, connectSelector);\n  if (pinWait.acct) return pinWait.acct;",
+      "replacement": "  const pinWait = { acct: null, aborted: false };"
+    },
+    {
+      "name": "a non-waitable window lowered so the WAITABLE allowlist becomes load-bearing",
+      "file": "src/auth.js",
+      "anchor": "reason: 'missing', retryAfterMs: 60_000 }",
+      "replacement": "reason: 'missing', retryAfterMs: 2_000 }"
+    },
+    {
+      "name": "DOCUMENTED SURVIVOR: WAITABLE allowlist deleted. Redundant today — every non-waitable reason hardcodes retryAfterMs 60000 and the knob's max is 30000, so the budget check already rejects all of them. The mutation above guards the premise that keeps this harmless. See AUDIT-LEDGER round 8.",
+      "file": "src/handlers/chat.js",
+      "anchor": "  if (!WAITABLE.has(avail.reason)) return NO_WAIT;",
+      "replacement": "  /* mutation: reason allowlist dropped */",
+      "expectCaught": false
+    }
+  ]
+}

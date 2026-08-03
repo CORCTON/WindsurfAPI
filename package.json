@@ -13,6 +13,7 @@
     "test": "node --import ./test/setup-env.mjs --test --test-force-exit test/*.test.js",
     "test:shard": "node scripts/run-test-shard.mjs",
     "test:release": "node scripts/run-test-shard.mjs 0 1",
+    "mutate": "node scripts/mutate-verify.mjs",
     "smoke:native-bridge": "node scripts/native-bridge-smoke.mjs",
     "smoke:special-agent": "node scripts/special-agent-smoke.mjs",
     "smoke:devin-connect": "node scripts/devin-connect-smoke.mjs",

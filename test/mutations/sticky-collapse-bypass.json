@@ -1,0 +1,24 @@
+{
+  "tests": ["test/sticky-collapse-bypass.test.js"],
+  "expectBaselinePass": 4,
+  "mutations": [
+    {
+      "name": "collapse removed — stickyBindByUserOnly becomes a no-op",
+      "file": "src/account/sticky-session.js",
+      "anchor": "    return callerKey + '\\0' + '*' + '\\0' + '*';",
+      "replacement": "    return callerKey + '\\0' + (modelKey || '*') + '\\0' + (selector || '*');"
+    },
+    {
+      "name": "default collapses too — the #230 zero-affinity regression",
+      "file": "src/account/sticky-session.js",
+      "anchor": "  if (isExperimentalEnabled('stickyBindByUserOnly')) {",
+      "replacement": "  if (true) {"
+    },
+    {
+      "name": "the bypass starts counting a fallback (would make the clobber visible)",
+      "file": "src/auth.js",
+      "anchor": "  const reservationTimestamp = nextReservationToken(now);\n  a._rpmHistory.push(reservationTimestamp);\n  a.lastUsed = now;",
+      "replacement": "  noteStickyFallback();\n  const reservationTimestamp = nextReservationToken(now);\n  a._rpmHistory.push(reservationTimestamp);\n  a.lastUsed = now;"
+    }
+  ]
+}
