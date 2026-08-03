@@ -221,6 +221,20 @@ export function setLiveCatalogSelectors(catalog) {
   if (rows.length) _liveCatalog = rows;
 }
 
+/**
+ * Drop the live catalog entirely, leaving only the frozen snapshot.
+ *
+ * Distinct from setLiveCatalogSelectors([]), which deliberately IGNORES empty
+ * input so a failed or truncated fetch can't blank out a good set. This is the
+ * explicit "there is genuinely nothing left" path — used when the last account
+ * contributing to the pool union goes away, where keeping the departed account's
+ * selectors would advertise models nothing in the pool can reach.
+ */
+export function clearLiveCatalogSelectors() {
+  _liveSelectors.clear();
+  _liveCatalog = [];
+}
+
 /** A selector exists if the frozen snapshot OR the live catalog knows it. */
 function selectorExists(name) {
   return CATALOG_SELECTORS.has(name) || _liveSelectors.has(name);

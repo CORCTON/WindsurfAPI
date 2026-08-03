@@ -31,7 +31,7 @@ import {
   forgetCloudModelCatalog,
   setActiveCloudCatalogAccounts,
 } from './models.js';
-import { FREE_REACHABLE_SELECTORS } from './devin-connect-models.js';
+import { FREE_REACHABLE_SELECTORS, setLiveCatalogSelectors, clearLiveCatalogSelectors } from './devin-connect-models.js';
 import { getLsAdmissionStatus, getLsMaintenanceRequests } from './langserver.js';
 import { bumpConnect } from './devin-connect-metrics.js';
 
@@ -769,7 +769,23 @@ const _modelCatalogSyncPromises = new Map(); // account id → { apiKey, promise
 const _modelCatalogRetryCancels = new Map(); // account id → cancel delayed confirmation
 const _modelCatalogConfirmationAttemptKeys = new Map(); // account id → apiKey being confirmed
 const MODEL_CATALOG_CONFIRM_RETRY_MS = 30_000;
-let _connectCatalogSynced = false;
+// Connect live catalog, kept PER ACCOUNT and unioned on write.
+//
+// This used to be a single module-level boolean latch: the first active account
+// to sync set it, and nothing ever cleared it, so adding a paid account to a
+// free-only pool never refreshed the selector set. The union of what the pool can
+// reach was therefore unobtainable from the live catalog — the paid account's
+// selectors simply never arrived.
+//
+// De-latching alone would have been worse than the latch: setLiveCatalogSelectors
+// CLEARS and repopulates, so a free account syncing after a paid one would shrink
+// the live set back down. Hence per-account rows here, unioned before every write.
+//
+// Existence and entitlement are deliberately different questions. This union
+// answers "does the upstream have this selector at all" — the pool-wide view. Who
+// may CALL it stays per-account (isConnectSelectorAllowedForAccount → tier bucket).
+const _connectCatalogRowsByAccount = new Map(); // account id → decoded catalog rows
+const _connectCatalogSyncedKeys = new Map();    // account id → apiKey already synced
 let _connectCatalogSyncPromise = null;
 let _modelCatalogDeps = null;
 
@@ -834,7 +850,8 @@ export function __resetModelCatalogState() {
   _modelCatalogSyncedKeys.clear();
   _modelCatalogSyncPromises.clear();
   _modelCatalogConfirmationAttemptKeys.clear();
-  _connectCatalogSynced = false;
+  _connectCatalogRowsByAccount.clear();
+  _connectCatalogSyncedKeys.clear();
   _connectCatalogSyncPromise = null;
   clearCloudModelCatalogs();
 }
@@ -857,6 +874,13 @@ function reconcileModelCatalogAccounts() {
     cancelModelCatalogRetry(accountId);
     removeCloudModelCatalog(accountId);
   }
+  // Same reconciliation for the connect selector union. Without this an account
+  // that left the active set keeps contributing selectors to pool-wide discovery,
+  // so /v1/models advertises models nothing in the pool can still reach.
+  for (const accountId of [..._connectCatalogRowsByAccount.keys()]) {
+    if (activeIds.has(accountId)) continue;
+    forgetConnectCatalogForAccount(accountId);
+  }
   return active;
 }
 
@@ -865,29 +889,88 @@ function invalidateModelCatalogForAccount(accountId) {
   _modelCatalogConfirmationAttemptKeys.delete(accountId);
   cancelModelCatalogRetry(accountId);
   removeCloudModelCatalog(accountId);
+  // The connect selector union is a separate namespace with its own per-account
+  // rows. A key rotation or account removal has to withdraw that contribution as
+  // well, or a departed account keeps widening pool-wide discovery.
+  forgetConnectCatalogForAccount(accountId);
+}
+
+/** Union of every synced account's catalog rows, deduped by selector. */
+function unionConnectCatalogRows() {
+  const bySelector = new Map();
+  for (const rows of _connectCatalogRowsByAccount.values()) {
+    for (const row of rows || []) {
+      const selector = typeof row === 'string' ? row : row?.selector;
+      if (typeof selector !== 'string' || !selector.trim()) continue;
+      // First writer wins so a later account can't downgrade a richer row
+      // (label/provider) to a bare string for the same selector.
+      if (!bySelector.has(selector.trim())) bySelector.set(selector.trim(), row);
+    }
+  }
+  return [...bySelector.values()];
 }
 
 function trySyncConnectCatalog(acct) {
   if (_modelCatalogDeps?.disableConnectSync) return;
-  if (_connectCatalogSynced || _connectCatalogSyncPromise) return;
+  // Re-sync when THIS account has not been synced under its current key. A
+  // module-level "already synced once" latch is what made a newly added paid
+  // account invisible; a key change (re-login, rotation) must also re-sync,
+  // which is why the recorded value is the apiKey rather than a boolean.
+  if (_connectCatalogSyncedKeys.get(acct.id) === acct.apiKey) return;
+  if (_connectCatalogSyncPromise) return;
+  const accountId = acct.id;
+  const apiKey = acct.apiKey;
   _connectCatalogSyncPromise = (async () => {
     try {
       const { fetchCatalog } = _modelCatalogDeps?.fetchConnectCatalog
         ? { fetchCatalog: _modelCatalogDeps.fetchConnectCatalog }
         : await import('./devin-connect-catalog.js');
-      const { setLiveCatalogSelectors } = _modelCatalogDeps?.setLiveCatalogSelectors
-        ? { setLiveCatalogSelectors: _modelCatalogDeps.setLiveCatalogSelectors }
-        : await import('./devin-connect-models.js');
-      const connectModels = await fetchCatalog({ token: acct.apiKey });
-      setLiveCatalogSelectors(connectModels);
-      _connectCatalogSynced = true;
-      log.info(`DEVIN_CONNECT live catalog: ${connectModels.length} selectors merged into resolver`);
+      // Same resolution as forgetConnectCatalogForAccount: injected seam if the
+      // tests provided one, otherwise the static import. Previously this shadowed
+      // the static import with a dynamic one, so the two paths could diverge.
+      const applyLiveSelectors = _modelCatalogDeps?.setLiveCatalogSelectors || setLiveCatalogSelectors;
+      const connectModels = await fetchCatalog({ token: apiKey });
+      // Only record a NON-EMPTY response. An empty one is no data, and storing it
+      // would let the union shrink — the same fail-open shape as the Cascade
+      // empty-catalog defect (models.js mergeCloudCatalogSnapshot).
+      const rows = Array.isArray(connectModels) ? connectModels : [];
+      if (rows.length) {
+        _connectCatalogRowsByAccount.set(accountId, rows);
+        _connectCatalogSyncedKeys.set(accountId, apiKey);
+        const union = unionConnectCatalogRows();
+        applyLiveSelectors(union);
+        log.info(`DEVIN_CONNECT live catalog: account ${accountId} contributed ${rows.length} selectors, pool union now ${union.length}`);
+      } else {
+        log.warn(`DEVIN_CONNECT catalog sync for ${accountId} returned no selectors — keeping the existing union`);
+      }
     } catch (e) {
       log.warn(`DEVIN_CONNECT catalog sync failed (snapshot fallback stays in effect): ${e.message}`);
     }
   })().finally(() => {
     _connectCatalogSyncPromise = null;
   });
+}
+
+/**
+ * Drop one account's contribution and rebuild the union without it.
+ *
+ * Synchronous, and routed through the same _modelCatalogDeps seam the sync path
+ * uses. An earlier version did a dynamic `import(...).then(...)` here, which was
+ * wrong twice: the write landed after the caller returned (so a removal followed by
+ * a read still saw the departed account's selectors), and it reached past the
+ * injected seam to the real module.
+ */
+function forgetConnectCatalogForAccount(accountId) {
+  const had = _connectCatalogRowsByAccount.delete(accountId);
+  _connectCatalogSyncedKeys.delete(accountId);
+  if (!had) return;
+  const union = unionConnectCatalogRows();
+  const applyLiveSelectors = _modelCatalogDeps?.setLiveCatalogSelectors || setLiveCatalogSelectors;
+  // setLiveCatalogSelectors ignores empty input by design ("never blank out a good
+  // set on a bad fetch"), so when the last contributor leaves, clear explicitly
+  // instead of calling it with nothing and silently keeping the stale set.
+  if (union.length) applyLiveSelectors(union);
+  else clearLiveCatalogSelectors();
 }
 
 async function fetchAndMergeModelCatalog(accountId, apiKey) {
