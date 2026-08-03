@@ -25,9 +25,15 @@ import {
   addAccountByKey, removeAccount, getAccountInternal, getAccountCount,
 } from '../src/auth.js';
 import { handleModels } from '../src/handlers/models.js';
+import {
+  setLiveCatalogSelectors, clearLiveCatalogSelectors,
+} from '../src/devin-connect-models.js';
 
 const FREE_SELECTOR = 'swe-1-6-slow';
 const created = [];
+// Set when a test populates the live catalog, so afterEach can restore the
+// process-wide resolver state instead of leaking it into later files.
+let liveCatalogDirty = false;
 const SAVED = {};
 const ENV_KEYS = ['DEVIN_CONNECT', 'DEVIN_CONNECT_TOKEN', 'WINDSURF_API_KEY'];
 for (const k of ENV_KEYS) SAVED[k] = process.env[k];
@@ -53,6 +59,10 @@ function connectEnv() {
 
 afterEach(() => {
   while (created.length) removeAccount(created.pop());
+  if (liveCatalogDirty) {
+    clearLiveCatalogSelectors();
+    liveCatalogDirty = false;
+  }
   for (const k of ENV_KEYS) {
     if (SAVED[k] === undefined) delete process.env[k];
     else process.env[k] = SAVED[k];
@@ -125,19 +135,34 @@ describe('connect discovery — entitlement filter (#234)', () => {
     assert.ok(withToken.includes('claude-opus-4-8-medium'));
   });
 
-  it('applies the filter to BOTH row producers', () => {
-    // handleModels emits rows from listModels AND from a live_catalog synthesis
-    // loop. Filtering only the first left a free-only pool still advertising every
-    // live-only paid selector. Asserted structurally because a live catalog is not
-    // populated in this process — the guard is that no row of ANY source survives
-    // for a paid selector on a free-only pool.
+  it('applies the filter to the live_catalog producer, not just listModels', () => {
+    // handleModels has TWO row producers: the listModels filter and a live_catalog
+    // synthesis loop that builds its own rows. Filtering only the first left a
+    // free-only pool still advertising every live-only paid selector.
+    //
+    // The live catalog MUST be populated for this to test anything — it is empty in
+    // a fresh process, so without this setup the loop emits nothing and the
+    // assertion passes no matter what. (Verified: removing the producer-2 filter
+    // did not fail an earlier version of this test for exactly that reason.)
     connectEnv();
     mk('free');
 
+    const LIVE_ONLY_PAID = 'gpt-5-6-sol-max';
+    const LIVE_ONLY_FREE = 'swe-1-6-slow';
+    setLiveCatalogSelectors([
+      { selector: LIVE_ONLY_PAID, provider: 'openai' },
+      { selector: LIVE_ONLY_FREE, provider: 'windsurf' },
+    ]);
+    liveCatalogDirty = true;
+
     const rows = handleModels(process.env).data;
-    const paidLeak = rows.filter((m) => /opus|sonnet|gpt-5|grok|fable/i.test(m.id));
-    assert.deepEqual(paidLeak.map((m) => `${m.id}[${m._source || 'models'}]`), [],
-      'no producer may emit a paid selector for a free-only pool');
+    const emitted = rows.map((m) => m.id);
+
+    assert.ok(emitted.includes(LIVE_ONLY_FREE),
+      'precondition: the live catalog is populated and its free selector is emitted');
+    assert.ok(!emitted.includes(LIVE_ONLY_PAID),
+      'the live_catalog producer must apply the entitlement filter too — a free-only ' +
+      'pool must not advertise a live-only paid selector');
   });
 
   it('leaves the non-connect backend view untouched', () => {

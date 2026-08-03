@@ -19,19 +19,23 @@ import {
 const created = [];
 let liveWrites = [];
 let fetchCalls = [];
+// Mutable so a test can change what an account answers on a LATER sync — needed to
+// prove an empty answer leaves the account eligible rather than latched.
+let perAccountRows = {};
 const SAVED_CONNECT = process.env.DEVIN_CONNECT;
 
 /** Install seams: record every fetch and every write to the resolver. */
 function installDeps({ perAccount }) {
   liveWrites = [];
   fetchCalls = [];
+  perAccountRows = { ...perAccount };
   __setModelCatalogDeps({
     // Cascade sync is irrelevant here and would make assertions noisy.
     getCascadeModelConfigs: async () => ({ configs: [] }),
     scheduleCatalogRetry: () => () => {},
     fetchConnectCatalog: async ({ token }) => {
       fetchCalls.push(token);
-      return perAccount[token] || [];
+      return perAccountRows[token] || [];
     },
     setLiveCatalogSelectors: (rows) => {
       liveWrites.push((rows || []).map((r) => (typeof r === 'string' ? r : r.selector)));
@@ -118,12 +122,32 @@ describe('connect catalog de-latch (#234)', () => {
     await __waitForModelCatalogSync();
     const afterGood = lastUnion();
 
-    mk('sk-empty-acct', 'free');
+    const emptyAcct = mk('sk-empty-acct', 'free');
     await __waitForModelCatalogSync();
 
     assert.deepEqual(lastUnion(), afterGood,
       'an empty catalog response must leave the existing union in place');
     assert.ok(afterGood.length === 2);
+
+    // The union staying intact is NOT the interesting part — a union with an empty
+    // contributor is unchanged arithmetically, so that assertion alone passes even
+    // if the empty response was accepted and stored.
+    //
+    // The real damage of accepting it is that the account gets recorded as SYNCED
+    // with nothing to contribute, and the per-key check then skips it forever — so
+    // it never picks up selectors it genuinely gains later. Assert that instead:
+    // the account must remain eligible, and a later non-empty response must land.
+    const beforeRetry = fetchCalls.filter((k) => k === 'sk-empty-acct').length;
+    perAccountRows['sk-empty-acct'] = [{ selector: 'glm-5-2-none' }];
+    setAccountStatus(emptyAcct.id, 'active');
+    await __waitForModelCatalogSync();
+
+    assert.ok(
+      fetchCalls.filter((k) => k === 'sk-empty-acct').length > beforeRetry,
+      'an account that answered empty must stay eligible for re-sync, not be latched as synced',
+    );
+    assert.ok(lastUnion().includes('glm-5-2-none'),
+      'once it answers non-empty, its selectors must reach the union');
   });
 
   it('withdraws a removed account\'s contribution from the union', async () => {

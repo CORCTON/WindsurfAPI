@@ -1073,6 +1073,14 @@ async function fetchAndMergeModelCatalog(accountId, apiKey) {
  */
 export function trySyncModelCatalog() {
   const active = reconcileModelCatalogAccounts();
+  // Drive the Connect selector sync from HERE, not only from inside
+  // fetchAndMergeModelCatalog. That function is gated by the Cascade per-key check
+  // below, so once an account's Cascade catalog was recorded as synced, the connect
+  // sync became unreachable for it — its own per-key eligibility was never
+  // consulted. The two namespaces have independent RPCs and independent state, so
+  // they need independent entry points; sharing one gate made the connect catalog
+  // inherit the Cascade latch.
+  for (const acct of active) trySyncConnectCatalog(acct);
   for (const acct of active) {
     if (_modelCatalogSyncedKeys.get(acct.id) === acct.apiKey) continue;
     if (_modelCatalogRetryCancels.has(acct.id)) continue;
