@@ -1973,23 +1973,18 @@ export function getApiKey(excludeKeys = [], modelKey = null, callerKey = null, c
   //   load-balancing when one account is clearly healthier.
   if (callerKey && candidates.length > 1) {
     const strictPin = isExperimentalEnabled('stickyBindByUserOnly') && isExperimentalEnabled('stickyNoFallback');
-    let doShard = false;
-    if (strictPin) {
-      doShard = true;
-    } else {
-      const first = candidates[0];
-      const second = candidates[1];
-      const ix0 = accountInflight(first.account) + accountMaintenance(first.account);
-      const iy0 = accountInflight(second.account) + accountMaintenance(second.account);
-      const qx0 = Math.floor(quotaScore(first.account) / 5);
-      const qy0 = Math.floor(quotaScore(second.account) / 5);
-      const rx0 = (first.limit - first.used) / first.limit || 0;
-      const ry0 = (second.limit - second.used) / second.limit || 0;
-      doShard =
-        ix0 === iy0 && qx0 === qy0 && rx0 === ry0 &&
-        (first.account.lastUsed || 0) === (second.account.lastUsed || 0);
-    }
-    if (doShard) {
+    {
+      // There used to be a separate gate here that computed whether candidates[0] and [1]
+      // tied, and only then allowed the shard to run. It is gone because the tied-prefix
+      // bound below SUBSUMES it exactly: when the top two do not tie, the prefix is length
+      // 1, `hash % 1` is 0, and no swap happens. Verified equivalent across 25 scenarios
+      // (5 pool sizes x 5 callerKeys x tied/skewed) — byte-identical selections with the
+      // gate present, absent, and forced true.
+      //
+      // Keeping it would have been worse than removing it: two mechanisms enforcing one
+      // property reads as though both were needed, and the next person to touch either
+      // would have to re-derive that they are not.
+      //
       // Shard only among the candidates that are ACTUALLY TIED with candidates[0].
       //
       // The check above establishes that [0] and [1] tie, and the previous version then

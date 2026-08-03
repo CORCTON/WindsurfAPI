@@ -36,12 +36,6 @@
       "file": "src/auth.js",
       "anchor": "        while (span < candidates.length && tiedWithFirst(candidates[span])) span++;",
       "replacement": "        /* mutation: span stays 1 */"
-    },
-    {
-      "name": "the gate is removed — shard fires even when the top two do NOT tie",
-      "file": "src/auth.js",
-      "anchor": "      doShard =\n        ix0 === iy0 && qx0 === qy0 && rx0 === ry0 &&\n        (first.account.lastUsed || 0) === (second.account.lastUsed || 0);",
-      "replacement": "      doShard = true;"
     }
   ]
 }
