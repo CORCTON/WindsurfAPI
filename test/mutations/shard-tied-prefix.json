@@ -1,0 +1,42 @@
+{
+  "tests": ["test/shard-tied-prefix.test.js", "test/scatter-attribution.test.js", "test/sticky-concurrency-tension.test.js"],
+  "expectBaselinePass": 16,
+  "mutations": [
+    {
+      "name": "the original defect: shard indexes the WHOLE array again",
+      "file": "src/auth.js",
+      "anchor": "      const bucket = hash.readUInt32BE(0) % span;",
+      "replacement": "      const bucket = hash.readUInt32BE(0) % candidates.length;"
+    },
+    {
+      "name": "tie test drops the in-flight term — a busier account counts as tied",
+      "file": "src/auth.js",
+      "anchor": "        return (accountInflight(c.account) + accountMaintenance(c.account))\n             === (accountInflight(a.account) + accountMaintenance(a.account))",
+      "replacement": "        return true\n          && true"
+    },
+    {
+      "name": "tie test drops the RPM-ratio term",
+      "file": "src/auth.js",
+      "anchor": "          && ((c.limit - c.used) / c.limit || 0) === ((a.limit - a.used) / a.limit || 0)",
+      "replacement": "          && true"
+    },
+    {
+      "name": "tie test drops the lastUsed term",
+      "file": "src/auth.js",
+      "anchor": "          && (c.account.lastUsed || 0) === (a.account.lastUsed || 0);",
+      "replacement": "          && true;"
+    },
+    {
+      "name": "span always 1 — sharding becomes a no-op, callers stack on candidates[0]",
+      "file": "src/auth.js",
+      "anchor": "        while (span < candidates.length && tiedWithFirst(candidates[span])) span++;",
+      "replacement": "        /* mutation: span stays 1 */"
+    },
+    {
+      "name": "the gate is removed — shard fires even when the top two do NOT tie",
+      "file": "src/auth.js",
+      "anchor": "      doShard =\n        ix0 === iy0 && qx0 === qy0 && rx0 === ry0 &&\n        (first.account.lastUsed || 0) === (second.account.lastUsed || 0);",
+      "replacement": "      doShard = true;"
+    }
+  ]
+}
