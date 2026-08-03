@@ -415,6 +415,36 @@ describe('end to end: the caller stays on its own account', () => {
     assert.ok(elapsed < 2000, `must notice the abort promptly — took ${elapsed}ms`);
   });
 
+  it('waits out a SELECTOR-scoped cooldown, not just an account-wide one', async () => {
+    // The modelKey=null trap, and the reason this has to be an end-to-end assertion: the
+    // unit test above proves getAccountAvailability can SEE a selector cooldown when asked
+    // with the selector. It does not prove the wait loop asks that way. Measured: changing
+    // the loop to ask with modelKey (null on the connect path) left every other test in
+    // this file green, while the loop silently stopped waiting for the single most common
+    // connect cooldown — CAPACITY, which finalizeConnectAccount keys on the selector.
+    const A = seed('sel-wait-a');
+    const B = seed('sel-wait-b');
+    sticky.setStickyBinding(CALLER, null, A.id, A.apiKey, SELECTOR);
+    // Selector-scoped only: no rateLimitedUntil, no quotaResetAt, RPM untouched. Asked
+    // with modelKey=null this account reads as fully available.
+    auth.markRateLimited(A.apiKey, 900, SELECTOR, 'c');
+    assert.equal(auth.getAccountAvailability(A.apiKey, null).available, true,
+      'precondition: with null this cooldown is invisible, which is what makes the '
+      + 'mutation silent');
+    setBudget(4000);
+
+    const chat = await import('../src/handlers/chat.js');
+    const acct = await chat.__testing.waitForAccount([], null, 8000, null, CALLER, SELECTOR);
+
+    assert.ok(acct, 'the caller must be served');
+    assert.equal(acct.id, A.id,
+      `the loop must wait out a selector-scoped cooldown and serve the PINNED account; got `
+      + `${acct.id === B.id ? 'the substitute' : acct.id}, which means the availability `
+      + 'probe was asked with the wrong dimension');
+    assert.equal(acct._sticky, true, 'and via the binding');
+    auth.releaseAccountById(acct.id);
+  });
+
   it('the WAIT LOOP itself does not inflate hit/miss stats', async () => {
     // The three peekStickyBinding tests above verify the FUNCTION. They do not verify that
     // the wait loop calls it: swapping the loop's peek for the mutating getStickyBinding
