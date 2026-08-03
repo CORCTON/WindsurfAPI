@@ -1737,6 +1737,11 @@ function pickDegradedFallback(now, excludeKeys, modelKey, connectSelector) {
 export function getApiKey(excludeKeys = [], modelKey = null, callerKey = null, connectSelector = null) {
   const now = Date.now();
 
+  // Set when we fall through PAST a pin that is still live (see the transient arm
+  // below). It rides out on the returned account as `_stickyRotated` so the success
+  // paths know to skip the rebind that would otherwise overwrite the preserved pin.
+  let rotatedOffLivePin = false;
+
   // ── Sticky session: prefer the account from the last turn ────────
   // When enabled, this keeps multi-turn conversations on the same upstream
   // account so the cascade_id from the previous turn is still valid.
@@ -1809,9 +1814,17 @@ export function getApiKey(excludeKeys = [], modelKey = null, callerKey = null, c
       //   - STRUCTURALLY (not in the pool any more, or not 'active'): the binding can
       //     never resolve again, so holding it serves nobody. Clear it and let this
       //     request fall through to normal selection.
+      const boundAccount = accounts.find(a => a.id === bound.accountId);
+      // `excludeKeys` is NOT a transient condition, even though it expires with the
+      // request. A key lands in triedKeys because it FAILED this request, and the
+      // failure class that gets here is the dead token: reportDeadToken records only a
+      // health event, so the account stays 'active' with no cooldown and excludeKeys is
+      // the ONLY thing keeping it out (test/sticky-exclude-keys.test.js:1-16). Keeping
+      // the pin would re-resolve a known-bad account on the next turn and re-enter the
+      // same failover loop. So it is classified with "gone", not with "blipping".
+      const burnedThisRequest = !!boundAccount && excludeKeys.includes(boundAccount.apiKey);
+      const structurallyGone = !boundAccount || boundAccount.status !== 'active' || burnedThisRequest;
       if (isExperimentalEnabled('stickyNoFallback')) {
-        const boundAccount = accounts.find(a => a.id === bound.accountId);
-        const structurallyGone = !boundAccount || boundAccount.status !== 'active';
         if (structurallyGone) {
           log.warn(`[sticky] NO-FALLBACK caller=${callerKey.slice(0, 50)} model=${modelKey || '(none)'} — bound account is gone or disabled, clearing the pin instead of refusing forever`);
           clearStickyBinding(callerKey, modelKey, connectSelector);
@@ -1820,9 +1833,39 @@ export function getApiKey(excludeKeys = [], modelKey = null, callerKey = null, c
           log.info(`[sticky] NO-FALLBACK caller=${callerKey.slice(0, 50)} model=${modelKey || '(none)'} — bound account temporarily unavailable, refusing to rotate`);
           return null;
         }
-      } else {
+      } else if (structurallyGone) {
         // Clear it so the next call falls through to normal selection instead of looping.
         clearStickyBinding(callerKey, modelKey, connectSelector);
+        noteStickyFallback();
+      } else {
+        // TRANSIENTLY unavailable — cooling, at its RPM ceiling, or in maintenance. The
+        // account is still in the pool, still 'active', and was not burned by this
+        // request, so every remaining reason it failed the usability test above carries
+        // its own expiry: the RPM window is 60s, cooldowns have explicit until-stamps
+        // (rateLimitedUntil / quotaResetAt / _modelRateLimits), and maintenance ends.
+        //
+        // The default path used to clear here unconditionally. v3.9.11 introduced the
+        // transient-vs-structural split but only inside the stickyNoFallback branch above,
+        // so the path everyone actually runs kept discarding the pin over a 60s blip —
+        // the 5th instance of "the fix covered only some of the paths" in this repo.
+        //
+        // Clearing is not a cheap mistake. The pool re-pins whatever account served the
+        // substitute turn, so one blip migrates the conversation PERMANENTLY: there is no
+        // return-home mechanism, and getStickyBinding refreshes lastAccess on every hit so
+        // an active conversation's pin never ages out on its own. Measured: six successive
+        // blips walked one caller A→D→C→D→C→D→C, never returning to A, each hop paying a
+        // fresh per-account prompt-cache WRITE (~10x a read). It is also self-reinforcing,
+        // because the sticky fast path above pushes a reservation on every hit, so a
+        // pinned caller's own traffic is what drives its account toward the ceiling —
+        // and the ceilings are low (pro 60/min, unknown-tier 20/min).
+        //
+        // So keep the pin and still fall through, serving THIS turn from another account.
+        // _stickyRotated tells the success paths not to rebind: without that, the rebind
+        // overwrites the pin we just preserved and the fix would be a no-op (setStickyBinding
+        // overwrites unconditionally, silently — no log line, no stat). Measured on the
+        // connect non-stream path: preserving the pin alone left the caller on the
+        // substitute account exactly as before.
+        rotatedOffLivePin = true;
         noteStickyFallback();
       }
     }
@@ -1978,6 +2021,10 @@ export function getApiKey(excludeKeys = [], modelKey = null, callerKey = null, c
     apiServerUrl: account.apiServerUrl || '',
     proxy: getEffectiveProxy(account.id) || null,
     reservationTimestamp,
+    // Only present when a live pin was deliberately left in place (transient arm
+    // above). Undefined on every ordinary selection, so the success paths' rebind
+    // is unchanged for callers that have no pin.
+    ...(rotatedOffLivePin ? { _stickyRotated: true } : {}),
   };
 }
 

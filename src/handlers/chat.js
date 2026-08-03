@@ -1862,6 +1862,12 @@ function acquireConnectFailover(triedKeys, signal, callerKey, selector = null) {
 // already receives the selector, so both sides agree.
 export function bindConnectSticky(callerKey, acct, selector = null) {
   if (!callerKey || !acct?.id || !isStickyEnabled()) return;
+  // This turn was served by a SUBSTITUTE because the pinned account was
+  // transiently unavailable (auth.js getApiKey's transient arm), and the pin was
+  // deliberately left in place so the conversation returns home once the blip
+  // clears. Rebinding here would overwrite it with the substitute and make that
+  // preservation a no-op — setStickyBinding overwrites unconditionally.
+  if (acct._stickyRotated) return;
   // Same per-user-scope gate every Cascade sticky write sits behind (via
   // reuseEnabled → !sharedApiKeyNoScope, chat.js hasPerUserScope / SEC-W2):
   // a bare `api:<hash>` or guessed `:client:` callerKey is N end users behind
@@ -4119,7 +4125,11 @@ async function _handleChatCompletionsInner(body, context = {}) {
       // when this handler is the second pass of an auto-fallback
       // retry; it carries the ORIGINAL model name the client asked
       // for so the cascade pool entry gets indexed under both keys.
-      reuseEnabled ? { reuseEntry, lsPort: ls.port, apiKey: acct.apiKey, accountId: acct.id, callerKey, cachePolicy, fpOpts, aliasModelKey: context.__aliasModelKey || null } : null,
+      // stickyRotated rides along so the success-path rebind below can tell that this
+      // account is a SUBSTITUTE for a still-live pin (auth.js getApiKey transient arm)
+      // and must not overwrite it. poolCtx copies scalars off `acct`, so without this
+      // the marker would be lost at the boundary.
+      reuseEnabled ? { reuseEntry, lsPort: ls.port, apiKey: acct.apiKey, accountId: acct.id, callerKey, cachePolicy, fpOpts, aliasModelKey: context.__aliasModelKey || null, stickyRotated: !!acct._stickyRotated } : null,
       modelInfo?.provider || null,
       emulateTools, toolPreamble, wantJson, cachePolicy, wantThinking, tools, body.__route || 'chat',
       nativeOpts,
@@ -4703,7 +4713,9 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
       // Bind caller to this account for the next turn in the
       // conversation. Without this, the next request picks a different
       // account from the pool and the cascade_id becomes invalid.
-      if (poolCtx.callerKey && isStickyEnabled() && poolCtx.accountId) {
+      // stickyRotated: this account substituted for a pin that is still live and was
+      // deliberately kept, so rebinding would overwrite it (see auth.js transient arm).
+      if (poolCtx.callerKey && isStickyEnabled() && poolCtx.accountId && !poolCtx.stickyRotated) {
         setStickyBinding(poolCtx.callerKey, modelKey, poolCtx.accountId, poolCtx.apiKey);
       }
     }
@@ -5701,8 +5713,10 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
                 createdAt: reuseEntry?.createdAt,
               }, callerKey, ttlHint === undefined ? 0 : ttlHint);
 
-              // Bind caller to this account for the next turn
-              if (callerKey && isStickyEnabled() && acct) {
+              // Bind caller to this account for the next turn.
+              // _stickyRotated: substitute for a still-live pin that was deliberately
+              // kept — rebinding would overwrite it (see auth.js transient arm).
+              if (callerKey && isStickyEnabled() && acct && !acct._stickyRotated) {
                 setStickyBinding(callerKey, modelKey, acct.id, acct.apiKey);
               }
             }
