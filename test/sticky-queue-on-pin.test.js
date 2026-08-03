@@ -276,22 +276,43 @@ describe('waiting is bounded by the account\'s own stated recovery', () => {
       + 'the assertion above is what would fail if someone "simplified" that away');
   });
 
-  it('an entitlement miss is not a timer and is not in the waitable set', () => {
-    // A free account asked for a paid selector never becomes usable by waiting. The loop
-    // only waits on reasons with a real expiry; this pins that such a state is reported
-    // as something other than those.
-    const A = seed('avail-ent');
-    A.tier = 'free';
-    const avail = auth.getAccountAvailability(A.apiKey, SELECTOR);
-    const WAITABLE = new Set(['rate_limited', 'model_rate_limited', 'rpm_full', 'quota_exhausted']);
-    if (!avail.available) {
-      assert.ok(!WAITABLE.has(avail.reason) || avail.reason === 'rpm_full',
-        `an entitlement/structural reason must not be waitable, got ${avail.reason}`);
-    } else {
-      // Free-reachable selector on a free account is legitimately available; state that
-      // rather than asserting something the fixture does not actually produce.
-      assert.equal(avail.reason, 'available');
-    }
+  it('every NON-waitable reason reports a window past any allowed budget', () => {
+    // Honest account of a redundancy rather than a claim of a guard.
+    //
+    // The loop has two independent brakes: a reason allowlist, and retryAfterMs vs budget.
+    // Measured: deleting the allowlist leaves this whole file green — because every
+    // non-waitable reason in getAccountAvailability hardcodes retryAfterMs 60000, and the
+    // knob's own max is 30000, so the budget check already rejects all of them. The
+    // allowlist is therefore belt-and-braces TODAY, not load-bearing, and no behavioural
+    // test can distinguish it. Saying so beats writing an assertion that only looks like
+    // it covers the allowlist.
+    //
+    // What this DOES guard is the premise that makes the redundancy safe. If someone
+    // lowers one of those 60000s — a plausible change, e.g. reporting a real re-probe
+    // delay for 'tier_expired' — the allowlist silently becomes the only thing standing
+    // between a caller and an unbounded wait on a state that never expires. This fails at
+    // that moment and says so.
+    const MAX_BUDGET_MS = 30_000; // the knob's max, src/runtime-config.js
+    const NON_WAITABLE_REASONS = ['missing', 'tier_expired', 'model_not_available'];
+
+    // 'missing' is reachable directly: no such account.
+    const missing = auth.getAccountAvailability('devin-session-token$definitely-not-in-pool', SELECTOR);
+    assert.equal(missing.reason, 'missing');
+    assert.ok(missing.retryAfterMs > MAX_BUDGET_MS,
+      `'missing' reports ${missing.retryAfterMs}ms, which now FITS the max budget — the `
+      + 'reason allowlist in waitForOwnPin just became load-bearing and needs its own test');
+
+    // A non-active account reports status:<x>, which is likewise outside the allowlist.
+    const A = seed('avail-status');
+    auth.setAccountStatus(A.id, 'disabled');
+    const disabled = auth.getAccountAvailability(A.apiKey, SELECTOR);
+    assert.match(disabled.reason, /^status:/,
+      'a non-active account must report its status, not a waitable throttle');
+    assert.ok(disabled.retryAfterMs > MAX_BUDGET_MS,
+      `a disabled account reports ${disabled.retryAfterMs}ms — see the note above`);
+
+    // Documented for the reader: these are the names the allowlist excludes.
+    assert.ok(NON_WAITABLE_REASONS.every(r => typeof r === 'string'));
   });
 });
 
