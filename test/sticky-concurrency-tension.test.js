@@ -83,17 +83,29 @@ describe('burst spreading wins over affinity on the FIRST round (issue #37)', ()
       + 'spreading and sticky affinity — read the CONCURRENCY note in sticky-session.js '
       + 'before deciding which behaviour is wanted.');
 
-    // Scope note, measured rather than assumed: this pins the OUTCOME, not any one
-    // mechanism. Removing the inflight-first comparator AND the lastUsed tiebreak from
-    // getApiKey's sort leaves this test green, so the scatter is over-determined — the
-    // remaining cause is in candidate FILTERING (RPM reservation making the just-served
-    // account ineligible for the next pick), which was not isolated further. Do not read
-    // a failure here as "issue #37 regressed"; read it as "the balance moved, go find out
-    // which side moved it".
+    // Scope note — REWRITTEN 2026-08-05. The previous version of this comment was wrong in
+    // three ways, and the way it was wrong is worth keeping:
     //
-    // Verified reliable at pool sizes 3 and 8 (3→3, 8→8) with sticky enabled. Note it does
-    // NOT hold with sticky disabled — a 3-account pool then repeats the same account —
-    // so this behaviour is specific to the sticky-enabled path.
+    //   1. It said the remaining cause was in candidate FILTERING. It is not. Attribution
+    //      by disabling one comparator term at a time in source (rather than by clearing
+    //      account state between turns, which IS the mechanism and so cannot isolate it):
+    //      the RPM remaining-ratio and lastUsed terms are each independently sufficient,
+    //      and in-flight contributes NOTHING to sequential rotation because the request is
+    //      released before the next acquire. See test/scatter-attribution.test.js.
+    //   2. It said the behaviour was specific to the sticky-enabled path. It is not —
+    //      measured identical with STICKY_SESSION_ENABLED=0 and =1.
+    //   3. It presented 8→8 as the designed outcome. Until the fix below it was the BEST
+    //      CASE, reachable only because this file's callerKey happens to hash to shard
+    //      bucket 0. The caller-shard tiebreaker indexed `hash % candidates.length` across
+    //      the whole array while only checking that the top TWO tied, so a high bucket
+    //      pulled the BUSIEST account back to position 0 — the exact pile-up issue #37
+    //      exists to prevent. Of 8 realistic callerKeys, only 2 spread across the pool;
+    //      one served the same account 8 times with seven peers idle.
+    //
+    // That is fixed (auth.js: the shard now permutes only within the tied prefix), so this
+    // assertion now holds for the RIGHT reason and for any callerKey, not just this one.
+    // A failure here still means "the balance moved" — but check
+    // test/shard-tied-prefix.test.js first, which pins the narrower invariant.
   });
 
   it('records misses, not hits, for that first round', () => {
