@@ -408,3 +408,83 @@ break。**
 | `handler-route-parity-guard` | "绑定名被读到"可被一行 debug log 满足 |
 | sticky 线余 6 条 | thundering-herd / RPM 清绑定 / 双 flag 楔子 / clearCallerBindings 未接线 / GPT tag 校准 / response store 租户配额 |
 | 逐请求 billing tag 号 | `credit_cost` / `committed_acu_cost` 需付费 token 校准(已在 #239 请社区协助) |
+
+---
+
+## 2026-08-04 第五轮:并发对抗 8 条积压 + v3.9.9–v3.9.11
+
+这一轮最有价值的产出**不是修了什么,是拦住了不该做的工作**。
+
+用 16 个 agent 并发调查上一份交接的 8 条积压(每条先复现,通过的再过一轮对抗反驳),
+**4 条被反驳**:
+
+| 项 | 反驳理由 |
+|---|---|
+| `clear-caller-bindings` | **抓到伪造的复现数字**,且是已登记旧账 |
+| `sticky-rpm-clear` | 机制真但归因错,严重性远低于所报;一个复现基于不可达路径 |
+| `response-store-tenant-quota` | 复现真实,但那是**有文档有测试的既定策略**,不是缺陷 |
+| `connect-dimension-guard` | 台账已 publish 这条限制,"不是发现" |
+
+照 8 条全做,会有 4 条在改不该改的东西。**对抗验证的价值是拦住工作,不只是找缺陷。**
+
+### 子系统结论
+
+| 子系统 | 结论 | 守卫 |
+|---|---|---|
+| 订阅取消信号 | 明确信号被丢进 `credits.lastError`,无人读;账号 100% chat 失败却显示 active/错误 0 | `subscription-cancelled-signal.test.js`(7 条,4 突变全 CAUGHT) |
+| 降级后回显名 | 三条协议路由都谎报;`messages.js`/`gemini.js` 对 `displayModel` 引用数为 0 | `connect-degrade-honesty.test.js`(9 条)+ messages/gemini 各补流式与非流式 |
+| 路由错误分类守卫 | 源码形状判据可被"一个被 log 读到的死绑定"满足 | `route-error-parity-behaviour.test.js`(7 条,行为断言) |
+| `stickyNoFallback` | 返回 null 却不清绑定 → 永久楔死 | `sticky-no-fallback-wedge.test.js`(6 条,含"过度修复"方向) |
+| 首轮并发散射 | **不是缺陷** —— issue #37 的明确意图 | `sticky-concurrency-tension.test.js`(4 条,钉当前选择) |
+
+### 新判别动作:"经由哪个调用者才承重"
+
+本轮两次出现"注释声称某处承重、实际零测试失败":
+
+1. `forgetCloudModelCatalog` 内部顺序只在**直接调用**时承重,经由 `removeAccount` 时上游
+   已先丢目录 → 顺序无关
+2. `messages.js` 的 `!messageStarted` 条件**不承重**(`startMessage()` 自带 early-return,
+   `this.model` 只被读一次)。承重的等价物在 `gemini.js`,那里每帧重读
+
+**动作**:写下"顺序/条件很重要"时,立刻问"**经由哪个调用者时它才重要**",然后给那条路径
+写测试。否则注释就是一句没有守卫的断言。
+
+### harness 静默失效的三种新形态
+
+除了已记的 zsh 词分裂,本轮又踩三种:
+
+1. **`import(...?query)` 创建独立模块实例** —— 我写绑定的实例与 `auth.js` 读的不是同一个,
+   统计不涨、绑定读不到。是"守卫的守卫"(misses 必须 >0)暴露的
+2. **`setExperimental('key', true)` 是 no-op** —— 它收补丁对象。四种 flag 组合的复现结果
+   因此完全一样,**差点据此否掉一条真缺陷**
+3. **测错了路径** —— 路由测试第一版驱动"抛出错误",而真实调用点在流式 translator 的
+   `error()` 里处理 error chunk。12 条全红,但红的原因与契约无关
+
+**共同判别动作**:每个复现/突变结果都要能回答"**这个数字是怎么产生的**"。答不出就是
+harness 在骗你。
+
+### "先提交,再突变" —— 本轮违反三次
+
+突变循环里的 `git checkout -- <file>` 会把同一文件里**尚未提交的真修复**一起还原。之后的
+突变测的是"修复缺失"而不是"突变生效",而那个失败**看起来像突变被抓到**。三次都是自己踩的。
+
+### 长任务必须后台跑
+
+工具层反复返回**空输出**,全部出现在多分钟阻塞命令之后。改成 `nohup ... &` + 轮询标记文件
+后再没出现。十项机制逐个测过都正常 —— 问题是用法,不是工具坏了。
+
+### 交接文档的四处修正
+
+见 `HANDOFF-2026-08-04.md` §3。最要紧两条:`stickyNoFallback` **一个 flag 就够**楔住
+(记的是两个);首轮散射**不是缺陷**而是 issue #37 的明确意图。
+
+### 仍未 exhaustive 扫描 ⬜(第五轮更新)
+
+| 面 | 缺口 |
+|---|---|
+| `connect-dimension-guard` | 词法切片,冷却写别处可逃。修法参照本轮的行为断言改造 |
+| RPM 满即清绑定 | 彻底修需 queue-on-pin,且与"首轮散射张力"相关 |
+| `clearCallerBindings` | 事实成立,但"该由哪个事件调用"是设计决定 |
+| 散射的确切成因 | 移除两个排序机制后仍散射 —— 成因在候选**过滤**,未隔离 |
+| billing tag 号 | 需付费 token 校准(#239) |
+| `total_tokens` 含 `cache_write` | 产品取舍,需作者拍板 |

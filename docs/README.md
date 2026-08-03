@@ -13,12 +13,13 @@
    `DEVIN_CONNECT` is the **default production backend**, so this is not optional reading.
    Includes the paid wire-calibration procedure (§8).
 
-Latest handoff: [HANDOFF-2026-08-03-B.md](HANDOFF-2026-08-03-B.md) (v3.9.8 release + what
-remains). Read it before the earlier ones — handoffs are append-only and the newest wins.
+Latest handoff: **[HANDOFF-2026-08-04.md](HANDOFF-2026-08-04.md)** (v3.9.9–v3.9.11; it
+CORRECTS four claims in the earlier handoffs — read its §3 before acting on any older
+item). Handoffs are append-only and the newest wins.
 
-Earlier handoffs: [HANDOFF-2026-08-03.md](HANDOFF-2026-08-03.md) (the #234 analysis; its
-§3.1–§3.5 are done, §3.6+ still open) · [HANDOFF-2026-07-27.md](HANDOFF-2026-07-27.md) (the
-v3.9.0–v3.9.6 round).
+Earlier handoffs: [HANDOFF-2026-08-03-B.md](HANDOFF-2026-08-03-B.md) (v3.9.8) ·
+[HANDOFF-2026-08-03.md](HANDOFF-2026-08-03.md) (the #234 analysis) ·
+[HANDOFF-2026-07-27.md](HANDOFF-2026-07-27.md) (v3.9.0–v3.9.6).
 Handoff docs are **append-only** — an older one's "still unfixed" list may have gone stale, so
 the newest one wins.
 
