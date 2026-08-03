@@ -184,21 +184,26 @@ describe('a concurrent burst spreads regardless of the caller hash', () => {
     // with the most in-flight.
     const POOL = 6;
     seedPool(POOL);
-    const caller = 'api:1111111111111111:user:alice'; // hashed to a HIGH bucket at 8
+    const caller = 'api:1111111111111111:user:alice'; // hashes to a HIGH bucket
     const held = [];
     for (let i = 0; i < POOL - 1; i++) {
+      // Snapshot BEFORE the acquire. An earlier version of this test took the snapshot
+      // after, so the chosen account's own increment was already inside `maxInflight` and
+      // the comparison `chosen._inflight !== maxInflight + 1` could not fail for any input
+      // — a tautology, and the exact antipattern this round was auditing others for.
+      const before = new Map(created.map((id) => [id, auth.getAccountInternal(id)?._inflight || 0]));
+      const maxBefore = Math.max(...before.values());
+      const minBefore = Math.min(...before.values());
+
       const x = auth.getApiKey([], null, caller, SELECTOR);
       assert.ok(x, `acquire ${i} must succeed`);
       held.push(x);
 
-      const counts = created.map((id) => auth.getAccountInternal(id)?._inflight || 0);
-      const maxInflight = Math.max(...counts);
-      const minInflight = Math.min(...counts);
-      if (maxInflight > minInflight) {
-        const chosen = auth.getAccountInternal(x.id);
-        assert.notEqual(chosen._inflight, maxInflight + 1,
-          'the shard promoted the account that already had the most requests in flight '
-          + 'while an idler peer was available');
+      if (maxBefore > minBefore) {
+        assert.notEqual(before.get(x.id), maxBefore,
+          `acquire ${i} selected the account that ALREADY had the most requests in flight `
+          + `(${maxBefore}) while a peer sat at ${minBefore}. In-flight counts before this `
+          + `pick: ${[...before.values()].join(',')}`);
       }
     }
     for (const h of held) auth.releaseAccountById(h.id);
