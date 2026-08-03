@@ -78,10 +78,22 @@ describe('burst spreading wins over affinity on the FIRST round (issue #37)', ()
 
     const distinct = new Set(picked).size;
     assert.equal(distinct, POOL_SIZE,
-      `expected the burst to spread across all ${POOL_SIZE} accounts (issue #37); `
-      + `got ${distinct} distinct. If this now concentrates, someone changed the balance `
-      + 'between #37 and sticky affinity — read the CONCURRENCY note in sticky-session.js '
+      `expected the burst to spread across all ${POOL_SIZE} accounts; got ${distinct} `
+      + 'distinct. If this now concentrates, someone changed the balance between burst '
+      + 'spreading and sticky affinity — read the CONCURRENCY note in sticky-session.js '
       + 'before deciding which behaviour is wanted.');
+
+    // Scope note, measured rather than assumed: this pins the OUTCOME, not any one
+    // mechanism. Removing the inflight-first comparator AND the lastUsed tiebreak from
+    // getApiKey's sort leaves this test green, so the scatter is over-determined — the
+    // remaining cause is in candidate FILTERING (RPM reservation making the just-served
+    // account ineligible for the next pick), which was not isolated further. Do not read
+    // a failure here as "issue #37 regressed"; read it as "the balance moved, go find out
+    // which side moved it".
+    //
+    // Verified reliable at pool sizes 3 and 8 (3→3, 8→8) with sticky enabled. Note it does
+    // NOT hold with sticky disabled — a 3-account pool then repeats the same account —
+    // so this behaviour is specific to the sticky-enabled path.
   });
 
   it('records misses, not hits, for that first round', () => {
