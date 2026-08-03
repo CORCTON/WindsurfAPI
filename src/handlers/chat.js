@@ -2990,9 +2990,28 @@ async function _handleChatCompletionsInner(body, context = {}) {
     // disconnected/cancelled caller tears down the in-flight connect call
     // instead of leaking it until the 120s timeout.
     if (context.signal) connectParams.signal = context.signal;
+    // The name echoed back to the client. For a MAPPED request that stays the
+    // requested name — alias resolution (claude-sonnet-4.6 → claude-sonnet-4-6-thinking)
+    // must keep echoing what the caller asked for, which is also what OpenAI does.
+    //
+    // For an UNMAPPED name under WINDSURFAPI_STRICT_MODEL=0 it must not. That opt-out
+    // degrades the request to the free selector, and the response used to report the
+    // requested PAID name regardless — measured: `claude-opus-4.9` came back 200 with
+    // `model: "claude-opus-4.9"` on the non-stream body and on every stream chunk, plus a
+    // system_fingerprint derived from that name, while `swe-1-6-slow` ran upstream. The
+    // degrade itself is a deliberate operator choice; misreporting it is not, and it
+    // breaks both billing attribution and any client that trusts the echoed name.
+    //
+    // Source it from connectParams.model, NOT from `selector`. `selector` is captured
+    // before the AssignModel router hop above (which reassigns connectParams.model to
+    // asg.model_uid), and router names resolve mapped:false — so reporting `selector`
+    // would swap one lie for another: an 'adaptive' request that really ran
+    // claude-opus-4-8-medium would be reported as the free swe-1-6-slow. Reproduced
+    // both ways before choosing this source.
+    const connectDisplayModel = mapped ? reqModelName : connectParams.model;
     // O1: honor stream_options.include_usage on the connect path too — the
     // trailing usage frame is emitted only when the caller opted in.
-    const connectMeta = { id: ccId, created: ccCreated, displayModel: reqModelName, emulateTools, includeUsage: body.stream_options?.include_usage === true, stop: body.stop ?? null, clineCompat: clineCompatActive };
+    const connectMeta = { id: ccId, created: ccCreated, displayModel: connectDisplayModel, emulateTools, includeUsage: body.stream_options?.include_usage === true, stop: body.stop ?? null, clineCompat: clineCompatActive };
     // Shared failover bookkeeping for both stream + non-stream paths. triedKeys
     // accumulates every session token burned this request so getApiKey never
     // re-picks a known-dead account when we hop to the next pool member.
@@ -3031,7 +3050,11 @@ async function _handleChatCompletionsInner(body, context = {}) {
             else context.signal.addEventListener('abort', () => abortController.abort(), { once: true });
           }
           let emitted = false;
-          const fp = systemFingerprint(reqModelName);
+          // Derive from the name we actually echo, not the raw request name. The adapter
+          // normally pre-sets the fingerprint from displayModel, so this is a dormant
+          // fallback — but leaving it on reqModelName means a rare fallback emits a
+          // fingerprint keyed to a model we are no longer claiming to have run.
+          const fp = systemFingerprint(connectDisplayModel);
           // O10: 仅直连 OpenAI 客户端(route==='chat')在出口归一化 error.type;
           // messages/gemini/responses 路由写入各自 translator 的 captureRes,
           // 须保留内部词供其 remap。
