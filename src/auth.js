@@ -1789,14 +1789,42 @@ export function getApiKey(excludeKeys = [], modelKey = null, callerKey = null, c
           }
         }
       }
-      // Bound account is no longer usable
+      // Bound account is no longer usable.
+      //
+      // stickyNoFallback means "do not rotate to another account" — refusing is the point,
+      // because rotating rewrites the whole prompt cache. But refusing has to be
+      // RECOVERABLE, and it was not: returning null while LEAVING the binding in place
+      // means every later request re-resolves the same dead binding and refuses again,
+      // forever. Measured: bind a caller, disable the bound account, and four consecutive
+      // acquisitions all return null with the binding still present.
+      //
+      // (The handoff described this as needing BOTH stickyBindByUserOnly and
+      // stickyNoFallback. Measured otherwise — stickyNoFallback ALONE wedges, and
+      // stickyBindByUserOnly alone self-heals. One documented flag is enough, so the
+      // exposure was larger than recorded.)
+      //
+      // So split the two reasons an account can be unusable:
+      //   - TRANSIENTLY (cooling, RPM ceiling, in maintenance): refusing is correct and
+      //     the caller should retry — the pin is still meaningful, keep the binding.
+      //   - STRUCTURALLY (not in the pool any more, or not 'active'): the binding can
+      //     never resolve again, so holding it serves nobody. Clear it and let this
+      //     request fall through to normal selection.
       if (isExperimentalEnabled('stickyNoFallback')) {
-        log.info(`[sticky] NO-FALLBACK caller=${callerKey.slice(0, 50)} model=${modelKey || '(none)'} — bound account unavailable, refusing to rotate`);
-        return null;
+        const boundAccount = accounts.find(a => a.id === bound.accountId);
+        const structurallyGone = !boundAccount || boundAccount.status !== 'active';
+        if (structurallyGone) {
+          log.warn(`[sticky] NO-FALLBACK caller=${callerKey.slice(0, 50)} model=${modelKey || '(none)'} — bound account is gone or disabled, clearing the pin instead of refusing forever`);
+          clearStickyBinding(callerKey, modelKey, connectSelector);
+          noteStickyFallback();
+        } else {
+          log.info(`[sticky] NO-FALLBACK caller=${callerKey.slice(0, 50)} model=${modelKey || '(none)'} — bound account temporarily unavailable, refusing to rotate`);
+          return null;
+        }
+      } else {
+        // Clear it so the next call falls through to normal selection instead of looping.
+        clearStickyBinding(callerKey, modelKey, connectSelector);
+        noteStickyFallback();
       }
-      // Clear it so the next call falls through to normal selection instead of looping.
-      clearStickyBinding(callerKey, modelKey, connectSelector);
-      noteStickyFallback();
     }
   }
 
