@@ -145,21 +145,62 @@ export function quotaScore(account) {
 // individual rate-limit errors. v2.0.150: the threshold is now an operator
 // tunable (runtime-config tunables.droughtThresholdPercent, default 5).
 
-export function isDroughtMode() {
+// Minimum share of ACTIVE accounts whose weekly quota must actually be known
+// before a pool-wide drought can be declared. Expressed as a strict majority:
+// knownCount * 2 > activeCount.
+//
+// Why a floor exists at all: the loop below skips accounts with no numeric
+// weeklyPercent, so `droughtCount === knownCount` used to mean "every account we
+// happen to have data for is dry" while reading as "the pool is dry". refreshCredits
+// writes `credits = { lastError, fetchedAt }` (no weeklyPercent) when GetUserStatus
+// fails — the exact shape produced by an account whose subscription lookup errors
+// while chat still works — so a 40-account pool with 39 failed refreshes and ONE dry
+// account declared drought for the whole pool and demoted everyone to free models.
+// Measured, before this floor:
+//
+//   1 dry + 39 refresh-failed             -> drought=true   (1/40 restricts the pool)
+//   1 dry + 1 healthy + 38 refresh-failed -> drought=false  (one healthy suppresses it)
+//   40 refresh-failed (none known)        -> drought=false
+//   40 dry                                -> drought=true   (genuine)
+//
+// Why a STRICT majority and not a lower bar: the two error directions are not
+// symmetric. A false positive restricts paying users to free models — immediate and
+// user-visible. A false negative only lets the proxy keep attempting premium calls
+// that fail anyway, which is the cost the feature was built to trim, not a
+// correctness guarantee. So when coverage is thin, decline to claim drought.
+const DROUGHT_MIN_KNOWN_SHARE_NUMERATOR = 1;
+const DROUGHT_MIN_KNOWN_SHARE_DENOMINATOR = 2;
+
+/**
+ * Count the drought inputs over active accounts.
+ *
+ * `known` counts accounts with a numeric weeklyPercent — NOT accounts with a
+ * credits object, which is a different and larger set (see getDroughtSummary).
+ */
+function tallyDroughtInputs() {
   const eligible = accounts.filter(a => a.status === 'active');
-  if (!eligible.length) return false;
   const threshold = getDroughtThresholdPercent();
-  let knownCount = 0;
-  let droughtCount = 0;
+  let known = 0;
+  let dry = 0;
   for (const a of eligible) {
     const c = a?.credits;
     const w = c && typeof c.weeklyPercent === 'number' ? c.weeklyPercent : null;
     if (w == null) continue;
-    knownCount++;
-    if (w < threshold) droughtCount++;
+    known++;
+    if (w < threshold) dry++;
   }
-  if (!knownCount) return false; // no quota data yet — assume not drought
-  return droughtCount === knownCount;
+  const coverageMet =
+    known * DROUGHT_MIN_KNOWN_SHARE_DENOMINATOR >
+    eligible.length * DROUGHT_MIN_KNOWN_SHARE_NUMERATOR;
+  return { activeCount: eligible.length, known, dry, coverageMet, threshold };
+}
+
+export function isDroughtMode() {
+  const { activeCount, known, dry, coverageMet } = tallyDroughtInputs();
+  if (!activeCount) return false;
+  if (!known) return false;      // no quota data yet — assume not drought
+  if (!coverageMet) return false; // too few measured to speak for the pool
+  return dry === known;
 }
 
 // v2.0.58 — drought-mode premium-model gate. Default ON (changes
@@ -211,6 +252,9 @@ export function getDroughtSummary() {
   const eligible = accounts.filter(a => a.status === 'active');
   let lowestWeekly = null;
   let lowestDaily = null;
+  // Accounts carrying ANY credits object — including a refresh that failed and
+  // wrote only { lastError, fetchedAt }. This is the count the Dashboard banner
+  // has always shown.
   let knownAccounts = 0;
   for (const a of eligible) {
     const c = a?.credits;
@@ -226,11 +270,22 @@ export function getDroughtSummary() {
   const drought = isDroughtMode();
   const restrictEnabled = isDroughtRestrictEnabled();
   const freeTierModels = getTierModels('free');
+  // The drought decision's OWN inputs. Deliberately reported separately from
+  // knownAccounts above: the two counts answer different questions and used to
+  // share one name, so the banner could read "knownAccounts=40" while the
+  // decision behind it rested on a single measured account.
+  const tally = tallyDroughtInputs();
   return {
     drought,
     threshold: getDroughtThresholdPercent(),
     activeAccounts: eligible.length,
     knownAccounts,
+    // Accounts with a numeric weeklyPercent — the set isDroughtMode actually counts.
+    quotaKnownAccounts: tally.known,
+    droughtAccounts: tally.dry,
+    // False when too few accounts are measured to speak for the pool, in which
+    // case `drought` is forced false regardless of what the measured ones say.
+    coverageMet: tally.coverageMet,
     lowestWeeklyPercent: lowestWeekly,
     lowestDailyPercent: lowestDaily,
     restrictEnabled,
