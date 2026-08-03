@@ -1,0 +1,60 @@
+{
+  "tests": ["test/strict-usage-total.test.js"],
+  "expectBaselinePass": 12,
+  "mutations": [
+    {
+      "name": "flag defaults ON — would change every existing deploy's billing shape",
+      "file": "src/handlers/chat.js",
+      "anchor": "  return String(env.WINDSURFAPI_STRICT_USAGE_TOTAL || '0') === '1';",
+      "replacement": "  return String(env.WINDSURFAPI_STRICT_USAGE_TOTAL || '1') === '1';"
+    },
+    {
+      "name": "flag accepts any truthy string — a typo silently changes billing shape",
+      "file": "src/handlers/chat.js",
+      "anchor": "  return String(env.WINDSURFAPI_STRICT_USAGE_TOTAL || '0') === '1';",
+      "replacement": "  return !!env.WINDSURFAPI_STRICT_USAGE_TOTAL;"
+    },
+    {
+      "name": "cascade: flag ignored, identity never restored",
+      "file": "src/handlers/chat.js",
+      "anchor": "    const totalTokens = strictUsageTotal()\n      ? promptTokens + outputTokens\n      : promptTokens + outputTokens + cacheWrite;",
+      "replacement": "    const totalTokens = promptTokens + outputTokens + cacheWrite;"
+    },
+    {
+      "name": "cascade: flag inverted",
+      "file": "src/handlers/chat.js",
+      "anchor": "    const totalTokens = strictUsageTotal()\n      ? promptTokens + outputTokens\n      : promptTokens + outputTokens + cacheWrite;",
+      "replacement": "    const totalTokens = strictUsageTotal()\n      ? promptTokens + outputTokens + cacheWrite\n      : promptTokens + outputTokens;"
+    },
+    {
+      "name": "connect: flag ignored, the two paths disagree",
+      "file": "src/devin-connect.js",
+      "anchor": "    total_tokens: strictTotal\n      ? promptTokens + completion\n      : promptTokens + completion + cacheWrite,",
+      "replacement": "    total_tokens: promptTokens + completion + cacheWrite,"
+    },
+    {
+      "name": "accounting meters on total_tokens — spend under-reports under the flag",
+      "file": "src/auth.js",
+      "anchor": "  const total = Math.max(\n    Number(usage?.total_tokens) || 0,\n    prompt + completion + cacheWrite,\n  ) || (prompt + completion);",
+      "replacement": "  const total = Number(usage?.total_tokens) || (prompt + completion);"
+    },
+    {
+      "name": "fullBillableTokens ignores cache-write, so full cost is unrecoverable",
+      "file": "src/handlers/chat.js",
+      "anchor": "  return Math.max(total, prompt + completion + cacheWrite);",
+      "replacement": "  return total || (prompt + completion);"
+    },
+    {
+      "name": "strict mode also drops the cache_creation field — cost unrecoverable downstream",
+      "file": "src/handlers/chat.js",
+      "anchor": "      cache_creation_input_tokens: cacheWrite,",
+      "replacement": "      cache_creation_input_tokens: strictUsageTotal() ? 0 : cacheWrite,"
+    },
+    {
+      "name": "the flag leaks into prompt_tokens — re-introduces the pre-#118 defect",
+      "file": "src/handlers/chat.js",
+      "anchor": "    const promptTokens = inputTokens + cacheRead;",
+      "replacement": "    const promptTokens = inputTokens + cacheRead + (strictUsageTotal() ? cacheWrite : 0);"
+    }
+  ]
+}
