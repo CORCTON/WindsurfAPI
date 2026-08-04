@@ -1,0 +1,76 @@
+{
+  "tests": [
+    "test/dashboard-models-connect-parity.test.js",
+    "test/connect-discovery-rebuild.test.js",
+    "test/cloud-catalog-backend-boundary.test.js"
+  ],
+  "expectBaselinePass": 17,
+  "mutations": [
+    {
+      "name": "the original defect: dashboard stops annotating and reports everything reachable",
+      "file": "src/dashboard/api.js",
+      "anchor": "      const { reachable, selector } = isReachable(id);",
+      "replacement": "      const { selector } = isReachable(id); const reachable = true;"
+    },
+    {
+      "name": "dashboard narrows instead of annotating — an allow-list entry becomes unclickable",
+      "file": "src/dashboard/api.js",
+      "anchor": "    const models = filterModelKeysByCloudCatalog().map((id) => {",
+      "replacement": "    const models = filterModelKeysByCloudCatalog().filter((id) => isReachable(id).reachable).map((id) => {"
+    },
+    {
+      "name": "free-reachable selector no longer synthesized — the only serveable one vanishes",
+      "file": "src/dashboard/api.js",
+      "anchor": "    if (getBackendSwitch('devinConnect')) {\n      const seen = new Set(models.map((m) => m.id));",
+      "replacement": "    if (false) {\n      const seen = new Set(models.map((m) => m.id));"
+    },
+    {
+      "name": "synthesis stops being gated on the transport — Cascade panels get a connect selector",
+      "file": "src/dashboard/api.js",
+      "anchor": "    if (getBackendSwitch('devinConnect')) {\n      const seen = new Set(models.map((m) => m.id));",
+      "replacement": "    if (true) {\n      const seen = new Set(models.map((m) => m.id));"
+    },
+    {
+      "name": "connectSelector dropped from the row — unreachable and unmapped become indistinguishable",
+      "file": "src/dashboard/api.js",
+      "anchor": "        connectSelector: selector,",
+      "replacement": ""
+    },
+    {
+      "name": "the FREE_REACHABLE floor is re-tested AFTER resolution — a degraded paid name reads as reachable",
+      "file": "src/handlers/models.js",
+      "anchor": "    const { selector, mapped } = resolveConnectSelector(windsurfId);\n    return { reachable: !!(mapped && known(selector) && entitled(selector)), selector: mapped ? selector : null };",
+      "replacement": "    const { selector, mapped } = resolveConnectSelector(windsurfId);\n    if (FREE_REACHABLE_SELECTORS.has(selector)) return { reachable: true, selector };\n    return { reachable: !!(mapped && known(selector) && entitled(selector)), selector: mapped ? selector : null };"
+    },
+    {
+      "name": "entitlement term dropped from the predicate — a free-only pool advertises paid selectors again",
+      "file": "src/handlers/models.js",
+      "anchor": "    return { reachable: !!(mapped && known(selector) && entitled(selector)), selector: mapped ? selector : null };",
+      "replacement": "    return { reachable: !!(mapped && known(selector)), selector: mapped ? selector : null };"
+    },
+    {
+      "name": "existence term dropped — selectors in neither snapshot nor live catalog read as reachable",
+      "file": "src/handlers/models.js",
+      "anchor": "    return { reachable: !!(mapped && known(selector) && entitled(selector)), selector: mapped ? selector : null };",
+      "replacement": "    return { reachable: !!(mapped && entitled(selector)), selector: mapped ? selector : null };"
+    },
+    {
+      "name": "the FREE_REACHABLE floor is removed entirely — the one universally-serveable selector reads unreachable",
+      "file": "src/handlers/models.js",
+      "anchor": "    if (FREE_REACHABLE_SELECTORS.has(windsurfId)) return { reachable: true, selector: windsurfId };",
+      "replacement": ""
+    },
+    {
+      "name": "predicate ignores the transport — a Cascade deployment gets its panel filtered by connect rules",
+      "file": "src/handlers/models.js",
+      "anchor": "  if (!getBackendSwitch('devinConnect', effectiveEnv)) {\n    return () => ({ reachable: true, selector: null });\n  }",
+      "replacement": "  if (false) {\n    return () => ({ reachable: true, selector: null });\n  }"
+    },
+    {
+      "name": "handleModels stops using the shared predicate — the two views can diverge again",
+      "file": "src/handlers/models.js",
+      "anchor": "    data = data.filter((m) => isReachable(m._windsurf_id).reachable);",
+      "replacement": "    data = data.filter((m) => { const { selector, mapped } = resolveConnectSelector(m._windsurf_id); return mapped && entitled(selector); });"
+    }
+  ]
+}
