@@ -988,6 +988,9 @@ export function normalizeMessagesForCascade(messages, tools, options = {}) {
       // prior calls in a foreign format and the conversation loses
       // continuity (issue #86 "上下文会丢"). Default JSON-XML still applies
       // for OpenAI/Anthropic/Gemini-style models.
+      // Note: m.reasoning_content is intentionally dropped on assistant history rebuild:
+      // upstream swe-1-7 accepts outgoing tag #11 but ignores it (0/3 causal effect),
+      // while promoting reasoning to text content creates self-reflection loops.
       for (const tc of m.tool_calls) {
         const name = tc.function?.name || 'unknown';
         const args = tc.function?.arguments;

@@ -582,7 +582,12 @@ function anthropicToOpenAI(body, ccActive = false) {
             log.info(`messages: document block (${mt}) not decoded — forwarded as text placeholder`);
           }
         } else if (block.type === 'thinking') {
-          // Thinking blocks from assistant history — skip; the model will regenerate
+          // Incoming assistant thinking blocks are dropped on history translation:
+          // 1) Upstream swe-1-7 (K2 family) accepts outgoing candidate tag #11 in ChatMessage,
+          //    but causally ignores its content (0/3 causal effect; tag #9 is incoming-only).
+          // 2) Wholesale promotion (reasoning -> text content) is an industry anti-pattern
+          //    inducing self-reflection loops on Kimi/DeepSeek families.
+          // 3) Genuine Bedrock clients send #11+#12 (signature), but K2 family emits no signature.
         } else if (block.type === 'tool_use' && role === 'assistant') {
           const id = block.id || `call_${randomUUID().slice(0, 8)}`;
           toolNameById.set(id, block.name || '');

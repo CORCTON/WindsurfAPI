@@ -713,7 +713,9 @@ describe('proto-openai-03: stop enforcement', () => {
 });
 
 describe('thinking-only rescue & promotion', () => {
-  it('rescues thinking-only response in streamChatCompletion when emulateTools is true', async () => {
+  const SAMPLE_TOOLS = [{ type: 'function', function: { name: 'read_file' } }];
+
+  it('rescues thinking-only response in streamChatCompletion when tools are present (includes digest in nudge)', async () => {
     let callCount = 0;
     let lastParams = null;
     __setStreamChatForTest(async function* (params) {
@@ -740,7 +742,7 @@ describe('thinking-only rescue & promotion', () => {
     const send = (frame) => frames.push(frame);
 
     const result = await streamChatCompletion(
-      { model: 'swe-1-7', messages: initialMessages },
+      { model: 'swe-1-7', messages: initialMessages, tools: SAMPLE_TOOLS },
       send,
       { emulateTools: true },
     );
@@ -751,8 +753,179 @@ describe('thinking-only rescue & promotion', () => {
     assert.equal(passedMsgs[0].role, 'user');
     assert.equal(passedMsgs[0].content, 'hello');
     assert.equal(passedMsgs[1].role, 'user');
-    assert.equal(passedMsgs[1].content, 'Stop reasoning. Emit the tool call markup now.');
+    assert.equal(
+      passedMsgs[1].content,
+      'Your previous reasoning ended with: """I\'ll use the read_file tool"""\nStop reasoning. Emit the tool call markup now.',
+    );
     assert.equal(result.finish_reason, 'tool_calls');
+  });
+
+  it('caps reasoning digest at DEVIN_CONNECT_RESCUE_REASONING_MAX_CHARS (tail kept)', async () => {
+    let callCount = 0;
+    let lastParams = null;
+    const longReasoning = 'A'.repeat(150) + 'B'.repeat(50);
+    __setStreamChatForTest(async function* (params) {
+      callCount++;
+      lastParams = params;
+      if (callCount === 1) {
+        yield { type: 'reasoning', text: longReasoning };
+        yield { type: 'finish', reason: 'stop', usage: null };
+      } else {
+        yield { type: 'content', text: '<tool_call>{"name":"read_file"}</tool_call>' };
+        yield { type: 'finish', reason: 'stop', usage: null };
+      }
+    });
+
+    const oldLimit = process.env.DEVIN_CONNECT_RESCUE_REASONING_MAX_CHARS;
+    process.env.DEVIN_CONNECT_RESCUE_REASONING_MAX_CHARS = '50';
+    try {
+      await streamChatCompletion(
+        { model: 'swe-1-7', messages: [{ role: 'user', content: 'hi' }], tools: SAMPLE_TOOLS },
+        () => {},
+        { emulateTools: true },
+      );
+    } finally {
+      if (oldLimit === undefined) delete process.env.DEVIN_CONNECT_RESCUE_REASONING_MAX_CHARS;
+      else process.env.DEVIN_CONNECT_RESCUE_REASONING_MAX_CHARS = oldLimit;
+    }
+
+    assert.equal(callCount, 2);
+    const nudge = lastParams.messages.at(-1).content;
+    // Buffer is a capped tail: no truncation marker, just the last 50 chars.
+    const expectedDigest = 'B'.repeat(50);
+    assert.equal(
+      nudge,
+      `Your previous reasoning ended with: """${expectedDigest}"""\nStop reasoning. Emit the tool call markup now.`,
+    );
+  });
+
+  it('does not accumulate nudges across consecutive rescues (one fresh nudge per rescue)', async () => {
+    // Review finding on this PR: rebuilding filteredMsgs from attemptParams kept every
+    // prior rescue's nudge (role:'user' survives the empty-assistant filter), so rescue
+    // call k carried k-1 nudges. Invisible at 46 chars/nudge pre-digest, ~2.1KB each
+    // with one. Rebuild from the untouched original instead — see devin-connect-openai.js.
+    const seen = [];
+    let callCount = 0;
+    __setStreamChatForTest(async function* (params) {
+      callCount++;
+      seen.push(params.messages.map((m) => ({ role: m.role, content: m.content })));
+      if (callCount <= 3) {
+        yield { type: 'reasoning', text: `reasoning tail ${callCount}` };
+        yield { type: 'finish', reason: 'stop', usage: null };
+      } else {
+        yield { type: 'content', text: '<tool_call>{"name":"read_file"}</tool_call>' };
+        yield { type: 'finish', reason: 'stop', usage: null };
+      }
+    });
+
+    const oldMax = process.env.DEVIN_CONNECT_RESCUE_MAX;
+    process.env.DEVIN_CONNECT_RESCUE_MAX = '5';
+    try {
+      await streamChatCompletion(
+        { model: 'swe-1-7', messages: [{ role: 'user', content: 'hi' }], tools: SAMPLE_TOOLS },
+        () => {},
+        { emulateTools: true },
+      );
+    } finally {
+      if (oldMax === undefined) delete process.env.DEVIN_CONNECT_RESCUE_MAX;
+      else process.env.DEVIN_CONNECT_RESCUE_MAX = oldMax;
+    }
+
+    assert.equal(callCount, 4, 'three thinking-only attempts, then the healed one');
+    for (let k = 2; k <= 4; k++) {
+      const msgs = seen[k - 1];
+      const nudges = msgs.filter(
+        (m) => m.role === 'user' && String(m.content).startsWith('Your previous reasoning ended with'),
+      );
+      assert.equal(nudges.length, 1, `rescue call ${k} carries ${nudges.length} nudge(s), expected exactly 1`);
+      assert.equal(msgs.length, 2, `rescue call ${k} must be original message + one nudge, got ${msgs.length} messages`);
+      assert.ok(
+        nudges[0].content.includes(`reasoning tail ${k - 1}`),
+        `rescue call ${k} must quote the immediately-preceding failed attempt`,
+      );
+      if (k >= 3) {
+        assert.ok(
+          !nudges[0].content.includes(`reasoning tail ${k - 2}`),
+          `rescue call ${k} still carries the stale digest from attempt ${k - 2}`,
+        );
+      }
+    }
+  });
+
+  it('disables reasoning digest when DEVIN_CONNECT_RESCUE_REASONING_MAX_CHARS=0', async () => {
+    let callCount = 0;
+    let lastParams = null;
+    __setStreamChatForTest(async function* (params) {
+      callCount++;
+      lastParams = params;
+      if (callCount === 1) {
+        yield { type: 'reasoning', text: 'some reasoning' };
+        yield { type: 'finish', reason: 'stop', usage: null };
+      } else {
+        yield { type: 'content', text: 'ok' };
+        yield { type: 'finish', reason: 'stop', usage: null };
+      }
+    });
+
+    const oldLimit = process.env.DEVIN_CONNECT_RESCUE_REASONING_MAX_CHARS;
+    process.env.DEVIN_CONNECT_RESCUE_REASONING_MAX_CHARS = '0';
+    try {
+      await streamChatCompletion(
+        { model: 'swe-1-7', messages: [{ role: 'user', content: 'hi' }], tools: SAMPLE_TOOLS },
+        () => {},
+        { emulateTools: true },
+      );
+    } finally {
+      if (oldLimit === undefined) delete process.env.DEVIN_CONNECT_RESCUE_REASONING_MAX_CHARS;
+      else process.env.DEVIN_CONNECT_RESCUE_REASONING_MAX_CHARS = oldLimit;
+    }
+
+    assert.equal(callCount, 2);
+    assert.equal(lastParams.messages.at(-1).content, 'Stop reasoning. Emit the tool call markup now.');
+  });
+
+  it('rescues in native tool mode when tools are present (emulateTools=false)', async () => {
+    let callCount = 0;
+    __setStreamChatForTest(async function* () {
+      callCount++;
+      if (callCount === 1) {
+        yield { type: 'reasoning', text: 'I should call a tool' };
+        yield { type: 'finish', reason: 'stop', usage: null };
+      } else {
+        yield {
+          type: 'finish',
+          reason: 'stop',
+          usage: null,
+          toolCalls: [{ id: 'call_1', name: 'read_file', arguments: '{}' }],
+        };
+      }
+    });
+
+    const result = await streamChatCompletion(
+      { model: 'swe-1-7', messages: [{ role: 'user', content: 'hi' }], tools: SAMPLE_TOOLS },
+      () => {},
+      { emulateTools: false },
+    );
+
+    assert.equal(callCount, 2, 'the rescue fires on the native tool path too, not only under emulation');
+    assert.equal(result.finish_reason, 'tool_calls');
+  });
+
+  it('skips the rescue when the request carries no tools', async () => {
+    let callCount = 0;
+    __setStreamChatForTest(async function* () {
+      callCount++;
+      yield { type: 'reasoning', text: 'just thinking out loud' };
+      yield { type: 'finish', reason: 'stop', usage: null };
+    });
+
+    await streamChatCompletion(
+      { model: 'swe-1-7', messages: [{ role: 'user', content: 'hi' }] },
+      () => {},
+      { emulateTools: true },
+    );
+
+    assert.equal(callCount, 1, 'no tools in the request — a reasoning-only finish is legitimate, not a trap');
   });
 
   it('respects rescue budget when DEVIN_CONNECT_RESCUE_MAX=0', async () => {
@@ -770,7 +943,7 @@ describe('thinking-only rescue & promotion', () => {
     process.env.DEVIN_CONNECT_RESCUE_MAX = '0';
     try {
       await streamChatCompletion(
-        { model: 'swe-1-7', messages: [{ role: 'user', content: 'hi' }] },
+        { model: 'swe-1-7', messages: [{ role: 'user', content: 'hi' }], tools: SAMPLE_TOOLS },
         send,
         { emulateTools: true },
       );
