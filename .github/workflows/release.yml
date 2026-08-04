@@ -14,10 +14,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: '24'
           cache: 'npm'
@@ -42,7 +42,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Build metadata
         run: |
@@ -56,10 +56,10 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Login to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
@@ -67,7 +67,7 @@ jobs:
 
       - name: Docker metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           # github.repository (= dwgx/WindsurfAPI) lowercases to "windsurfapi"
           # without the hyphen the package.json npm name uses. Hardcode the
@@ -82,7 +82,7 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
 
       - name: Build and push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64
@@ -117,10 +117,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: '22'
 
@@ -135,7 +135,7 @@ jobs:
         run: node scripts/exe-boot-smoke.mjs dist-macos/windsurfapi-macos-arm64
 
       - name: Upload binary artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: windsurfapi-macos-arm64
           path: dist-macos/windsurfapi-macos-arm64
@@ -156,10 +156,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: '22'
 
@@ -174,7 +174,7 @@ jobs:
         run: node scripts/exe-boot-smoke.mjs dist-macos/windsurfapi-macos-x64
 
       - name: Upload binary artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: windsurfapi-macos-x64
           path: dist-macos/windsurfapi-macos-x64
@@ -190,10 +190,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           # Match the pkg target (node22-win-x64). pkg-fetch 3.6.4 ships prebuilt
           # base binaries for node22/24/26 but NOT node20 — a node20 target 404s
@@ -290,7 +290,7 @@ jobs:
           Write-Host 'zip OK: exe + tray scripts present'
 
       - name: Upload exe artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: windsurfapi-windows-exe
           path: |
@@ -308,7 +308,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Get version from tag
         id: version
@@ -330,19 +330,19 @@ jobs:
           fi
 
       - name: Download Windows exe
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: windsurfapi-windows-exe
           path: dist-windows
 
       - name: Download macOS arm64 binary
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: windsurfapi-macos-arm64
           path: dist-macos
 
       - name: Download macOS x64 binary (optional)
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         continue-on-error: true
         with:
           name: windsurfapi-macos-x64
@@ -363,7 +363,7 @@ jobs:
           echo "macOS zip contents:"; unzip -l windsurfapi-macos.zip
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           name: v${{ steps.version.outputs.VERSION }}
           body_path: ${{ steps.notes.outputs.found == 'true' && steps.notes.outputs.file || '' }}
