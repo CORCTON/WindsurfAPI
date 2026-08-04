@@ -65,10 +65,10 @@
       "replacement": "    total_tokens: total ?? (prompt + completion),"
     },
     {
-      "name": "clamp removed — a malformed usage block can drive the tally negative",
+      "name": "the ORIGINAL inline form restored (no clamps + `|| (prompt + completion)` tail) — can emit a negative cumulative total",
       "file": "src/auth.js",
-      "anchor": "  const prompt = Math.max(0, Number(usage.prompt_tokens) || 0);",
-      "replacement": "  const prompt = Number(usage.prompt_tokens) || 0;"
+      "anchor": "  return Math.max(total, prompt + completion + cacheWrite);",
+      "replacement": "  return Math.max(Number(usage.total_tokens) || 0, (Number(usage.prompt_tokens) || 0) + (Number(usage.completion_tokens) || 0) + (Number(usage.cache_creation_input_tokens) || 0)) || ((Number(usage.prompt_tokens) || 0) + (Number(usage.completion_tokens) || 0));"
     }
   ]
 }
