@@ -577,8 +577,9 @@ harness 在骗你。
 覆盖,第一半等于没做)。12 条断言、9 次突变全 CAUGHT、门禁 3323/0。
 
 **然后测了代价,方向是反的。** 6 轮受阻期间触达的不同账号数(每个不同账号 = 一次完整前缀
-写,实测约为读的 5.6 倍:`devin-connect.js` 冷 round-1 tag4=14361,暖 round-2
-tag5=14356 + tag4=5):
+写,约为读的 5.6 倍 —— 依据是 `devin-connect.js` 的 "hit cost measured at 17.8% of
+miss"(1/0.178),**不是**同处引用的 tag4 token 计数,那组数只确定哪个 tag 承载
+cache-write):
 
 | 做法 | pool=4 | pool=8 |
 |---|---|---|
@@ -756,7 +757,9 @@ sticky-queue-on-pin.json      13 mutations, 12 CAUGHT + 1 有据可查的漏网
 
 ### 直接在 master 上提交:做成可选 hook,而不是第三条纪律
 
-本轮我把 6 个 commit 直接写在 master 上。为什么难自查:直接提交产生的历史与
+本轮我把 6 个 commit 直接写在 master 上(`95f35cd`、`cc9a03e`、`557b9f7`、`6aa25a1`、
+`0719a9d`、`b910c7e` —— 点出 SHA 是因为 **git 不记录 commit 是在哪个分支上写的**,所以
+这句话本身无法从提交图核实,只能靠作者点名)。为什么难自查:直接提交产生的历史与
 `git merge --ff-only` **字节级相同**,所以事后看不出异常。只能在发生的那一刻挡。
 
 `.githooks/pre-commit`,照 `.gitmessage` 的惯例**本地 opt-in**

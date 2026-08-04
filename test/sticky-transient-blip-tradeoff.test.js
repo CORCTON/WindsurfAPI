@@ -124,7 +124,8 @@ describe('a transient blip migrates the conversation, and the migration CONVERGE
     const distinct = new Set(servedBy);
     assert.equal(distinct.size, 1,
       `6 blocked turns were served by ${distinct.size} different accounts (${[...distinct].join(', ')}). `
-      + 'Each distinct account is a full-prefix cache WRITE (~10x a read), so convergence on '
+      + 'Each distinct account is a full-prefix cache WRITE (~5.6x a read, from the '
+      + '17.8%-of-miss calibration in devin-connect.js), so convergence on '
       + 'ONE substitute is the property that makes clearing the pin the cheaper choice.');
     assert.notEqual(servedBy[0], A.id, 'and none of them is the blocked account');
   });

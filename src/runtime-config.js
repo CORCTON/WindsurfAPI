@@ -489,8 +489,11 @@ const BREAKER_TUNABLES = {
   // deploy is byte-identical.
   //
   // Why it is opt-in rather than a fix: rotating away from the pin costs a full
-  // prompt-cache WRITE on the substitute (measured ~5.6x a read — cold round-1
-  // tag4=14361 vs warm round-2 tag5=14356+tag4=5), so waiting is cheaper in tokens.
+  // prompt-cache WRITE on the substitute, and a write is roughly 5.6x a read — that ratio
+  // comes from devin-connect.js's "hit cost measured at 17.8% of miss" (1/0.178), NOT from
+  // the tag-4 A/B token counts quoted alongside it elsewhere in this repo. Those counts
+  // (14361 / 14356+5) establish WHICH tag carries cache-write; they are token totals and
+  // say nothing about cost. Citing them for the ratio was wrong, in six places.
   // But waiting caps that caller's throughput at ONE account's RPM (pro 60/min,
   // unprobed 20/min), where rotating spreads it across the pool. Which one an
   // operator wants depends on whether they are optimising cost or latency, so the

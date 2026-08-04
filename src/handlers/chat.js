@@ -2204,7 +2204,8 @@ export function finalizeConnectAccount(acct, { model, selector = null, startTime
  * Why wait at all: rotating away from the pin costs a full prompt-cache WRITE on the
  * substitute, and the pin does NOT come back afterwards — the success path re-pins
  * whatever served, and there is no return-home mechanism. Measured over 6 blocked
- * turns, distinct accounts touched (each one a full-prefix write, ~5.6x a read):
+ * turns, distinct accounts touched (each one a full-prefix write; a write is ~5.6x a
+ * read, derived from devin-connect.js's "hit cost measured at 17.8% of miss"):
  * rotate-and-repin 2, keep-the-pin-but-rotate-anyway 4 (it SCATTERS, because the
  * candidate sort ends on lastUsed ASCENDING so each blocked turn picks a different
  * cold account), queue-on-pin 1. Waiting is the only one that stays on one account.

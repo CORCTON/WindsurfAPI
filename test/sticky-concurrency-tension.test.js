@@ -7,7 +7,9 @@
 // That is DESIGNED, not broken. getApiKey's candidate sort puts fewest-in-flight first so
 // a burst spreads instead of piling onto one account that still has RPM headroom
 // (issue #37). Sticky binding, meanwhile, exists to keep SEQUENTIAL turns on one account
-// because the upstream prompt cache is per-account and a write costs ~10x a read.
+// because the upstream prompt cache is per-account and a write costs several times a read
+// (~5.6x, from devin-connect.js's 17.8%-of-miss calibration; the older ~10x figure that
+// still appears in sticky-session.js has no derivation anywhere in the repo).
 //
 // For a parallel burst those goals conflict and the proxy cannot tell the cases apart:
 // "8 parallel tool calls in one conversation" wants one account (1 cache write, not 8),

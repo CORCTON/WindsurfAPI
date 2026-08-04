@@ -2001,9 +2001,12 @@ export function getApiKey(excludeKeys = [], modelKey = null, callerKey = null, c
       //
       // Shard only among the candidates that are ACTUALLY TIED with candidates[0].
       //
-      // The check above establishes that [0] and [1] tie, and the previous version then
-      // indexed `hash % candidates.length` across the WHOLE array — so it could promote an
-      // account that ties with nothing, including the worst one present. During a
+      // The defect that motivated the bound: that removed gate checked only that [0] and [1]
+      // tied, and the code then indexed `hash % candidates.length` across the WHOLE array —
+      // so it could promote an account that ties with nothing, including the worst one
+      // present. (This paragraph used to open "the check above establishes that [0] and [1]
+      // tie", which stopped being true the moment the gate was deleted a commit later — a
+      // comment describing a mechanism two paragraphs after explaining its removal.) During a
       // concurrent burst that is exactly what happened: the account already serving sorts
       // LAST on in-flight, the two idle accounts at the front tie, so the gate opened and
       // the swap pulled the busiest account back to position 0. Measured on a pool of 8
@@ -2015,8 +2018,10 @@ export function getApiKey(excludeKeys = [], modelKey = null, callerKey = null, c
       // It was invisible because the outcome depends entirely on sha256(callerKey) % pool:
       // buckets 0–1 spread across all 8, bucket 7 spread across 1. The pinning test
       // happens to use a callerKey that hashes to bucket 0 — the best case — so it read as
-      // "8 concurrent → 8 distinct, by design". Of 8 realistic callerKeys sampled, only 2
-      // spread across the whole pool.
+      // "8 concurrent → 8 distinct, by design". Of 8 realistic callerKeys sampled during the
+      // investigation only 2 spread across the whole pool; the committed guard in
+      // test/shard-tied-prefix.test.js carries 7 of those 8, which is what is reproducible
+      // from this repo — the 8th was a probe-only key and is not corroborated here.
       //
       // Bounding the permutation to the tied prefix keeps what sharding is for (a caller
       // deterministically prefers its own slot among EQUALLY GOOD accounts, so two callers

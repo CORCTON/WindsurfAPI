@@ -3,8 +3,9 @@
 // Rotating away from a sticky pin costs a full prompt-cache WRITE on the substitute, and
 // the pin does not come back: the success path re-pins whatever served, and there is no
 // return-home mechanism. Measured over 6 blocked turns, distinct accounts touched (each
-// one a full-prefix write, ~5.6x a read — devin-connect.js calibration: cold round-1
-// tag4=14361, warm round-2 tag5=14356 + tag4=5):
+// one a full-prefix write; a write is ~5.6x a read, derived from devin-connect.js's "hit
+// cost measured at 17.8% of miss" — NOT from the tag-4 A/B token counts, which pin which
+// tag carries cache-write and say nothing about cost):
 //
 //     rotate and re-pin (default)     2
 //     keep the pin but rotate anyway  4     ← SCATTERS, measured and reverted

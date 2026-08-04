@@ -6,7 +6,13 @@
 // two terms at once cannot attribute, and the removal was done by CLEARING ACCOUNT STATE
 // (_rpmHistory / lastUsed) between turns — which is not isolating a mechanism, it IS the
 // mechanism. Measured that way the answer came out as 4 distinct accounts; the true
-// baseline is 2.
+// pre-fix baseline is 2.
+//
+// Caveat on that 4, recorded because it does not reproduce: clearing state between turns as
+// described above yields 2, not 4. The 4 came from a probe that ALSO differed in another way
+// (it is reproducible on pre-fix code by omitting the callerKey, which disables sharding
+// entirely). So treat the 4 as "a number a flawed harness produced", not as a measurement of
+// the described method — which is the whole point of the paragraph.
 //
 // Re-measured by disabling one comparator term at a time in source, leaving all account
 // state alone (8 sequential turns, pool of 4):
