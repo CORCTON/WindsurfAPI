@@ -54,20 +54,26 @@ export function buildConnectReachability(env = process.env) {
   const known = (selector) => __testing.CATALOG_SELECTORS.has(selector) || __testing._liveSelectors.has(selector);
   const skipEntitlement = shouldSkipEntitlementFilter(effectiveEnv, getAccountCount().total);
   const entitled = (selector) => skipEntitlement || hasConnectEntitledAccount(selector);
+  // NOTE on what is deliberately NOT here: a FREE_REACHABLE_SELECTORS short-circuit.
+  //
+  // It looks like it belongs — `swe-1-6-slow` is callable by any account and is absent from
+  // both the snapshot and the live catalog, so `known()` answers false for it. But every
+  // caller passes a MODELS-derived id (`handleModels` passes `m._windsurf_id`, the Dashboard
+  // passes the MODELS key), and the free selector is NEITHER a MODELS key nor any entry's
+  // `_windsurf_id` — measured against all 163 entries. So the branch never executed. It was
+  // written, then mutation-verified to be unreachable: deleting it failed zero assertions.
+  //
+  // The floor is real, it just does not live here — both views SYNTHESIZE the free selector
+  // as a row (/v1/models' third producer, and the Dashboard route's equivalent), which is
+  // where it actually works. v3.9.13 shipped a defect of exactly this shape: an exported
+  // helper with no production caller whose mutation guard was watching unreachable code.
+  //
+  // And re-testing the RESOLVED selector instead would be worse than dead — with
+  // STRICT_MODEL=0 an unmapped paid name degrades to `swe-1-6-slow`, so testing after
+  // resolution reports `claude-4-sonnet` as reachable on a free-only pool, which is exactly
+  // the lie #234 is about. `connect-discovery-rebuild.test.js` caught that on the first run
+  // when this was first written the wrong way round.
   return (windsurfId) => {
-    // FREE_REACHABLE_SELECTORS is callable by ANY account and is deliberately absent from
-    // both the frozen snapshot and the live catalog, so `known()` says false for it. Hence
-    // this check, and hence it comes first: /v1/models' third producer exists for the same
-    // reason, and keying off `known` alone would call the only universally-serveable
-    // selector unreachable.
-    //
-    // It matches only when the id IS the free selector. It deliberately does NOT re-test
-    // the RESOLVED selector: with STRICT_MODEL=0 an unmapped paid name degrades to
-    // `swe-1-6-slow`, so testing after resolution reports `claude-4-sonnet` as reachable on
-    // a free-only pool — which is precisely the lie #234 is about. Caught by
-    // `connect-discovery-rebuild.test.js` ("does not advertise paid selectors to a
-    // free-only pool") when this was written the wrong way round.
-    if (FREE_REACHABLE_SELECTORS.has(windsurfId)) return { reachable: true, selector: windsurfId };
     const { selector, mapped } = resolveConnectSelector(windsurfId);
     return { reachable: !!(mapped && known(selector) && entitled(selector)), selector: mapped ? selector : null };
   };

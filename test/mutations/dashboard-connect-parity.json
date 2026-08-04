@@ -4,7 +4,7 @@
     "test/connect-discovery-rebuild.test.js",
     "test/cloud-catalog-backend-boundary.test.js"
   ],
-  "expectBaselinePass": 17,
+  "expectBaselinePass": 18,
   "mutations": [
     {
       "name": "the original defect: dashboard stops annotating and reports everything reachable",
@@ -49,16 +49,11 @@
       "replacement": "    return { reachable: !!(mapped && known(selector)), selector: mapped ? selector : null };"
     },
     {
-      "name": "existence term dropped — selectors in neither snapshot nor live catalog read as reachable",
+      "name": "DOCUMENTED SURVIVOR: the existence term (known()) is dropped. Measured: of 163 MODELS entries, 58 resolve mapped and ALL 58 are known (snapshot ∪ live), 105 are unmapped — so no fixture puts a row in the mapped-but-unknown state this term exists to reject, and dropping it changes nothing observable. It is NOT dead code: resolveConnectSelector's first branch (devin-connect-models.js:257) returns mapped:true straight from SELECTOR_MAP without consulting the catalog, so an alias left pointing at a selector a snapshot rotation removed would be mapped-but-unknown and this term is the only thing rejecting it. Reproducing that needs a SELECTOR_MAP entry diverging from the catalog, i.e. reaching into module internals to manufacture drift; the term is kept and the premise that makes it currently unexercised is pinned by the fixture-shape assertion in the parity test instead.",
       "file": "src/handlers/models.js",
       "anchor": "    return { reachable: !!(mapped && known(selector) && entitled(selector)), selector: mapped ? selector : null };",
-      "replacement": "    return { reachable: !!(mapped && entitled(selector)), selector: mapped ? selector : null };"
-    },
-    {
-      "name": "the FREE_REACHABLE floor is removed entirely — the one universally-serveable selector reads unreachable",
-      "file": "src/handlers/models.js",
-      "anchor": "    if (FREE_REACHABLE_SELECTORS.has(windsurfId)) return { reachable: true, selector: windsurfId };",
-      "replacement": ""
+      "replacement": "    return { reachable: !!(mapped && entitled(selector)), selector: mapped ? selector : null };",
+      "expectCaught": false
     },
     {
       "name": "predicate ignores the transport — a Cascade deployment gets its panel filtered by connect rules",

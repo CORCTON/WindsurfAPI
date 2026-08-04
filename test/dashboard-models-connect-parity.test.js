@@ -186,6 +186,42 @@ describe('dashboard /models agrees with /v1/models on the Connect namespace (#23
     );
   });
 
+  // Pins the premise that makes a documented survivor harmless rather than pretending the
+  // survivor is covered (mutations spec: "the existence term (known()) is dropped").
+  //
+  // The predicate is `mapped && known(selector) && entitled(selector)`. Dropping `known`
+  // changes nothing today because no MODELS entry is in the mapped-but-unknown state: every
+  // entry that resolves mapped also exists in snapshot ∪ live. That is a property of the
+  // current alias map, NOT a structural guarantee — resolveConnectSelector's first branch
+  // (devin-connect-models.js:257) returns mapped:true straight from SELECTOR_MAP without
+  // consulting the catalog, so an alias left pointing at a selector a snapshot rotation
+  // removed would be mapped-but-unknown and `known` would become the only thing rejecting
+  // it. When that day comes this assertion fails, which is the signal to write the fixture
+  // the mutation currently cannot have.
+  it('no MODELS entry is mapped-but-unknown — the premise behind a documented survivor', async () => {
+    seed('free');
+    const { MODELS } = await import('../src/models.js');
+    const dcm = await import('../src/devin-connect-models.js');
+    const { CATALOG_SELECTORS, _liveSelectors } = dcm.__testing;
+    const mappedUnknown = [];
+    let mapped = 0;
+    for (const key of Object.keys(MODELS)) {
+      const r = dcm.resolveConnectSelector(MODELS[key]?._windsurf_id || key);
+      if (!r.mapped) continue;
+      mapped++;
+      if (!CATALOG_SELECTORS.has(r.selector) && !_liveSelectors.has(r.selector)) {
+        mappedUnknown.push(`${key} -> ${r.selector}`);
+      }
+    }
+    assert.ok(mapped > 0, `precondition: some entry must resolve mapped (got ${mapped}) — a `
+      + 'zero here would make the assertion below vacuously true');
+    assert.deepEqual(mappedUnknown, [],
+      'a MODELS entry now resolves to a selector absent from snapshot ∪ live. The existence '
+      + 'term in buildConnectReachability just became load-bearing, so its mutation should '
+      + 'now be CAUGHT — write the fixture and flip expectCaught in '
+      + 'test/mutations/dashboard-connect-parity.json');
+  });
+
   it('treats every model as reachable when the Connect backend is off', async () => {
     delete process.env.DEVIN_CONNECT;
     _resetRuntimeConfigForTests();
