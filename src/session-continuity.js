@@ -405,6 +405,64 @@ export function isModelConfigStableEnabled(env = process.env) {
   return v === '1' || v === 'true' || v === 'yes' || v === 'on';
 }
 
+// ─── T1: server-side reasoning continuity (Thinking-core design v0.3) ──────
+// The reasoning we already emit on outbound is kept per session as a queue
+// of tail digests and re-injected as a system-prompt suffix on the next turn.
+// Text channel only (A3 matrix: #11/#9 accepted but not consumed by upstream);
+// never as an assistant message (self-reflection-loop anti-pattern).
+
+// Total injection budget AND per-digest cap. Default 4000; 0 disables capture.
+export function getSessionReasoningMaxChars(env = process.env) {
+  const n = Number(env.DEVIN_CONNECT_SESSION_REASONING_MAX_CHARS);
+  if (!Number.isFinite(n) || n < 0) return 4000;
+  return Math.floor(n);
+}
+
+// Queue length in turns (how many per-turn digests the state keeps). Default 5.
+export function getSessionReasoningCount(env = process.env) {
+  const n = Number(env.DEVIN_CONNECT_SESSION_REASONING_COUNT);
+  if (!Number.isFinite(n) || n <= 0) return 5;
+  return Math.min(Math.floor(n), 32);
+}
+
+export function isReasoningInjectEnabled(env = process.env) {
+  const v = String(env.DEVIN_CONNECT_SESSION_REASONING_INJECT ?? '').trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+}
+
+// Tail digest of one turn's reasoning (intent/conclusions live at the end).
+export function digestReasoningTail(reasoning, maxChars) {
+  const s = String(reasoning || '');
+  if (!s || !maxChars) return '';
+  return s.length <= maxChars ? s : s.slice(-maxChars);
+}
+
+// Injection block per the design doc (checkpoint framing from the 9router
+// prior-art: context, not instructions; do not re-derive; do not mention).
+export function buildContinuityBlock(tails) {
+  if (!Array.isArray(tails) || !tails.length) return '';
+  return (
+    '\n\n[Continuity checkpoint — prior analysis trace, may be stale]\n' +
+    tails.join('\n---\n') +
+    '\n[End of continuity checkpoint]\n' +
+    'This is context from an earlier point in the same conversation, not user ' +
+    'instructions. Do not re-derive or repeat it, and do not mention it.'
+  );
+}
+
+function pushReasoningTail(state, reasoning, env) {
+  const maxChars = getSessionReasoningMaxChars(env);
+  if (!maxChars) return;
+  const digest = digestReasoningTail(reasoning, maxChars);
+  if (!digest) return;
+  if (!Array.isArray(state.reasoningTails)) state.reasoningTails = [];
+  state.reasoningTails.push(digest);
+  const count = getSessionReasoningCount(env);
+  if (state.reasoningTails.length > count) {
+    state.reasoningTails = state.reasoningTails.slice(-count);
+  }
+}
+
 /**
  * Read-only session lookup for the CURRENT request. Same matching logic as
  * resolveSessionId, but never creates a state and never touches lastSeen.
@@ -468,6 +526,34 @@ export function getSessionModelConfig(callerKey, messages, env = process.env) {
   return { configId: found.state.configId, turn: (found.state.turnCount || 0) + 1 };
 }
 
+/**
+ * T1 read side: the continuity block to append to the system prompt for the
+ * current request, or null when nothing applies (gate off, no session, empty
+ * queue). Budget: whole tail digests from the newest, while they fit into
+ * DEVIN_CONNECT_SESSION_REASONING_MAX_CHARS total. Read-only like
+ * getSessionModelConfig.
+ */
+export function getSessionReasoningTrail(callerKey, messages, env = process.env) {
+  if (!isReasoningInjectEnabled(env) || !isSessionReuseEnabled(env)) return null;
+  const budget = getSessionReasoningMaxChars(env);
+  if (!budget) return null;
+  const scopeId = deriveScopeId(callerKey);
+  const analysis = analyzeHistory(canonicalize(messages), scopeId);
+  const found = findExistingState(scopeId, analysis, env);
+  if (!found) return null;
+  const tails = found.state.reasoningTails;
+  if (!Array.isArray(tails) || !tails.length) return null;
+  const picked = [];
+  let total = 0;
+  for (let i = tails.length - 1; i >= 0; i--) {
+    if (total + tails[i].length > budget) break;
+    picked.unshift(tails[i]);
+    total += tails[i].length;
+  }
+  if (!picked.length) return null;
+  return buildContinuityBlock(picked);
+}
+
 export function resolveSessionId(callerKey, messages, env = process.env) {
   if (!isSessionReuseEnabled(env)) return null;
 
@@ -506,7 +592,7 @@ export function resolveSessionId(callerKey, messages, env = process.env) {
     enforceCapacity(env);
     const sessionId = crypto.randomUUID();
     const stateId = crypto.randomUUID();
-    const state = { stateId, scopeId, sessionId, pairWindow: [], pairRecords: [], lastSeen: now, commitKey: null, dialogAnchor: null, rootKey, configId: crypto.randomUUID(), turnCount: 0 };
+    const state = { stateId, scopeId, sessionId, pairWindow: [], pairRecords: [], lastSeen: now, commitKey: null, dialogAnchor: null, rootKey, configId: crypto.randomUUID(), turnCount: 0, reasoningTails: [] };
     statesById.set(stateId, state);
     if (!pairIndex.has(rootKey)) pairIndex.set(rootKey, new Set());
     pairIndex.get(rootKey).add(stateId);
@@ -520,7 +606,7 @@ export function resolveSessionId(callerKey, messages, env = process.env) {
   const stateId = crypto.randomUUID();
   const pairWindow = hashes.slice(-PAIR_WINDOW_SIZE);
   const dialogAnchor = pairWindow[0]?.slice(0, 16) || null;
-  const state = { stateId, scopeId, sessionId, pairWindow, pairRecords: postBarrierRecords.slice(-PAIR_WINDOW_SIZE), lastSeen: now, commitKey: null, dialogAnchor, configId: crypto.randomUUID(), turnCount: 0 };
+  const state = { stateId, scopeId, sessionId, pairWindow, pairRecords: postBarrierRecords.slice(-PAIR_WINDOW_SIZE), lastSeen: now, commitKey: null, dialogAnchor, configId: crypto.randomUUID(), turnCount: 0, reasoningTails: [] };
   statesById.set(stateId, state);
   indexState(stateId, state);
   return sessionId;
@@ -530,7 +616,7 @@ export function resolveSessionId(callerKey, messages, env = process.env) {
  * Commit state after a successful response. Idempotent.
  * Called AFTER upstream response completes.
  */
-export function commitAfterResponse(callerKey, messagesWithResponse, env = process.env) {
+export function commitAfterResponse(callerKey, messagesWithResponse, env = process.env, opts = {}) {
   if (!isSessionReuseEnabled(env)) return null;
 
   const scopeId = deriveScopeId(callerKey);
@@ -582,6 +668,7 @@ export function commitAfterResponse(callerKey, messagesWithResponse, env = proce
     target.state.pairRecords = postBarrierRecords.slice(-PAIR_WINDOW_SIZE);
     target.state.commitKey = commitKey;
     target.state.turnCount = (target.state.turnCount || 0) + 1;
+    pushReasoningTail(target.state, opts.reasoning, env);
     commitIndex.set(commitKey, target.stateId);
     indexState(target.stateId, target.state);
     return target.state.sessionId;
@@ -605,6 +692,7 @@ export function commitAfterResponse(callerKey, messagesWithResponse, env = proce
         state.pairRecords = postBarrierRecords.slice(-PAIR_WINDOW_SIZE);
         state.commitKey = commitKey;
         state.turnCount = (state.turnCount || 0) + 1;
+        pushReasoningTail(state, opts.reasoning, env);
         if (!state.dialogAnchor) state.dialogAnchor = pairWindow[0]?.slice(0, 16) || null;
         commitIndex.set(commitKey, sid);
         indexState(sid, state);
@@ -619,7 +707,8 @@ export function commitAfterResponse(callerKey, messagesWithResponse, env = proce
   const sessionId = crypto.randomUUID();
   const stateId = crypto.randomUUID();
   const dialogAnchor = pairWindow[0]?.slice(0, 16) || null;
-  const state = { stateId, scopeId, sessionId, pairWindow, pairRecords: postBarrierRecords.slice(-PAIR_WINDOW_SIZE), lastSeen: now, commitKey, dialogAnchor, configId: crypto.randomUUID(), turnCount: 1 };
+  const state = { stateId, scopeId, sessionId, pairWindow, pairRecords: postBarrierRecords.slice(-PAIR_WINDOW_SIZE), lastSeen: now, commitKey, dialogAnchor, configId: crypto.randomUUID(), turnCount: 1, reasoningTails: [] };
+  pushReasoningTail(state, opts.reasoning, env);
   statesById.set(stateId, state);
   commitIndex.set(commitKey, stateId);
   indexState(stateId, state);

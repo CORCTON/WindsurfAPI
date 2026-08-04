@@ -142,6 +142,29 @@ describe('buildGetChatMessageRequest', () => {
     assert.equal(getField(sub, 3, 0).value, 4, '#15.3 unchanged');
   });
 
+  // ★ 2026-08-05: T1 reasoning continuity — the checkpoint block rides as a
+  // system-prompt suffix inside tag #2. Byte-compatible: only longer.
+  it('continuityTrail appends to the system prompt inside #2', () => {
+    const trail = '\n\n[Continuity checkpoint — prior analysis trace, may be stale]\nr1\n[End]';
+    const proto = buildGetChatMessageRequest({
+      token: TOKEN, model: 'm',
+      messages: [{ role: 'system', content: 'BASE SYSTEM' }, { role: 'user', content: 'hi' }],
+      continuityTrail: trail,
+    });
+    const sys = getField(parseFields(proto), 2, 2).value.toString('utf8');
+    assert.ok(sys.startsWith('BASE SYSTEM'), 'client system kept verbatim');
+    assert.ok(sys.endsWith('[End]'), 'trail appended after the client system');
+    assert.ok(sys.includes('[Continuity checkpoint'));
+  });
+
+  it('without continuityTrail the system prompt is byte-identical to pre-feature', () => {
+    const proto = buildGetChatMessageRequest({
+      token: TOKEN, model: 'm',
+      messages: [{ role: 'system', content: 'BASE SYSTEM' }, { role: 'user', content: 'hi' }],
+    });
+    assert.equal(getField(parseFields(proto), 2, 2).value.toString('utf8'), 'BASE SYSTEM');
+  });
+
   // ★ 2026-07-10: empty-system + tools guard. Verified from live devin.exe capture
   // + boundary experiment: Devin's upstream returns "internal error occurred" for a
   // Claude-family request that declares tools (#10) but has an EMPTY/absent system

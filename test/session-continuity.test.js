@@ -6,6 +6,12 @@ import {
   isSessionReuseEnabled,
   isModelConfigStableEnabled,
   getSessionModelConfig,
+  isReasoningInjectEnabled,
+  getSessionReasoningMaxChars,
+  getSessionReasoningCount,
+  digestReasoningTail,
+  buildContinuityBlock,
+  getSessionReasoningTrail,
   buildPairHashes,
   canonicalize,
   normalizeToolLinkage,
@@ -437,5 +443,120 @@ describe('getSessionModelConfig — stable #15.1 / monotonic #15.2 (devin.exe pa
     const before = _getStoreSize();
     assert.equal(getSessionModelConfig('gm4-nobody', [{ role: 'user', content: 'orphan' }], ENV_BOTH), null);
     assert.equal(_getStoreSize(), before, 'lookup must not create a session');
+  });
+});
+
+
+describe('T1 reasoning continuity — digest, store queue, injection (Thinking-core)', () => {
+  beforeEach(() => _resetForTests());
+  afterEach(() => _resetForTests());
+  const ENV_T1 = { DEVIN_CONNECT_SESSION_REUSE: '1', DEVIN_CONNECT_SESSION_REASONING_INJECT: '1' };
+
+  it('env knobs: defaults and parsing', () => {
+    assert.equal(getSessionReasoningMaxChars({}), 4000);
+    assert.equal(getSessionReasoningMaxChars({ DEVIN_CONNECT_SESSION_REASONING_MAX_CHARS: '0' }), 0);
+    assert.equal(getSessionReasoningMaxChars({ DEVIN_CONNECT_SESSION_REASONING_MAX_CHARS: 'junk' }), 4000);
+    assert.equal(getSessionReasoningCount({}), 5);
+    assert.equal(getSessionReasoningCount({ DEVIN_CONNECT_SESSION_REASONING_COUNT: '99' }), 32, 'queue length capped');
+    assert.equal(isReasoningInjectEnabled({ DEVIN_CONNECT_SESSION_REASONING_INJECT: 'on' }), true);
+    assert.equal(isReasoningInjectEnabled({}), false);
+  });
+
+  it('digestReasoningTail keeps the tail within the cap', () => {
+    assert.equal(digestReasoningTail('short', 100), 'short');
+    assert.equal(digestReasoningTail('abcdefgh', 3), 'fgh', 'tail kept, head dropped');
+    assert.equal(digestReasoningTail('', 100), '');
+    assert.equal(digestReasoningTail('anything', 0), '', 'cap 0 disables');
+  });
+
+  it('buildContinuityBlock framing carries the checkpoint contract', () => {
+    const block = buildContinuityBlock(['r1', 'r2']);
+    assert.ok(block.includes('[Continuity checkpoint — prior analysis trace, may be stale]'));
+    assert.ok(block.includes('[End of continuity checkpoint]'));
+    assert.ok(block.includes('not user instructions'));
+    assert.ok(block.includes('Do not re-derive or repeat it, and do not mention it.'));
+    assert.ok(block.includes('r1\n---\nr2'), 'digests joined oldest→newest');
+    assert.equal(buildContinuityBlock([]), '');
+  });
+
+  it('commit stores the tail; next turn gets the checkpoint block', () => {
+    const h = [{ role: 'user', content: 'q1' }];
+    resolveSessionId('t1a', h, ENV_T1);
+    h.push({ role: 'assistant', content: 'a1' });
+    commitAfterResponse('t1a', h, ENV_T1, { reasoning: 'I will read the file and count lines.' });
+    h.push({ role: 'user', content: 'q2' });
+    resolveSessionId('t1a', h, ENV_T1);
+    const trail = getSessionReasoningTrail('t1a', h, ENV_T1);
+    assert.ok(trail, 'trail block present on the next turn');
+    assert.ok(trail.includes('I will read the file and count lines.'));
+  });
+
+  it('multiple turns: budget picks whole digests newest-first', () => {
+    const env = { ...ENV_T1, DEVIN_CONNECT_SESSION_REASONING_MAX_CHARS: '60' };
+    const h = [{ role: 'user', content: 'q1' }];
+    resolveSessionId('t1b', h, env);
+    const digest = (tag) => tag.repeat(40); // 40 chars each
+    for (let i = 1; i <= 3; i++) {
+      h.push({ role: 'assistant', content: `a${i}` });
+      commitAfterResponse('t1b', h, env, { reasoning: digest(`R${i}`) });
+      h.push({ role: 'user', content: `q${i + 1}` });
+      resolveSessionId('t1b', h, env);
+    }
+    const trail = getSessionReasoningTrail('t1b', h, env);
+    assert.ok(trail.includes('R3'), 'newest digest always fits alone');
+    assert.ok(!trail.includes('R2'), 'budget 60 < 40+40 — older digest must not be sliced in');
+  });
+
+  it('queue capped at COUNT turns', () => {
+    const env = { ...ENV_T1, DEVIN_CONNECT_SESSION_REASONING_COUNT: '2' };
+    const h = [{ role: 'user', content: 'q1' }];
+    resolveSessionId('t1c', h, env);
+    for (let i = 1; i <= 3; i++) {
+      h.push({ role: 'assistant', content: `a${i}` });
+      commitAfterResponse('t1c', h, env, { reasoning: `reasoning-turn-${i}` });
+      h.push({ role: 'user', content: `q${i + 1}` });
+      resolveSessionId('t1c', h, env);
+    }
+    const trail = getSessionReasoningTrail('t1c', h, env);
+    assert.ok(trail.includes('reasoning-turn-2') && trail.includes('reasoning-turn-3'));
+    assert.ok(!trail.includes('reasoning-turn-1'), 'oldest evicted by the queue cap');
+  });
+
+  it('gate matrix: INJECT off → null; MAX_CHARS 0 → no capture; REUSE off → null', () => {
+    const h = [{ role: 'user', content: 'q1' }];
+    resolveSessionId('t1d', h, ENV_T1);
+    h.push({ role: 'assistant', content: 'a1' });
+    commitAfterResponse('t1d', h, ENV_T1, { reasoning: 'kept' });
+    h.push({ role: 'user', content: 'q2' });
+    resolveSessionId('t1d', h, ENV_T1);
+    assert.equal(getSessionReasoningTrail('t1d', h, { DEVIN_CONNECT_SESSION_REUSE: '1' }), null, 'inject gate off');
+    assert.equal(getSessionReasoningTrail('t1d', h, { DEVIN_CONNECT_SESSION_REASONING_INJECT: '1' }), null, 'reuse gate off');
+
+    const env0 = { ...ENV_T1, DEVIN_CONNECT_SESSION_REASONING_MAX_CHARS: '0' };
+    const h2 = [{ role: 'user', content: 'x1' }];
+    resolveSessionId('t1e', h2, env0);
+    h2.push({ role: 'assistant', content: 'y1' });
+    commitAfterResponse('t1e', h2, env0, { reasoning: 'must not store' });
+    h2.push({ role: 'user', content: 'x2' });
+    resolveSessionId('t1e', h2, env0);
+    assert.equal(getSessionReasoningTrail('t1e', h2, env0), null, 'cap 0 disables capture entirely');
+  });
+
+  it('idempotent re-commit does not double-store the tail', () => {
+    const h = [{ role: 'user', content: 'q1' }];
+    resolveSessionId('t1f', h, ENV_T1);
+    h.push({ role: 'assistant', content: 'a1' });
+    commitAfterResponse('t1f', h, ENV_T1, { reasoning: 'only-once' });
+    commitAfterResponse('t1f', h, ENV_T1, { reasoning: 'only-once' });
+    h.push({ role: 'user', content: 'q2' });
+    resolveSessionId('t1f', h, ENV_T1);
+    const trail = getSessionReasoningTrail('t1f', h, ENV_T1);
+    assert.equal(trail.split('only-once').length - 1, 1, 'tail stored exactly once');
+  });
+
+  it('trail lookup is read-only: no state created', () => {
+    const before = _getStoreSize();
+    assert.equal(getSessionReasoningTrail('t1g-nobody', [{ role: 'user', content: 'orphan' }], ENV_T1), null);
+    assert.equal(_getStoreSize(), before);
   });
 });

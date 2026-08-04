@@ -571,6 +571,10 @@ function anthropicToOpenAI(body, ccActive = false) {
   };
   const messages = [];
   const toolNameById = new Map();
+  // T2 (Thinking-core): capture the LAST assistant turn's incoming thinking before
+  // the drop below — a fallback reasoning source for the continuity store when the
+  // upstream response itself carries none (resumed dialogs).
+  let lastIncomingThinking = null;
   if (body.system) {
     const rawSys = typeof body.system === 'string'
       ? body.system
@@ -591,6 +595,7 @@ function anthropicToOpenAI(body, ccActive = false) {
       const imageParts = [];
       const toolCalls = [];
       const toolResults = [];
+      const msgThinking = [];
       for (const block of m.content) {
         if (block.type === 'text') {
           textParts.push(block.text || '');
@@ -622,6 +627,7 @@ function anthropicToOpenAI(body, ccActive = false) {
             log.info(`messages: document block (${mt}) not decoded — forwarded as text placeholder`);
           }
         } else if (block.type === 'thinking') {
+          if (typeof block.thinking === 'string' && block.thinking) msgThinking.push(block.thinking);
           // Incoming assistant thinking blocks are dropped on history translation:
           // 1) Upstream swe-1-7 (K2 family) accepts outgoing candidate tag #11 in ChatMessage,
           //    but causally ignores its content (0/3 causal effect; tag #9 is incoming-only).
@@ -649,6 +655,9 @@ function anthropicToOpenAI(body, ccActive = false) {
           });
           toolResults.push({ role: 'tool', tool_call_id: block.tool_use_id, content });
         }
+      }
+      if (role === 'assistant' && msgThinking.length) {
+        lastIncomingThinking = msgThinking.join('\n');
       }
       // Tool results must directly follow the assistant tool_calls message
       // in OpenAI format. Push them before the user content message.
@@ -735,6 +744,7 @@ function anthropicToOpenAI(body, ccActive = false) {
     translatedResponseFormat = { type: 'json_object' };
   }
   return {
+    ...(lastIncomingThinking ? { _incomingThinking: lastIncomingThinking } : {}),
     model: body.model || 'claude-sonnet-4.6',
     messages,
     max_tokens: body.max_tokens || 8192,
@@ -793,7 +803,9 @@ export function openAIToAnthropic(result, model, msgId, cachePolicy = null, stop
   const choice = result.choices?.[0];
   const usage = result.usage || {};
   const content = [];
-  if (choice?.message?.reasoning_content) {
+  // T4: when the visible content is a verbatim duplicate of the reasoning,
+  // keep the text block (the actionable channel) and drop the thinking block.
+  if (choice?.message?.reasoning_content && choice?.message?.reasoning_content !== choice?.message?.content) {
     // Anthropic thinking blocks may carry an opaque encrypted `signature` that
     // the *real* Anthropic server decrypts on multi-turn replay. Our upstream
     // (Devin #9 / Cascade) never emits one, so when it is missing we omit the
@@ -1012,6 +1024,13 @@ class AnthropicStreamTranslator {
     this.emittedTextTail = '';
     this.messageStarted = false;
     this.messageStopped = false;
+    // T4 thinking/text dedup (Thinking-core): this upstream can deliver the
+    // reasoning twice — once as reasoning_content and once verbatim as content.
+    // Buffer text deltas while reasoning is part of the response and decide at
+    // finish(): a verbatim duplicate is suppressed, anything else flushes
+    // untouched. Text-before-thinking (reversed order) emits immediately.
+    this.seenThinking = '';
+    this.heldText = null;
     // True once the upstream delivered an authoritative end-of-stream signal:
     // a choice.finish_reason, a `data: [DONE]` frame, or an explicit error
     // frame. finish() uses this to tell a clean completion apart from an
@@ -1243,12 +1262,18 @@ class AnthropicStreamTranslator {
     const choice = chunk.choices?.[0];
     if (choice) {
       const delta = choice.delta || {};
-      if (delta.reasoning_content) this.emitThinkingDelta(delta.reasoning_content);
+      if (delta.reasoning_content) {
+        this.seenThinking += delta.reasoning_content;
+        this.emitThinkingDelta(delta.reasoning_content);
+      }
       // Forward-compat: if a future upstream attaches a real encrypted signature
       // to the reasoning stream, capture it so closeCurrentBlock round-trips the
       // genuine value instead of the empty-string placeholder.
       if (delta.reasoning_signature) this.pendingThinkingSignature = delta.reasoning_signature;
-      if (delta.content) this.emitTextDelta(delta.content);
+      if (delta.content) {
+        if (this.seenThinking) this.heldText = (this.heldText || '') + delta.content;
+        else this.emitTextDelta(delta.content);
+      }
       if (Array.isArray(delta.tool_calls)) {
         for (const tc of delta.tool_calls) this.emitToolCallDelta(tc);
       }
@@ -1321,6 +1346,11 @@ class AnthropicStreamTranslator {
     // content) no longer reaches here: the BUG1 guard above now catches a missing
     // terminal signal regardless of whether content started.
     if (!this.messageStarted) this.startMessage();
+    // T4: resolve the held text now that the full reasoning is known.
+    if (this.heldText != null) {
+      if (this.heldText !== this.seenThinking) this.emitTextDelta(this.heldText);
+      this.heldText = null;
+    }
     this.closeCurrentBlock();
     // B1: interleaved-fragment edge case. flushToolArgs only emits arg fragments
     // while a tool's block is the currently-open one; a tool_use block that got
@@ -1531,9 +1561,14 @@ export async function handleMessages(body, context = {}) {
           : context.nativeBridgeCallerKey,
       }
     : context;
+  // T2: thread the captured incoming thinking to the handler context; chat.js uses
+  // it as a fallback continuity-store source when the outbound response has none.
+  const contextWithIncoming = openaiBody._incomingThinking
+    ? { ...effectiveContext, incomingReasoning: openaiBody._incomingThinking }
+    : effectiveContext;
 
   if (!wantStream) {
-    const result = await chatHandler({ ...openaiBody, stream: false, __route: 'messages' }, effectiveContext);
+    const result = await chatHandler({ ...openaiBody, stream: false, __route: 'messages' }, contextWithIncoming);
     if (result.status !== 200) {
       // Carry the upstream's transport headers across the translation. This used to
       // pass three scalars, so `Retry-After` — which chat.js:3011 computes and puts
@@ -1566,7 +1601,7 @@ export async function handleMessages(body, context = {}) {
   // internal frame is required to fill it.
   const streamResult = await chatHandler(
     { ...openaiBody, stream: true, __route: 'messages', stream_options: { ...(openaiBody.stream_options || {}), include_usage: true } },
-    effectiveContext,
+    contextWithIncoming,
   );
 
   if (!streamResult.stream) {

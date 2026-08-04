@@ -781,7 +781,7 @@ function buildCompletionConfig({ maxTokens, temperature, topK, topP, contextWind
  * @param {object}   [params.completion]  CompletionConfig overrides
  * @returns {Buffer} raw protobuf (un-enveloped)
  */
-export function buildGetChatMessageRequest({ token, messages, model, sessionId, completion, tools, nativeToolCall = false, deviceSeed, env = process.env, sessionModelConfig } = {}) {
+export function buildGetChatMessageRequest({ token, messages, model, sessionId, completion, tools, nativeToolCall = false, deviceSeed, env = process.env, sessionModelConfig, continuityTrail } = {}) {
   if (!token) throw new Error('DEVIN_CONNECT: missing session token');
   if (!model) throw new Error('DEVIN_CONNECT: missing model selector');
 
@@ -908,6 +908,11 @@ export function buildGetChatMessageRequest({ token, messages, model, sessionId, 
   if (!systemPrompt && Array.isArray(tools) && tools.length > 0) {
     systemPrompt = 'You are a helpful assistant. Use the available tools when appropriate.';
   }
+  // T1 reasoning continuity (Thinking-core): append the prior-analysis checkpoint
+  // block to the system prompt — the only wire position where context rides without
+  // becoming an assistant turn (self-reflection-loop anti-pattern). Byte-compatible:
+  // tag #2 just gets longer; absent when the gate is off or the queue is empty.
+  if (continuityTrail) systemPrompt += continuityTrail;
 
   // ModelConfig #15. RE-CALIBRATED FROM THE FULL CAPTURE SET (not just req022):
   // decoding all 9 GetChatMessage requests of one live session (9501aa2c) shows
@@ -1929,7 +1934,7 @@ export function resolveFinishReason(finish, usage, maxTokens, env = process.env)
 export async function* streamChat({
   messages, model, sessionId, completion, tools,
   token, signal, timeoutMs, deadlineMs, host, env = process.env, nativeToolCall = false, traceId = null,
-  deviceSeed, sessionModelConfig,
+  deviceSeed, sessionModelConfig, continuityTrail,
 } = {}) {
   // Idle timeout: socket inactivity. Absolute deadline: total wall-clock from
   // request start — this is the one that catches a stream that keeps dribbling
@@ -1967,7 +1972,7 @@ export async function* streamChat({
     ? tools.map((t) => t?.function?.name || t?.name).filter(Boolean)
     : null;
 
-  const proto = buildGetChatMessageRequest({ token: sessionToken, messages, model, sessionId, completion, tools, nativeToolCall, deviceSeed, env, sessionModelConfig });
+  const proto = buildGetChatMessageRequest({ token: sessionToken, messages, model, sessionId, completion, tools, nativeToolCall, deviceSeed, env, sessionModelConfig, continuityTrail });
   // Request envelope is sent UNCOMPRESSED (flag 0). The live calibration showed
   // the server rejects a gzipped request frame with an opaque "internal" error;
   // it still streams gzipped frames back, which the parser handles.
