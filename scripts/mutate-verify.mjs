@@ -133,9 +133,18 @@ function assertPlainTestPaths(tests) {
 /** Run the suite; return { pass, fail, total, ok }. */
 function runSuite(tests) {
   const args = ['--import', './test/setup-env.mjs', '--test', '--test-force-exit', ...tests];
+  // NODE_TEST_CONTEXT must not reach the child. When this harness is itself invoked from
+  // inside `node --test` — which is exactly what a regression test for the harness does —
+  // the inherited variable makes the child refuse to run anything at all:
+  //   "node:test run() is being called recursively within a test file. skipping running files"
+  // The child then reports 0 tests, the baseline check calls that "not green", and the real
+  // failure is invisible behind a message about the suite. Deleting the variable is the whole
+  // fix; forcing --test-reporter does not help, because nothing runs to be reported.
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
   let out = '';
   try {
-    out = execFileSync(process.execPath, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    out = execFileSync(process.execPath, args, { encoding: 'utf8', env, stdio: ['ignore', 'pipe', 'pipe'] });
   } catch (e) {
     // node --test exits non-zero when tests fail; the output is still what we need.
     out = `${e.stdout || ''}${e.stderr || ''}`;
