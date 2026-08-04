@@ -240,14 +240,18 @@ describe('dashboard /models agrees with /v1/models on the Connect namespace (#23
       const withSelector = rows.filter((r) => r.connectSelector);
       assert.ok(withSelector.length > 0, 'precondition: some row must resolve to a selector');
 
-      // Every row that is not a FREE_REACHABLE selector must be unknown, never false.
-      const wronglyPaid = withSelector.filter(
-        (r) => r.connectSelector !== CONNECT_FREE_SELECTOR && r.currentlyFree === false,
-      );
-      assert.deepEqual(wronglyPaid.map((r) => r.id), [],
-        'a row claimed "costs quota" while no rate table exists anywhere. That is a guess '
-        + 'presented as a fact — the predicate returns false for both "billable" and "no '
-        + 'data", so the route must consult the pool-wide free-set to tell them apart');
+      // BOTH directions. A first draft asserted only "nothing is wrongly false" and a
+      // mutation that flattened unknown to TRUE survived it — the dangerous direction, since
+      // "free" on an unpriced model is precisely the reporter's loss. Assert the exact value.
+      const nonFree = withSelector.filter((r) => r.connectSelector !== CONNECT_FREE_SELECTOR);
+      assert.ok(nonFree.length > 0, 'precondition: need a resolving non-free selector');
+      const wrong = nonFree.filter((r) => r.currentlyFree !== null);
+      assert.deepEqual(wrong.map((r) => `${r.id}=${r.currentlyFree}`), [],
+        'with no rate table anywhere, a resolving non-free selector must read null (unknown). '
+        + '`false` presents a guess as a fact; `true` is the exact claim that burned the '
+        + 'reporter\'s weekly allowance. isConnectSelectorCurrentlyFree returns plain false '
+        + 'for both "billable" and "no data", so the route must consult the pool-wide '
+        + 'free-set to tell them apart');
     });
 
     it('reports the free-reachable selector as free even with no rate table', async () => {
