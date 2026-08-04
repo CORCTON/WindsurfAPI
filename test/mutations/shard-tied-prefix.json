@@ -4,7 +4,7 @@
     "test/scatter-attribution.test.js",
     "test/sticky-concurrency-tension.test.js"
   ],
-  "expectBaselinePass": 20,
+  "expectBaselinePass": 21,
   "mutations": [
     {
       "name": "strictPin drops the isStickyEnabled() requirement — dashboard flags exempt the shard with no pinning behind them",
@@ -29,6 +29,12 @@
       "file": "src/auth.js",
       "anchor": "        return (accountInflight(c.account) + accountMaintenance(c.account))\n             === (accountInflight(a.account) + accountMaintenance(a.account))",
       "replacement": "        return true\n          && true"
+    },
+    {
+      "name": "tie test drops the quota-bucket term — a quota-drained account counts as tied",
+      "file": "src/auth.js",
+      "anchor": "          && Math.floor(quotaScore(c.account) / 5) === Math.floor(quotaScore(a.account) / 5)",
+      "replacement": "          && true"
     },
     {
       "name": "tie test drops the RPM-ratio term",

@@ -169,6 +169,39 @@ describe('a concurrent burst spreads regardless of the caller hash', () => {
       + 'tie predicate does not mirror that term, it promotes it back to slot 0.');
   });
 
+  it('an account low on QUOTA is never promoted into the shard', () => {
+    // Isolates the quota term. It read as unguarded for a subtle reason: seeded accounts
+    // have no `credits` object at all, so quotaScore returns the same 100 for every one of
+    // them and the term cannot discriminate in any other fixture in this file. Deleting it
+    // therefore left everything green.
+    //
+    // It IS load-bearing. Measured with credits set: an account at 10% quota against peers
+    // at 90% went from never selected to selected for 2 of 6 sampled callerKeys.
+    const POOL = 4;
+    seedPool(POOL);
+    for (const id of created) {
+      auth.getAccountInternal(id).credits = { dailyPercent: 90, weeklyPercent: 90 };
+    }
+    const drained = auth.getAccountInternal(created[0]);
+    drained.credits = { dailyPercent: 10, weeklyPercent: 10 };
+    assert.equal(auth.quotaScore(drained), 10, 'precondition: the drained account scores 10');
+
+    let promoted = 0;
+    const sampled = ['api:k:user:alice', 'api:k:user:bob', 'api:k:user:carol',
+      'api:k:user:dave', 'api:1111111111111111:user:alice', 'caller-tension'];
+    for (const caller of sampled) {
+      makeAllTied();
+      const x = auth.getApiKey([], null, caller, SELECTOR);
+      assert.ok(x, `${caller} must be served`);
+      if (x.id === drained.id) promoted++;
+      auth.releaseAccountById(x.id);
+    }
+    assert.equal(promoted, 0,
+      `the account at 10% quota was selected for ${promoted} of ${sampled.length} callers `
+      + 'while peers sat at 90%. The sort demotes it on the quota bucket; if the tie '
+      + 'predicate omits that term, the shard promotes it back.');
+  });
+
   it('an account loaded by OTHER callers is never promoted into the shard', () => {
     // Isolates the RPM-ratio term of the tie test, which also read as redundant until this
     // case existed: measured, deleting it left the rest of this file green, and yet the
