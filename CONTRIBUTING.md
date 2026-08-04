@@ -50,7 +50,10 @@
 碰到标 🛡 的地方,注意别把守卫住的性质改掉(例如给路由路径加 URL 解码、
 或把 parseFields 改成自动递归)。
 
-项目有完整的自动测试套件，`npm test` 跑全部用例（目前 2800+）。PR 合并前 CI 会自动跑。
+项目有完整的自动测试套件，PR 合并前 CI 会自动跑。权威计数口径是
+`npm run test:release`（逐文件进程隔离）—— v3.9.14 是 **3418 pass / 261 个文件**；每版的
+数字见最新交接文档的门禁表。全量 `npm test` 的总数会因 `--test-force-exit` 的输出竞态轻微
+波动，所以别拿它的数字对账。
 
 提 PR 时建议在描述里补充：
 
@@ -116,7 +119,11 @@ been probed, what the conclusion was, and which invariants have mutation-verifie
 Where you see 🛡, take care not to change the guarded property (e.g. adding URL decoding to
 the routed path, or making parseFields recurse).
 
-The project has a full automated test suite — `npm test` runs all cases (2800+ and growing). CI runs automatically on every PR. In your PR description, also include:
+The project has a full automated test suite and CI runs it on every PR. The authoritative
+count comes from `npm run test:release` (one process per file) — **3418 pass across 261 files**
+as of v3.9.14; per-version numbers live in the gate table of the newest handoff. Totals from a
+plain `npm test` drift slightly because of an output race under `--test-force-exit`, so don't
+reconcile against that number. In your PR description, also include:
 
 - What curl commands or smoke scenarios you ran
 - Which dashboard panels you clicked through

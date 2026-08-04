@@ -2,8 +2,18 @@
 
 **Created:** 2026-06-30 (eve of Cascade retirement, 2026-07-01)
 **Audience:** operator deploying WindsurfAPI to homecloud after Cascade is gone.
-**Status:** deploy-ready. Code is verified locally (1492 tests green) but NOT yet
-pushed/deployed — production still runs old code that 503s on Devin routes.
+**Status:** **cutover is done.** `DEVIN_CONNECT=1` has been the deployed backend since
+2026-07; every release since has been developed and measured against it, and the §8 paid
+calibration below was captured on a real account (2026-07-27). Read this as a runbook for
+a NEW deployment or a rollback, not as a pending migration.
+
+> The line here used to read *"deploy-ready … NOT yet pushed/deployed — production still
+> runs old code that 503s on Devin routes"*, with a test count from 2026-06-30. That was
+> true the day it was written and became false within weeks, while
+> [README.md](README.md) was telling readers this same backend was the production default.
+> Two docs, opposite claims. A "Status:" field pinned to a moment needs either a date
+> qualifier or no field at all — this one now says what is *durably* true and leaves the
+> per-release numbers to the handoffs, which are dated by construction.
 
 ---
 

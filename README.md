@@ -484,9 +484,13 @@ A: 不能。长 thinking / 长输出在约 236-243 秒断流，是 Windsurf prov
 
 MIT License. See [LICENSE](LICENSE).
 
-## Release and Secret Boundary
+## 发布与密钥边界
 
-Release automation may publish Docker images and GitHub Releases. Keep tokens, API keys, cookies, and provider credentials out of issues, pull requests, logs, and committed config. If a report needs authentication details, share only redacted metadata and reproduction steps.
+发布流程会自动推 Docker 镜像和 GitHub Release。**别把 token、API key、cookie、上游账号凭据
+写进 issue、PR、日志或提交的配置文件里。** 如果报告问题必须带上鉴权信息，只贴脱敏后的元数据
+和复现步骤。
+
+对应的英文段见 [README.en.md](README.en.md#release-and-secret-boundary)。
 
 ## Star History
 
