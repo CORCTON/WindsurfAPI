@@ -37,6 +37,8 @@ import { getCcCompatStats } from '../handlers/cc-compat.js';
 import { getLogs, subscribeToLogs, unsubscribeFromLogs } from './logger.js';
 import { getProxyConfig, getProxyConfigMasked, setGlobalProxy, setAccountProxy, removeProxy, getEffectiveProxy } from './proxy-config.js';
 import { MODELS, MODEL_TIER_ACCESS as _TIER_TABLE, getTierModels as _getTierModels, filterModelKeysByCloudCatalog } from '../models.js';
+import { buildConnectReachability } from '../handlers/models.js';
+import { FREE_REACHABLE_SELECTORS } from '../devin-connect-models.js';
 import { windsurfLogin, refreshFirebaseToken, reRegisterWithCodeium } from './windsurf-login.js';
 import { getModelAccessConfig, setModelAccessMode, setModelAccessList, addModelToList, removeModelFromList, setDefaultModel } from './model-access.js';
 import { checkMessageRateLimit } from '../windsurf-api.js';
@@ -1758,16 +1760,62 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
   }
 
   // ─── Models list ──────────────────────────────────────
+  //
+  // Each row carries `reachable`: can this deployment actually serve it right now. On a
+  // DEVIN_CONNECT deployment that answer comes from the SAME predicate /v1/models uses
+  // (buildConnectReachability), because the two used to disagree completely — on a
+  // free-only pool this panel listed 163 models the account could not call and omitted
+  // `swe-1-6-slow`, the only one it could. Measured zero overlap between the two views
+  // (#234's last acceptance criterion).
+  //
+  // Rows are ANNOTATED, never dropped. The panel renders the allow/deny chips from this
+  // list alone, so narrowing it would make an existing allow-list entry invisible AND
+  // unremovable — the operator could not click a chip that is no longer rendered.
+  // Annotating also answers #235 ("which models actually cost me quota"), which narrowing
+  // would not: the reporter needs to SEE the paid ones, greyed, not have them vanish.
   if (subpath === '/models' && method === 'GET') {
+    const isReachable = buildConnectReachability();
     const models = filterModelKeysByCloudCatalog().map((id) => {
       const info = MODELS[id];
+      const { reachable, selector } = isReachable(id);
       return {
         id,
         name: info.name,
         provider: info.provider,
         credit: typeof info.credit === 'number' ? info.credit : null,
+        reachable,
+        // The resolved upstream selector, or null when the name maps to nothing on this
+        // transport. Surfaced for diagnosis: "unreachable" and "does not resolve at all"
+        // look identical in the UI otherwise.
+        connectSelector: selector,
       };
     });
+    // Selectors that ARE serveable but have no MODELS row (`swe-1-6-slow` is in neither the
+    // frozen snapshot nor the live catalog, so it appears in no Cascade-derived list). They
+    // are the whole point of the panel on a free deployment, so synthesize them here the
+    // way /v1/models' third producer does. Name/provider fall back to the selector because
+    // there is no MODELS entry to read them from.
+    //
+    // Gated on the transport: these are CONNECT-namespace selectors. Injecting one into a
+    // Cascade deployment's panel advertises a model that transport cannot route, which is
+    // the same category of error as the mismatch this whole route fixes — just pointing the
+    // other way. Caught by the "backend off" case in
+    // test/dashboard-models-connect-parity.test.js.
+    if (getBackendSwitch('devinConnect')) {
+      const seen = new Set(models.map((m) => m.id));
+      for (const selector of FREE_REACHABLE_SELECTORS) {
+        if (seen.has(selector)) continue;
+        seen.add(selector);
+        models.push({
+          id: selector,
+          name: selector,
+          provider: 'windsurf',
+          credit: null,
+          reachable: true,
+          connectSelector: selector,
+        });
+      }
+    }
     return json(res, 200, { models });
   }
 

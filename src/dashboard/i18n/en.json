@@ -1238,6 +1238,7 @@
   },
   "model": {
     "remove": "Remove model",
+    "unreachableHint": "Not serveable right now: no account in the pool is entitled to it, or the name maps to nothing on the current backend. Still clickable, so you can add or remove it from the list.",
     "mode": {
       "all": "Allow All",
       "allowlist": "Allowlist",

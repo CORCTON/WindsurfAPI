@@ -26,6 +26,53 @@ function shouldSkipEntitlementFilter(env, accountCount) {
   return hasEnvToken || accountCount === 0;
 }
 
+/**
+ * Build the "can this deployment actually serve that model id" predicate.
+ *
+ * Exported because the Dashboard needs the SAME answer and must not re-derive it.
+ * Before this existed, `/v1/models` resolved through the Connect namespace while the
+ * Dashboard's model panel resolved through the Cascade one, and on a free-only
+ * DEVIN_CONNECT pool the two views had **zero overlap**: the panel listed 163 models the
+ * account could not call and omitted `swe-1-6-slow`, the only one it could (#234's
+ * remaining acceptance criterion). Two callers deriving one rule from two namespaces is
+ * this repo's most frequent defect shape — six occurrences on record — so there is one
+ * rule and both sides call it.
+ *
+ * Returns a `{ reachable, selector }` mapper. When devinConnect is off, everything in the
+ * Cascade table is reachable by definition and `selector` is null: the Connect namespace
+ * simply does not apply to that transport.
+ *
+ * @param {object} [env] environment used for transport selection (must be the SAME
+ *   effective env the caller routes with — passing process.env while serving a
+ *   per-request env is how these two views diverged in the first place)
+ */
+export function buildConnectReachability(env = process.env) {
+  const effectiveEnv = env === process.env ? env : { ...process.env, ...env };
+  if (!getBackendSwitch('devinConnect', effectiveEnv)) {
+    return () => ({ reachable: true, selector: null });
+  }
+  const known = (selector) => __testing.CATALOG_SELECTORS.has(selector) || __testing._liveSelectors.has(selector);
+  const skipEntitlement = shouldSkipEntitlementFilter(effectiveEnv, getAccountCount().total);
+  const entitled = (selector) => skipEntitlement || hasConnectEntitledAccount(selector);
+  return (windsurfId) => {
+    // FREE_REACHABLE_SELECTORS is callable by ANY account and is deliberately absent from
+    // both the frozen snapshot and the live catalog, so `known()` says false for it. Hence
+    // this check, and hence it comes first: /v1/models' third producer exists for the same
+    // reason, and keying off `known` alone would call the only universally-serveable
+    // selector unreachable.
+    //
+    // It matches only when the id IS the free selector. It deliberately does NOT re-test
+    // the RESOLVED selector: with STRICT_MODEL=0 an unmapped paid name degrades to
+    // `swe-1-6-slow`, so testing after resolution reports `claude-4-sonnet` as reachable on
+    // a free-only pool — which is precisely the lie #234 is about. Caught by
+    // `connect-discovery-rebuild.test.js` ("does not advertise paid selectors to a
+    // free-only pool") when this was written the wrong way round.
+    if (FREE_REACHABLE_SELECTORS.has(windsurfId)) return { reachable: true, selector: windsurfId };
+    const { selector, mapped } = resolveConnectSelector(windsurfId);
+    return { reachable: !!(mapped && known(selector) && entitled(selector)), selector: mapped ? selector : null };
+  };
+}
+
 export function handleModels(env = process.env) {
   const effectiveEnv = env === process.env ? env : { ...process.env, ...env };
   // listModels receives the same effective environment used for transport
@@ -33,24 +80,23 @@ export function handleModels(env = process.env) {
   // unrelated Cascade cloud catalog.
   let data = listModels({ env: effectiveEnv });
   if (getBackendSwitch('devinConnect', effectiveEnv)) {
-    // Existence = snapshot ∪ live (same source of truth as resolveConnectSelector,
-    // audit 2026-07-12). Before this, the filter only consulted the frozen
-    // CATALOG_SELECTORS snapshot, so live-synced selectors were dropped here even
-    // though they run fine at /v1/chat/completions.
-    const known = (selector) => __testing.CATALOG_SELECTORS.has(selector) || __testing._liveSelectors.has(selector);
-    // Entitlement filter (#234 / #231 in the connect namespace). Existence alone
-    // was the only test here, so a free-only pool still advertised every paid
-    // selector the upstream happens to publish — the client picked one and got a
-    // 403 at chat. #232 fixed exactly this for the Cascade namespace, but its
-    // filters early-return unfiltered when devinConnect is on (models.js
-    // isModelAllowedByCloudCatalog / filterModelKeysByCloudCatalog), which is
+    // Row producer #1: the MODELS table, filtered to what this deployment can serve.
+    //
+    // The rule (existence = snapshot ∪ live, plus the per-account entitlement check, plus
+    // the FREE_REACHABLE floor) now lives in buildConnectReachability because the Dashboard
+    // needs the identical answer. Existence alone used to be the only test here, so a
+    // free-only pool advertised every paid selector the upstream publishes and the client
+    // got a 403 at chat (#234 / #231 in the connect namespace). #232 fixed that for the
+    // Cascade namespace, but its filters early-return unfiltered when devinConnect is on
+    // (models.js isModelAllowedByCloudCatalog / filterModelKeysByCloudCatalog), which is
     // correct as a namespace boundary and is why the check has to be redone here.
+    const isReachable = buildConnectReachability(effectiveEnv);
+    data = data.filter((m) => isReachable(m._windsurf_id).reachable);
+    // Producers #2 and #3 below are keyed by SELECTOR, not by a MODELS id, so they cannot
+    // go through isReachable — it resolves its argument through resolveConnectSelector.
+    // They keep the entitlement check directly.
     const skipEntitlement = shouldSkipEntitlementFilter(effectiveEnv, getAccountCount().total);
     const entitled = (selector) => skipEntitlement || hasConnectEntitledAccount(selector);
-    data = data.filter((m) => {
-      const { selector, mapped } = resolveConnectSelector(m._windsurf_id);
-      return mapped && known(selector) && entitled(selector);
-    });
     // Synthesize entries for live-only selectors the upstream added AFTER the
     // frozen snapshot AND that aren't in the hardcoded MODELS table (gpt-5-6-*/
     // grok-4-5-*/nemotron etc.). Without this they run at chat but never appear

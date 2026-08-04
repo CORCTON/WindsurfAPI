@@ -1437,6 +1437,15 @@ tbody tr:hover td { background: var(--surface-2); }
   border-color: var(--accent);
   color: var(--accent);
 }
+/* Listed but not serveable by this deployment right now (no entitled account, or the name
+   maps to nothing on this transport). Dimmed rather than hidden: the allow/deny list is
+   rendered from this same set, so a hidden chip would be an entry the operator can no
+   longer click to remove. Still clickable for exactly that reason. */
+.model-chip.unreachable {
+  opacity: .45;
+  border-style: dashed;
+}
+.model-chip.unreachable:hover { opacity: .8; }
 .model-chip .remove {
   color: var(--error);
   font-weight: 700;
@@ -7386,7 +7395,13 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
         <div class="provider-label">${prov}</div>
         <div class="model-chips">${models.map(m => {
           const inList = list.includes(m.id);
-          return `<span class="model-chip ${inList ? 'selected' : ''}" onclick="App.toggleModelInList('${this.escJsAttr(m.id)}')">${this.esc(m.name)}</span>`;
+          // reachable===false means this deployment cannot serve it now. Undefined on an
+          // older API response — treated as reachable so a version skew greys out nothing.
+          const unreachable = m.reachable === false;
+          const title = unreachable
+            ? I18n.t('model.unreachableHint')
+            : (m.connectSelector ? `selector: ${m.connectSelector}` : '');
+          return `<span class="model-chip ${inList ? 'selected' : ''}${unreachable ? ' unreachable' : ''}"${title ? ` title="${this.esc(title)}"` : ''} onclick="App.toggleModelInList('${this.escJsAttr(m.id)}')">${this.esc(m.name)}</span>`;
         }).join('')}</div>
       </div>
     `).join('') || `<div class="text-sm text-dim">${I18n.t('table.empty.models')}</div>`;
