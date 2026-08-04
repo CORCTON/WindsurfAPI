@@ -25,13 +25,23 @@ esac
 # Only speak up for the routes pre-commit could not intercept. An ordinary `git commit` on
 # master was already refused by pre-commit, so reaching here means --no-verify was used
 # deliberately, and nagging about a deliberate choice is noise.
+#
+# Which signal is available differs per route, and the first version of this comment had it
+# BACKWARDS. Probed directly:
+#   cherry-pick  CHERRY_PICK_HEAD is still PRESENT at post-commit → the ref test works
+#   revert       REVERT_HEAD is already CLEARED at post-commit → the ref test never fires,
+#                so revert produced ZERO warning while both this file and pre-commit claimed
+#                it was covered. The message-shape fallback is what actually catches it.
+# So the fallback guards revert (the case that needs it), not cherry-pick (the case that
+# does not) — and it must match BOTH message shapes, since `git revert` writes
+# `Revert "…"` and only `cherry-pick -x` writes the `(cherry picked from commit …)` trailer.
 git_dir=$(git rev-parse --git-dir)
 was_pick=0
 [ -e "$git_dir/CHERRY_PICK_HEAD" ] && was_pick=1
 [ -e "$git_dir/REVERT_HEAD" ] && was_pick=1
-# git clears those refs before post-commit on a clean pick, so also catch the message shape
-# cherry-pick -x leaves behind.
-git log -1 --format=%B | grep -q '^(cherry picked from commit' && was_pick=1
+msg=$(git log -1 --format=%B)
+printf '%s' "$msg" | grep -q '^(cherry picked from commit' && was_pick=1
+printf '%s' "$msg" | grep -q '^Revert "' && was_pick=1
 [ "$was_pick" -eq 1 ] || exit 0
 
 printf '\033[33mpost-commit: a commit was just authored on %s by cherry-pick/revert.\033[0m\n' "$branch" >&2

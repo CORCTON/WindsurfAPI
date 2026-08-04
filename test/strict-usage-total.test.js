@@ -178,10 +178,20 @@ describe('cost accounting stays honest under BOTH shapes', () => {
     assert.equal(fullBillableTokens({ prompt_tokens: 'x', completion_tokens: null }), 0,
       'non-numeric input must not produce NaN, which would poison the running total');
 
+    // Assert ALL THREE counters, not just totalTokens. The first version of this test
+    // checked only the total, and the clamp lived only inside fullBillableTokens — so
+    // promptTokens and completionTokens went permanently negative while the test passed and
+    // its own comment claimed "the cumulative tally must never move backwards". One counter
+    // of three.
     const a = seed('neg');
-    recordAccountSpend(a.apiKey, { prompt_tokens: -500, completion_tokens: -10, total_tokens: -510 });
-    assert.equal(getAccountInternal(a.id)._totalSpend.totalTokens, 0,
-      'the cumulative tally must never move backwards');
+    recordAccountSpend(a.apiKey, { prompt_tokens: -500, completion_tokens: -10, total_tokens: -510 },
+      { creditCost: -7 });
+    const spend = getAccountInternal(a.id)._totalSpend;
+    for (const k of ['totalTokens', 'promptTokens', 'completionTokens', 'creditCost']) {
+      assert.equal(spend[k], 0,
+        `${k} went to ${spend[k]} — these are CUMULATIVE counters, so one malformed upstream `
+        + 'usage block would drag it negative permanently and no later request could undo it');
+    }
   });
 
   it('a usage block with neither total nor cache fields falls back to the buckets', () => {

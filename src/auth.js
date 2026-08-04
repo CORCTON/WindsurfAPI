@@ -1991,9 +1991,12 @@ export function getApiKey(excludeKeys = [], modelKey = null, callerKey = null, c
       // There used to be a separate gate here that computed whether candidates[0] and [1]
       // tied, and only then allowed the shard to run. It is gone because the tied-prefix
       // bound below SUBSUMES it exactly: when the top two do not tie, the prefix is length
-      // 1, `hash % 1` is 0, and no swap happens. Verified equivalent across 25 scenarios
+      // 1, `hash % 1` is 0, and no swap happens. Verified equivalent across 50 scenarios
       // (5 pool sizes x 5 callerKeys x tied/skewed) — byte-identical selections with the
-      // gate present, absent, and forced true.
+      // gate present and with it absent. (This said "25 scenarios" and listed a third
+      // condition, "forced true"; 5x5x2 is 50, and forcing the gate true is the SAME
+      // condition as the gate being absent, not a third one. dcc8cee corrected seven claims
+      // in this round and walked past these two lines.)
       //
       // Keeping it would have been worse than removing it: two mechanisms enforcing one
       // property reads as though both were needed, and the next person to touch either
@@ -2892,8 +2895,15 @@ export function recordAccountSpend(apiKey, usage, { creditCost = 0 } = {}) {
     account._totalSpend = { requests: 0, totalTokens: 0, promptTokens: 0, completionTokens: 0, creditCost: 0 };
   }
   const s = account._totalSpend;
-  const prompt = Number(usage?.prompt_tokens) || 0;
-  const completion = Number(usage?.completion_tokens) || 0;
+  // Clamped for the same reason fullBillableTokens clamps: these are CUMULATIVE counters, so
+  // a single malformed upstream usage block would drag them permanently negative and no
+  // later request could undo it. The first version of this fix clamped only inside
+  // fullBillableTokens, which covered totalTokens and left promptTokens / completionTokens
+  // unprotected — measured: {prompt_tokens:-500, completion_tokens:-10} left both counters
+  // permanently negative while totalTokens correctly stayed 0. The "keeps the tally
+  // monotonic" claim held for one counter of three.
+  const prompt = Math.max(0, Number(usage?.prompt_tokens) || 0);
+  const completion = Math.max(0, Number(usage?.completion_tokens) || 0);
   // Cost accounting must not read total_tokens directly. With
   // WINDSURFAPI_STRICT_USAGE_TOTAL=1 that field deliberately drops generation-side
   // cache-write to satisfy OpenAI's arithmetic identity, so metering off it would make
@@ -2906,7 +2916,7 @@ export function recordAccountSpend(apiKey, usage, { creditCost = 0 } = {}) {
   s.promptTokens += prompt;
   s.completionTokens += completion;
   s.totalTokens += total;
-  s.creditCost += Number(creditCost) || 0;
+  s.creditCost += Math.max(0, Number(creditCost) || 0);
   markDirty();
 }
 

@@ -222,14 +222,22 @@ function main() {
       process.removeListener('SIGTERM', onSignal);
     }
 
-    // Guard 5: the mutated run must have executed the SAME NUMBER of tests as the baseline.
+    // Guard 5: a SURVIVED verdict requires that the mutated run executed as many tests as
+    // the baseline.
     //
-    // Without this a mutation that TRUNCATES the suite is reported as a clean survivor.
+    // Without it, a mutation that TRUNCATES the suite is reported as a clean survivor.
     // Reproduced: a replacement containing `process.exit(0)` produced `pass=1 fail=0`
-    // against a baseline of 4 — verdict SURVIVED, while three tests silently never ran. A
-    // survivor is only meaningful if every assertion actually got the chance to fail, so
-    // this is the same class of lie guard 2 catches for the baseline, one level down.
-    if (r.total !== base.total) {
+    // against a baseline of 4 — verdict SURVIVED, while three tests silently never ran. That
+    // is the same class of lie guard 2 catches for the baseline, one level down.
+    //
+    // `r.fail === 0` is load-bearing and was missing in the first version. A count change is
+    // only a problem when NOTHING failed: if the suite reported a failure, the mutation was
+    // genuinely caught and the count is beside the point. Without that condition the guard
+    // aborted on legitimate catches — measured: a syntax-error mutation reports
+    // `pass=0 fail=1` (CAUGHT, correctly), and the guard killed the run anyway, printed a
+    // message asserting "nothing failed" that was false in that very case, ignored
+    // --keep-going, and skipped every later mutation.
+    if (r.total !== base.total && r.fail === 0) {
       git(['checkout', 'HEAD', '--', relFile]);
       die(`mutation "${label}" changed how many tests RAN: baseline ${base.total}, mutated `
         + `${r.total} (pass=${r.pass} fail=${r.fail}). The verdict would be meaningless — a `
