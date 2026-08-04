@@ -148,8 +148,27 @@ async function* streamChatWithEmptyRetry(params, { env = process.env, rescueThin
   // unproven either way, so this errs toward the documented account-protection.
   const rescueMax = (retryOnEmptyEnabled(env) && !weak) ? rescueConfigured : 0;
   let attemptParams = params;
+  // Two speculative arms, two budgets (#240). They used to share the loop counter: the
+  // rescue arm has always had its own `rescueAttempt`/`rescueMax` pair, but reaching the
+  // next iteration via `continue` also advanced the `for (…; ; attempt++)` counter, and
+  // `attempt` was what the EMPTY arm's budget was measured against. So a rescue chain
+  // silently spent the empty arm's budget — one-way, since the empty arm never touched
+  // `rescueAttempt`. Measured at the defaults (max 2, rescue 2): two rescues followed by
+  // an empty completion delivered the empty answer to the client with ZERO retries, while
+  // the same empty with no preceding rescue healed on the first retry.
+  //
+  // That the rescue arm carries its own counter is the evidence this was never a "one
+  // shared pot" policy — a shared pot would not need the second counter. It was an
+  // artifact of counting in the for-header.
+  //
+  // The TOTAL ceiling is deliberately unchanged: 1 + max + rescueMax upstream calls per
+  // client request. That ceiling is the account protection (the fable paid-E2E lesson —
+  // retries that never heal only triple upstream load into a rate limit), and it was
+  // already reachable before this change in the empty-first order. Splitting the counters
+  // makes the empty budget independent of ORDER; it does not raise what may be spent.
   let rescueAttempt = 0;
-  for (let attempt = 0; ; attempt++) {
+  let emptyAttempt = 0;
+  for (;;) {
     let sawContent = false;
     let sawText = false;
     let sawReasoning = false;
@@ -201,9 +220,13 @@ async function* streamChatWithEmptyRetry(params, { env = process.env, rescueThin
       continue;
     }
 
-    if (attempt < max && isEmptyCompletion(finishEv, sawContent)) {
-      log.warn(`DEVIN_CONNECT: empty completion (finish=${finishEv.reason ?? 'null'}, completion_tokens=${finishEv.usage?.completion_tokens ?? 'n/a'}) — retry ${attempt + 1}/${max}`);
-      const backoff = retryOnEmptyBaseMs(env) * (attempt + 1);
+    if (emptyAttempt < max && isEmptyCompletion(finishEv, sawContent)) {
+      emptyAttempt++;
+      log.warn(`DEVIN_CONNECT: empty completion (finish=${finishEv.reason ?? 'null'}, completion_tokens=${finishEv.usage?.completion_tokens ?? 'n/a'}) — retry ${emptyAttempt}/${max}`);
+      // Backoff still grows with the number of EMPTY retries (base×1, base×2, …), which is
+      // what it did before when `attempt` happened to equal that count. Keying it to the
+      // shared counter instead would make an unrelated rescue lengthen the next empty wait.
+      const backoff = retryOnEmptyBaseMs(env) * emptyAttempt;
       if (backoff) await new Promise((r) => setTimeout(r, backoff));
       continue;
     }

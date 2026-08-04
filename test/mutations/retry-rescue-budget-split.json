@@ -1,0 +1,63 @@
+{
+  "tests": [
+    "test/retry-rescue-budget-split.test.js",
+    "test/devin-connect-openai.test.js"
+  ],
+  "expectBaselinePass": 70,
+  "mutations": [
+    {
+      "name": "the original defect: the empty arm reads the shared loop counter again",
+      "file": "src/devin-connect-openai.js",
+      "anchor": "  let rescueAttempt = 0;\n  let emptyAttempt = 0;\n  for (;;) {",
+      "replacement": "  let rescueAttempt = 0;\n  let emptyAttempt = 0;\n  for (let _shared = 0; ; _shared++, emptyAttempt = _shared) {"
+    },
+    {
+      "name": "the rescue arm advances the empty counter as a side effect (the coupling, written explicitly)",
+      "file": "src/devin-connect-openai.js",
+      "anchor": "      rescueAttempt++;\n      log.warn(`DEVIN_CONNECT: thinking-only completion",
+      "replacement": "      rescueAttempt++;\n      emptyAttempt++;\n      log.warn(`DEVIN_CONNECT: thinking-only completion"
+    },
+    {
+      "name": "empty budget becomes unbounded — the ceiling is gone, starvation also 'fixed'",
+      "file": "src/devin-connect-openai.js",
+      "anchor": "    if (emptyAttempt < max && isEmptyCompletion(finishEv, sawContent)) {",
+      "replacement": "    if (isEmptyCompletion(finishEv, sawContent) && emptyAttempt < 1e9) {"
+    },
+    {
+      "name": "empty counter never advances — one retry becomes unlimited retries",
+      "file": "src/devin-connect-openai.js",
+      "anchor": "      emptyAttempt++;\n      log.warn(`DEVIN_CONNECT: empty completion",
+      "replacement": "      log.warn(`DEVIN_CONNECT: empty completion"
+    },
+    {
+      "name": "empty counter advances twice — the arm silently gets half its documented budget",
+      "file": "src/devin-connect-openai.js",
+      "anchor": "      emptyAttempt++;\n      log.warn(`DEVIN_CONNECT: empty completion",
+      "replacement": "      emptyAttempt += 2;\n      log.warn(`DEVIN_CONNECT: empty completion"
+    },
+    {
+      "name": "backoff keyed to the rescue count — an unrelated rescue lengthens the next empty wait",
+      "file": "src/devin-connect-openai.js",
+      "anchor": "      const backoff = retryOnEmptyBaseMs(env) * emptyAttempt;",
+      "replacement": "      const backoff = retryOnEmptyBaseMs(env) * (emptyAttempt + rescueAttempt);"
+    },
+    {
+      "name": "log line reports the combined count — the operator-visible budget becomes wrong after a rescue",
+      "file": "src/devin-connect-openai.js",
+      "anchor": "completion_tokens=${finishEv.usage?.completion_tokens ?? 'n/a'}) — retry ${emptyAttempt}/${max}`);",
+      "replacement": "completion_tokens=${finishEv.usage?.completion_tokens ?? 'n/a'}) — retry ${emptyAttempt + rescueAttempt}/${max}`);"
+    },
+    {
+      "name": "rescue budget starts drinking from the empty pot (the mirror defect)",
+      "file": "src/devin-connect-openai.js",
+      "anchor": "    if (rescueThinkingOnly && rescueAttempt < rescueMax && isStopOrNull",
+      "replacement": "    if (rescueThinkingOnly && (rescueAttempt + emptyAttempt) < rescueMax && isStopOrNull"
+    },
+    {
+      "name": "master off switch stops covering the empty arm",
+      "file": "src/devin-connect-openai.js",
+      "anchor": "  const max = (retryOnEmptyEnabled(env) && !weak) ? retryOnEmptyMax(env) : 0;",
+      "replacement": "  const max = !weak ? retryOnEmptyMax(env) : 0;"
+    }
+  ]
+}
