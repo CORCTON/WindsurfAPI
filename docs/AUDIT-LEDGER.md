@@ -955,3 +955,36 @@ post-commit,任何 hook 都盖不住。并把这个结论写进了 commit messag
 
 **动作**:写下"X 会/不会发生"之前,把 X 的每条触发路径逐个跑一遍。git 有多条产生 commit 的
 路径,每条调用的钩子集合都不一样。
+
+### 第十轮收尾:judge 要的五条守卫 + 七条如实记录
+
+judge 的 `new_tests_wanted` 五条全部落地(`67ce2a0`、`5f1403f`),另记它 `ledger_items` 里
+值得留档的七条:
+
+1. **guard 5 在同一次编辑里修掉一个假 SURVIVED、又引入一个假 ABORT。** 形状:**一个守卫按
+   一次复现写出来,然后被无条件套用。** 复核者给的机制(语法错 / 模块抛异常)在 commit
+   message 里被正确地驳回为"这两种本来就会被抓到",而新守卫随后恰好打破的就是那一类
+2. **`scripts/secret-scan.mjs` 跳过 `test/`**(`IGNORED_PREFIXES`),且只读被跟踪文件 ——
+   本轮约 2333 行新增里有约 1100 行**从未被扫过**。"secret-scan 干净"这句话必须带上这个
+   范围说。已手工扫过本轮 `test/` 增量:只有自己写的 `cafebabe`/`deadbeef` 占位十六进制
+3. **Cascade 流式路径没有 `recordAccountSpend` 调用点**(只有 `nonStreamResponse` 里那一
+   个)。既有、此前无记录,而它**限定了 strict-usage-total 那个功能的记账承诺范围**。已加
+   测试钉住,未修
+4. **`d0b9c9f` 的 commit message 描述了一处它自己 diff 里没有的 `auth.js` 改动**(代码由
+   `8449002` 补上)。代码现在是对的,而**message 与 diff 不符会永久留在历史里**
+5. **`scatter-attribution.test.js` 有一条断言 `distinct > 2`,而 POOL=4 时实际产出 4** ——
+   容忍了设计不会产生的状态。宽容断言不是错,但它比精确断言少守住一段
+6. **`sticky-collapse-bypass.test.js` 手敲生产者写入**。今天忠于 `chat.js`,但没有被绑住。
+   已加形状守卫(第 4 条守卫)
+7. **`RELEASE_NOTES_3.9.12.md` 里那处 5.6x 错引**用**刻意不改**:`docs/README` 声明 release
+   notes 是 append-only 历史,而 v3.9.12 的 GitHub Release body 已由它发布。记在这里,免得
+   下一轮把它当成新发现
+
+### 判别动作:一个守卫按一次复现写出来,就会只对那一次复现正确
+
+guard 5 是最清楚的例子:我按"截断"这一种复现写了"测试条数必须一致",然后无条件套用,于是
+在"真的被抓到但条数也变了"的场景里把整轮杀掉。修法是把条件收窄成
+`条数变了 && 什么都没失败`。
+
+**动作**:写下一个守卫之后,问"**除了我复现的那一种,还有哪些情况会命中这个条件**",并对
+每一种给出一句话的处置。答不出就说明这个守卫还没写完。
