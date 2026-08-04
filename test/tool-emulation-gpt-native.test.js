@@ -37,6 +37,38 @@ describe('pickToolDialect — gpt_native gating (v2.0.62 #115)', () => {
     assert.equal(pickToolDialect('kimi-k2', 'moonshot', 'responses'), 'kimi_k2');
   });
 
+  // GLM-5.2 arrives under both spellings — resolveConnectSelector maps `glm-5.2` and
+  // `glm-5-2` to the same upstream selector, so a client may legitimately send either, and
+  // clients do (#236 came in reporting `glm-5-2-none`). Every spelling must land on
+  // gpt_native, because the v2.0.72 probe found this model IGNORES the glm47 XML markup:
+  // the wrong dialect means plain-text answers with no tool call emitted, and a client that
+  // waits forever for one.
+  //
+  // Bare `glm-5-2` was the one form that got it wrong — not equal to `glm-5.2`, and with no
+  // trailing dash neither prefix test fired, so it fell through to glm47. Every other
+  // spelling already worked, which is exactly what kept it hidden.
+  it('every GLM-5.2 spelling gets gpt_native, dotted or dashed, bare or suffixed', () => {
+    for (const key of [
+      'glm-5.2', 'glm-5-2',
+      'glm-5.2-none', 'glm-5-2-none',
+      'glm-5.2-high', 'glm-5-2-high',
+      'GLM-5-2', 'GLM-5.2-NONE',
+    ]) {
+      assert.equal(pickToolDialect(key, 'zhipu'), 'gpt_native',
+        `${key} must use gpt_native — glm47 markup is ignored by this model, so the wrong `
+        + 'dialect emits no tool call and stalls the client');
+    }
+  });
+
+  it('and the fix does not drag other GLM models onto gpt_native', () => {
+    // The dot-collapse must not widen the match. glm-4.7 and glm-5 are different models and
+    // the glm47 dialect is correct for them; a `startsWith('glm-5')` style fix would have
+    // swallowed glm-5 and glm-5.1 too.
+    for (const key of ['glm-4.7', 'glm-4-7', 'glm-5', 'glm-5.1', 'glm-5-1']) {
+      assert.equal(pickToolDialect(key, 'zhipu'), 'glm47', `${key} must stay on glm47`);
+    }
+  });
+
   it('WINDSURFAPI_FORCE_GPT_NATIVE_DIALECT=1 forces gpt_native on chat route too', () => {
     const orig = process.env.WINDSURFAPI_FORCE_GPT_NATIVE_DIALECT;
     process.env.WINDSURFAPI_FORCE_GPT_NATIVE_DIALECT = '1';

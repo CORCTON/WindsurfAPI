@@ -352,9 +352,18 @@ export function pickToolDialect(modelKey, provider, route = null) {
     // the model answers in plain text. The gpt_native function_call JSON
     // dialect is emitted reliably and parsed correctly. Keep older GLM on
     // glm47 until proven otherwise; env override still available for tests.
-    if (normalizedModelKey === 'glm-5.2'
-      || normalizedModelKey.startsWith('glm-5.2-')
-      || normalizedModelKey.startsWith('glm-5-2-')) return 'gpt_native';
+    //
+    // Dots are collapsed to dashes BEFORE matching, because the same model arrives under
+    // both spellings — `resolveConnectSelector` maps `glm-5.2` and `glm-5-2` to the same
+    // upstream selector, so a client may legitimately send either. Matching the literal
+    // spellings missed exactly one form: bare `glm-5-2` (it is not `glm-5.2`, and it has no
+    // trailing dash so neither prefix test fired), which therefore fell through to `glm47`
+    // — the dialect this model is documented right here to IGNORE. The consequence is the
+    // hard one to diagnose: the model answers in plain text, emits no tool call, and the
+    // client waits forever for one. Every other spelling (`glm-5.2`, `glm-5.2-none`,
+    // `glm-5-2-none`) already resolved correctly, which is what kept it hidden.
+    const dashed = normalizedModelKey.replace(/\./g, '-');
+    if (dashed === 'glm-5-2' || dashed.startsWith('glm-5-2-')) return 'gpt_native';
     return 'glm47';
   }
   if (normalizedProvider === 'moonshot' || normalizedModelKey.startsWith('kimi')) {
