@@ -3,7 +3,7 @@
     "test/retry-rescue-budget-split.test.js",
     "test/devin-connect-openai.test.js"
   ],
-  "expectBaselinePass": 70,
+  "expectBaselinePass": 71,
   "mutations": [
     {
       "name": "the original defect: the empty arm reads the shared loop counter again",
@@ -59,6 +59,24 @@
       "file": "src/devin-connect-openai.js",
       "anchor": "  const max = (retryOnEmptyEnabled(env) && !weak) ? retryOnEmptyMax(env) : 0;",
       "replacement": "  const max = !weak ? retryOnEmptyMax(env) : 0;"
+    },
+    {
+      "name": "master off switch stops covering the rescue arm",
+      "file": "src/devin-connect-openai.js",
+      "anchor": "  const rescueMax = (retryOnEmptyEnabled(env) && !weak) ? rescueConfigured : 0;",
+      "replacement": "  const rescueMax = !weak ? rescueConfigured : 0;"
+    },
+    {
+      "name": "the rescue arm's OWN budget goes off-by-one — nothing about the split would show it",
+      "file": "src/devin-connect-openai.js",
+      "anchor": "    if (rescueThinkingOnly && rescueAttempt < rescueMax && isStopOrNull",
+      "replacement": "    if (rescueThinkingOnly && rescueAttempt <= rescueMax && isStopOrNull"
+    },
+    {
+      "name": "the rescue log reports the combined count — its own numbering stops being independent",
+      "file": "src/devin-connect-openai.js",
+      "anchor": "rescue retry ${rescueAttempt}/${rescueMax} (nudge appended)`);",
+      "replacement": "rescue retry ${rescueAttempt + emptyAttempt}/${rescueMax} (nudge appended)`);"
     }
   ]
 }

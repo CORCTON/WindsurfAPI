@@ -86,6 +86,11 @@ describe('#240 — a rescue chain must not spend the empty-retry budget', () => 
     assert.equal(r.calls, 4, 'call 1+2 rescue, call 3 empty, call 4 the retry that heals');
   });
 
+  // A control, and honestly labelled as one: no budget mutation can make it fail, because
+  // the turn heals on the first retry and never reaches any ceiling. It is kept because it
+  // is what makes the assertion above a measurement rather than an anecdote — without the
+  // pair, "4 calls" is a number with nothing to compare against. Mutation coverage for
+  // this file's real properties lives in the assertions that do bite.
   it('control: the identical empty with no preceding rescue behaves the same way', async () => {
     const r = await run([EMPTY, ANSWER]);
     assert.equal(r.content, 'the real answer');
@@ -152,11 +157,22 @@ describe('#240 — the total ceiling is 1 + max + rescueMax and does not move', 
     assert.equal(r.calls, 3, '1 + RESCUE_MAX(2)');
   });
 
-  it('the master off switch still covers both arms', async () => {
-    const r = await run([REASONING_ONLY, EMPTY], { env: { DEVIN_CONNECT_RETRY_ON_EMPTY: '0' } });
+  // One assertion per arm, and the FIRST turn has to be the one that arm reacts to.
+  // The original single version led with a reasoning-only turn while the rescue budget was
+  // already 0 — that turn is neither rescuable nor empty, so the request ended on call 1
+  // and the empty arm's gate was never reached. It passed with the off switch deleted from
+  // the empty arm, i.e. it asserted nothing about the thing it was named after.
+  it('the master off switch covers the empty arm', async () => {
+    const r = await run([EMPTY], { env: { DEVIN_CONNECT_RETRY_ON_EMPTY: '0' } });
     assert.equal(r.calls, 1,
-      'DEVIN_CONNECT_RETRY_ON_EMPTY=0 means "stop speculative re-issues on this account"; '
-      + 'both arms must honour it, and the split must not give the empty arm a way around it');
+      'DEVIN_CONNECT_RETRY_ON_EMPTY=0 means "stop speculative re-issues on this account". '
+      + 'The split must not give the empty arm a path around it');
+    delete process.env.DEVIN_CONNECT_RETRY_ON_EMPTY;
+  });
+
+  it('the master off switch covers the rescue arm', async () => {
+    const r = await run([REASONING_ONLY], { env: { DEVIN_CONNECT_RETRY_ON_EMPTY: '0' } });
+    assert.equal(r.calls, 1);
     delete process.env.DEVIN_CONNECT_RETRY_ON_EMPTY;
   });
 });
