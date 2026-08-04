@@ -1,0 +1,50 @@
+#!/bin/sh
+#
+# Warn when a commit lands on master/main by a route pre-commit cannot refuse.
+#
+# OPT-IN alongside pre-commit:
+#     git config core.hooksPath .githooks
+#
+# `git cherry-pick` and `git revert` author brand-new commits WITHOUT running pre-commit —
+# measured, not assumed: a cherry-pick onto master completed silently while pre-commit was
+# installed and active. pre-commit's docstring used to claim it enforced "no commits authored
+# on master", which was therefore overstated.
+#
+# post-commit runs after the fact and cannot refuse anything, so this does not pretend to
+# block. It tells you what just landed and how to undo it, which is the most a hook can do
+# for these routes. Exits 0 always — a post-commit failure would not un-commit anything and
+# would only add noise.
+
+branch=$(git symbolic-ref --short -q HEAD) || exit 0
+
+case "$branch" in
+  master|main) ;;
+  *) exit 0 ;;
+esac
+
+# Only speak up for the routes pre-commit could not intercept. An ordinary `git commit` on
+# master was already refused by pre-commit, so reaching here means --no-verify was used
+# deliberately, and nagging about a deliberate choice is noise.
+git_dir=$(git rev-parse --git-dir)
+was_pick=0
+[ -e "$git_dir/CHERRY_PICK_HEAD" ] && was_pick=1
+[ -e "$git_dir/REVERT_HEAD" ] && was_pick=1
+# git clears those refs before post-commit on a clean pick, so also catch the message shape
+# cherry-pick -x leaves behind.
+git log -1 --format=%B | grep -q '^(cherry picked from commit' && was_pick=1
+[ "$was_pick" -eq 1 ] || exit 0
+
+printf '\033[33mpost-commit: a commit was just authored on %s by cherry-pick/revert.\033[0m\n' "$branch" >&2
+cat >&2 <<EOF
+
+  pre-commit cannot intercept those routes, so this is a warning rather than a refusal.
+
+  Just landed: $(git log -1 --oneline)
+
+  To move it onto a branch instead:
+    git branch <type>/<short-description>
+    git reset --hard HEAD~1
+    git switch <type>/<short-description>
+
+EOF
+exit 0

@@ -12,16 +12,52 @@
 # diff get looked at as a unit. The resulting history is IDENTICAL to the ff-merge, which
 # is exactly why the mistake is easy to make and invisible afterwards.
 #
-# This blocks `git commit`, not master advancing. `git merge --ff-only` moves the branch
-# ref without creating a commit, so the release flow ("推 master → 打 tag → 推 tag") is
-# untouched. Merge commits and rebases onto master are likewise unaffected.
-
+# SCOPE, measured rather than assumed — the first version of this comment overstated it:
+#   git commit                  BLOCKED
+#   git commit --amend          BLOCKED
+#   git merge --ff-only         allowed; creates no commit, so the release flow is untouched
+#   git cherry-pick / revert    NOT blocked. pre-commit is never consulted for either, so
+#                               they author new commits on master silently. Verified. The
+#                               companion post-commit hook warns after the fact instead —
+#                               a hook cannot refuse them, but it can say what landed.
+#   conflicted merge / rebase   DOES reach git commit, so this hook fires. Its ordinary
+#                               "branch first" advice is NOT followable there: git refuses
+#                               with "cannot switch branch while merging". Verified. Hence
+#                               the state-aware branch below.
 branch=$(git symbolic-ref --short -q HEAD) || exit 0   # detached HEAD: not our business
 
 case "$branch" in
-  master|main)
-    printf '\033[31mpre-commit: refusing to author a commit on %s.\033[0m\n' "$branch" >&2
-    cat >&2 <<'EOF'
+  master|main) ;;
+  *) exit 0 ;;
+esac
+
+git_dir=$(git rev-parse --git-dir)
+
+# Mid-merge / mid-rebase / mid-cherry-pick: the commit is finishing an operation already in
+# flight. Blocking is still right (it lands on master), but the ordinary advice cannot be
+# followed in this state, and printing an impossible command is worse than printing none.
+if [ -e "$git_dir/MERGE_HEAD" ] || [ -e "$git_dir/CHERRY_PICK_HEAD" ] \
+   || [ -e "$git_dir/REVERT_HEAD" ] || [ -d "$git_dir/rebase-merge" ] \
+   || [ -d "$git_dir/rebase-apply" ]; then
+  printf '\033[31mpre-commit: refusing to finish this operation on %s.\033[0m\n' "$branch" >&2
+  cat >&2 <<'EOF'
+
+  An operation is already in flight (merge / rebase / cherry-pick), so the usual
+  "branch first" advice does NOT apply — git refuses to switch branches mid-operation.
+
+  Either finish deliberately:
+    git commit --no-verify
+
+  or back out and redo it on a branch:
+    git merge --abort        # or: git rebase --abort / git cherry-pick --abort
+    git switch -c <type>/<short-description>
+
+EOF
+  exit 1
+fi
+
+printf '\033[31mpre-commit: refusing to author a commit on %s.\033[0m\n' "$branch" >&2
+cat >&2 <<'EOF'
 
   The flow is: branch → review → git merge --ff-only → push. Committing straight to
   master produces byte-identical history to that merge, so nothing looks wrong
@@ -35,8 +71,4 @@ case "$branch" in
   Deliberate exception: git commit --no-verify
 
 EOF
-    exit 1
-    ;;
-esac
-
-exit 0
+exit 1
