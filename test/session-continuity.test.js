@@ -4,6 +4,8 @@ import {
   resolveSessionId,
   commitAfterResponse,
   isSessionReuseEnabled,
+  isModelConfigStableEnabled,
+  getSessionModelConfig,
   buildPairHashes,
   canonicalize,
   normalizeToolLinkage,
@@ -377,5 +379,63 @@ describe('session-continuity: turn-1 stability (root anchor)', () => {
     assert.equal(d2t1, d1t1, 'turn-1 collision on an identical opener is expected');
     const d2t2 = turn('c1', h2, 'continue 2', 'more two');
     assert.notEqual(d2t2, d1t2, 'once diverged, the two dialogs hold independent ids');
+  });
+});
+
+describe('getSessionModelConfig — stable #15.1 / monotonic #15.2 (devin.exe parity)', () => {
+  beforeEach(() => _resetForTests());
+  afterEach(() => _resetForTests());
+  const ENV_BOTH = { DEVIN_CONNECT_SESSION_REUSE: '1', DEVIN_CONNECT_MODEL_CONFIG_STABLE: '1' };
+
+  it('gate matrix: needs BOTH the stable gate and session reuse', () => {
+    assert.equal(isModelConfigStableEnabled({ DEVIN_CONNECT_MODEL_CONFIG_STABLE: '1' }), true);
+    assert.equal(isModelConfigStableEnabled({ DEVIN_CONNECT_MODEL_CONFIG_STABLE: 'ON' }), true);
+    assert.equal(isModelConfigStableEnabled({}), false);
+    const h = [{ role: 'user', content: 'hi' }];
+    resolveSessionId('gm1', h, ENV_BOTH);
+    assert.equal(getSessionModelConfig('gm1', h, { DEVIN_CONNECT_SESSION_REUSE: '1' }), null, 'stable gate off → null');
+    assert.equal(getSessionModelConfig('gm1', h, { DEVIN_CONNECT_MODEL_CONFIG_STABLE: '1' }), null, 'reuse gate off → null');
+    const cfg = getSessionModelConfig('gm1', h, ENV_BOTH);
+    assert.ok(cfg && cfg.configId && cfg.turn === 1, 'both gates on → config for turn 1');
+  });
+
+  it('configId stable across turns; turn = committed responses + 1', () => {
+    const h = [{ role: 'user', content: 't1 question' }];
+    resolveSessionId('gm2', h, ENV_BOTH);
+    const c1 = getSessionModelConfig('gm2', h, ENV_BOTH);
+    assert.equal(c1.turn, 1, 'first turn = 1 before any commit');
+
+    h.push({ role: 'assistant', content: 'a1' });
+    commitAfterResponse('gm2', h, ENV_BOTH);
+    h.push({ role: 'user', content: 't2 question' });
+    resolveSessionId('gm2', h, ENV_BOTH);
+    const c2 = getSessionModelConfig('gm2', h, ENV_BOTH);
+    assert.equal(c2.configId, c1.configId, '#15.1 must be stable within the session');
+    assert.equal(c2.turn, 2, 'turn 2 after one committed response');
+
+    h.push({ role: 'assistant', content: 'a2' });
+    commitAfterResponse('gm2', h, ENV_BOTH);
+    h.push({ role: 'user', content: 't3 question' });
+    resolveSessionId('gm2', h, ENV_BOTH);
+    const c3 = getSessionModelConfig('gm2', h, ENV_BOTH);
+    assert.equal(c3.configId, c1.configId, '#15.1 still stable at turn 3');
+    assert.equal(c3.turn, 3, 'turn 3 after two committed responses');
+  });
+
+  it('idempotent re-commit does not inflate the turn counter', () => {
+    const h = [{ role: 'user', content: 'idem q' }];
+    resolveSessionId('gm3', h, ENV_BOTH);
+    h.push({ role: 'assistant', content: 'idem a' });
+    commitAfterResponse('gm3', h, ENV_BOTH);
+    commitAfterResponse('gm3', h, ENV_BOTH); // retry double-commit
+    h.push({ role: 'user', content: 'next' });
+    resolveSessionId('gm3', h, ENV_BOTH);
+    assert.equal(getSessionModelConfig('gm3', h, ENV_BOTH).turn, 2, 'no double bump on re-commit');
+  });
+
+  it('is read-only: never creates session state', () => {
+    const before = _getStoreSize();
+    assert.equal(getSessionModelConfig('gm4-nobody', [{ role: 'user', content: 'orphan' }], ENV_BOTH), null);
+    assert.equal(_getStoreSize(), before, 'lookup must not create a session');
   });
 });

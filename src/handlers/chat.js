@@ -58,7 +58,7 @@ import { resolveConnectSelector } from '../devin-connect-models.js';
 import { isRetryable as isConnectRetryable, getToolDefTags, parseToolCallTagMap } from '../devin-connect.js';
 import { isRouterModel, assignModel as _assignModel } from '../devin-connect-catalog.js';
 import { bumpConnect } from '../devin-connect-metrics.js';
-import { resolveSessionId as resolveConnectSessionId, commitAfterResponse as commitConnectSession } from '../session-continuity.js';
+import { resolveSessionId as resolveConnectSessionId, commitAfterResponse as commitConnectSession, getSessionModelConfig as getSessionConnectModelConfig } from '../session-continuity.js';
 import { newTraceId, traceClientRequest, traceRouting, traceClientResponse, traceEnabled } from '../trace.js';
 import { sanitizeText, sanitizeToolCall, PathSanitizeStream } from '../sanitize.js';
 import { systemFingerprint } from '../system-fingerprint.js';
@@ -3124,7 +3124,9 @@ async function _handleChatCompletionsInner(body, context = {}) {
     const connectSessionId = resolveConnectSessionId(callerKey || '', connectMessages);
     if (connectSessionId) {
       connectParams.sessionId = connectSessionId;
-      log.info(`Chat[${reqId}]: DEVIN_CONNECT session reuse active → session_id=${connectSessionId}`);
+      const modelCfg = getSessionConnectModelConfig(callerKey || '', connectMessages);
+      if (modelCfg) connectParams.sessionModelConfig = { id: modelCfg.configId, turn: modelCfg.turn };
+      log.info(`Chat[${reqId}]: DEVIN_CONNECT session reuse active → session_id=${connectSessionId}${modelCfg ? ` model_config=stable turn=${modelCfg.turn}` : ''}`);
     }
     if (ccAcct) {
       connectParams.token = ccAcct.apiKey;

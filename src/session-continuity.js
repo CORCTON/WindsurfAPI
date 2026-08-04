@@ -394,43 +394,39 @@ function indexState(stateId, state) {
  * Resolve a stable session_id for the given conversation.
  * Called BEFORE upstream dispatch.
  */
-export function resolveSessionId(callerKey, messages, env = process.env) {
-  if (!isSessionReuseEnabled(env)) return null;
+// ─── ModelConfig stability (companion to PR #226) ──────────────────────────
+// Genuine devin.exe keeps ModelConfig #15.1 stable within a session and
+// increments #15.2 every turn (calibrated on live capture 9501aa2c). With
+// SESSION_REUSE on this gateway is no longer stateless either, so both values
+// can be derived from the same session state. Opt-in gate, default OFF.
 
-  const scopeId = deriveScopeId(callerKey);
-  const events = canonicalize(messages);
-  const analysis = analyzeHistory(events, scopeId);
+export function isModelConfigStableEnabled(env = process.env) {
+  const v = String(env.DEVIN_CONNECT_MODEL_CONFIG_STABLE ?? '').trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+}
+
+/**
+ * Read-only session lookup for the CURRENT request. Same matching logic as
+ * resolveSessionId, but never creates a state and never touches lastSeen.
+ * Returns { state, viaRoot } or null.
+ */
+function findExistingState(scopeId, analysis, env) {
   const { hashes, canResolve, postBarrierRecords } = analysis;
   const ttl = getTtl(env);
   const now = Date.now();
 
   if (!canResolve || hashes.length === 0) {
-    // First turn (no completed pair yet) or a barrier. Anchor the session on the
-    // dialog's first input turn so the id is STABLE FROM TURN 1 — the only signal
-    // that exists before a pair does. Falls back to a shared bucket only when even
-    // the opener is empty. Two dialogs with an identical opener share this id until
-    // they diverge; commitAfterResponse then forks them (provisional-claim rule).
     const rootKey = rootAnchorKey(scopeId, analysis) || `${scopeId}:__no_pair__`;
     const existing = pairIndex.get(rootKey);
     if (existing) {
       for (const sid of existing) {
         const state = statesById.get(sid);
-        if (state && now - state.lastSeen < ttl) {
-          state.lastSeen = now;
-          return state.sessionId;
-        }
+        if (state && now - state.lastSeen < ttl) return { state, viaRoot: true };
         // Expired — evict so it doesn't block future lookups
         evictState(sid);
       }
     }
-    enforceCapacity(env);
-    const sessionId = crypto.randomUUID();
-    const stateId = crypto.randomUUID();
-    const state = { stateId, scopeId, sessionId, pairWindow: [], pairRecords: [], lastSeen: now, commitKey: null, dialogAnchor: null, rootKey };
-    statesById.set(stateId, state);
-    if (!pairIndex.has(rootKey)) pairIndex.set(rootKey, new Set());
-    pairIndex.get(rootKey).add(stateId);
-    return sessionId;
+    return null;
   }
 
   // Find best match by iterating ALL incoming hashes as index keys
@@ -454,21 +450,67 @@ export function resolveSessionId(callerKey, messages, env = process.env) {
       else if (score === bestScore && score > 0) hasTie = true;
     }
   }
+  return (best && !hasTie) ? { state: best, viaRoot: false } : null;
+}
 
-  if (best && !hasTie) {
-    best.lastSeen = now;
-    const newWindow = hashes.slice(-PAIR_WINDOW_SIZE);
-    // Re-index with new hashes (stateId stored on state object for O(1) access)
-    if (best.stateId) {
-      for (const ph of newWindow) {
-        const k = `${scopeId}:${ph}`;
-        if (!pairIndex.has(k)) pairIndex.set(k, new Set());
-        pairIndex.get(k).add(best.stateId);
+/**
+ * ModelConfig for the current request: stable per-session config UUID (#15.1)
+ * and 1-based turn counter (#15.2), mirroring genuine devin.exe wire behaviour.
+ * Read-only — never creates state, never touches lastSeen. Null when either
+ * gate is off or no session resolves for this request.
+ */
+export function getSessionModelConfig(callerKey, messages, env = process.env) {
+  if (!isModelConfigStableEnabled(env) || !isSessionReuseEnabled(env)) return null;
+  const scopeId = deriveScopeId(callerKey);
+  const analysis = analyzeHistory(canonicalize(messages), scopeId);
+  const found = findExistingState(scopeId, analysis, env);
+  if (!found) return null;
+  return { configId: found.state.configId, turn: (found.state.turnCount || 0) + 1 };
+}
+
+export function resolveSessionId(callerKey, messages, env = process.env) {
+  if (!isSessionReuseEnabled(env)) return null;
+
+  const scopeId = deriveScopeId(callerKey);
+  const events = canonicalize(messages);
+  const analysis = analyzeHistory(events, scopeId);
+  const { hashes, canResolve, postBarrierRecords } = analysis;
+  const now = Date.now();
+
+  const found = findExistingState(scopeId, analysis, env);
+  if (found) {
+    found.state.lastSeen = now;
+    if (!found.viaRoot) {
+      const newWindow = hashes.slice(-PAIR_WINDOW_SIZE);
+      // Re-index with new hashes (stateId stored on state object for O(1) access)
+      if (found.state.stateId) {
+        for (const ph of newWindow) {
+          const k = `${scopeId}:${ph}`;
+          if (!pairIndex.has(k)) pairIndex.set(k, new Set());
+          pairIndex.get(k).add(found.state.stateId);
+        }
       }
+      found.state.pairWindow = newWindow;
+      found.state.pairRecords = postBarrierRecords.slice(-PAIR_WINDOW_SIZE);
     }
-    best.pairWindow = newWindow;
-    best.pairRecords = postBarrierRecords.slice(-PAIR_WINDOW_SIZE);
-    return best.sessionId;
+    return found.state.sessionId;
+  }
+
+  if (!canResolve || hashes.length === 0) {
+    // First turn (no completed pair yet) or a barrier. Anchor the session on the
+    // dialog's first input turn so the id is STABLE FROM TURN 1 — the only signal
+    // that exists before a pair does. Falls back to a shared bucket only when even
+    // the opener is empty. Two dialogs with an identical opener share this id until
+    // they diverge; commitAfterResponse then forks them (provisional-claim rule).
+    const rootKey = rootAnchorKey(scopeId, analysis) || `${scopeId}:__no_pair__`;
+    enforceCapacity(env);
+    const sessionId = crypto.randomUUID();
+    const stateId = crypto.randomUUID();
+    const state = { stateId, scopeId, sessionId, pairWindow: [], pairRecords: [], lastSeen: now, commitKey: null, dialogAnchor: null, rootKey, configId: crypto.randomUUID(), turnCount: 0 };
+    statesById.set(stateId, state);
+    if (!pairIndex.has(rootKey)) pairIndex.set(rootKey, new Set());
+    pairIndex.get(rootKey).add(stateId);
+    return sessionId;
   }
 
   // No match — create new state
@@ -478,7 +520,7 @@ export function resolveSessionId(callerKey, messages, env = process.env) {
   const stateId = crypto.randomUUID();
   const pairWindow = hashes.slice(-PAIR_WINDOW_SIZE);
   const dialogAnchor = pairWindow[0]?.slice(0, 16) || null;
-  const state = { stateId, scopeId, sessionId, pairWindow, pairRecords: postBarrierRecords.slice(-PAIR_WINDOW_SIZE), lastSeen: now, commitKey: null, dialogAnchor };
+  const state = { stateId, scopeId, sessionId, pairWindow, pairRecords: postBarrierRecords.slice(-PAIR_WINDOW_SIZE), lastSeen: now, commitKey: null, dialogAnchor, configId: crypto.randomUUID(), turnCount: 0 };
   statesById.set(stateId, state);
   indexState(stateId, state);
   return sessionId;
@@ -539,6 +581,7 @@ export function commitAfterResponse(callerKey, messagesWithResponse, env = proce
     target.state.pairWindow = pairWindow;
     target.state.pairRecords = postBarrierRecords.slice(-PAIR_WINDOW_SIZE);
     target.state.commitKey = commitKey;
+    target.state.turnCount = (target.state.turnCount || 0) + 1;
     commitIndex.set(commitKey, target.stateId);
     indexState(target.stateId, target.state);
     return target.state.sessionId;
@@ -561,6 +604,7 @@ export function commitAfterResponse(callerKey, messagesWithResponse, env = proce
         state.pairWindow = pairWindow;
         state.pairRecords = postBarrierRecords.slice(-PAIR_WINDOW_SIZE);
         state.commitKey = commitKey;
+        state.turnCount = (state.turnCount || 0) + 1;
         if (!state.dialogAnchor) state.dialogAnchor = pairWindow[0]?.slice(0, 16) || null;
         commitIndex.set(commitKey, sid);
         indexState(sid, state);
@@ -575,7 +619,7 @@ export function commitAfterResponse(callerKey, messagesWithResponse, env = proce
   const sessionId = crypto.randomUUID();
   const stateId = crypto.randomUUID();
   const dialogAnchor = pairWindow[0]?.slice(0, 16) || null;
-  const state = { stateId, scopeId, sessionId, pairWindow, pairRecords: postBarrierRecords.slice(-PAIR_WINDOW_SIZE), lastSeen: now, commitKey, dialogAnchor };
+  const state = { stateId, scopeId, sessionId, pairWindow, pairRecords: postBarrierRecords.slice(-PAIR_WINDOW_SIZE), lastSeen: now, commitKey, dialogAnchor, configId: crypto.randomUUID(), turnCount: 1 };
   statesById.set(stateId, state);
   commitIndex.set(commitKey, stateId);
   indexState(stateId, state);
