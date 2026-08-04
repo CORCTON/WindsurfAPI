@@ -4,7 +4,7 @@
 
 | # | File | Why |
 |---|---|---|
-| 1 | **[HANDOFF-2026-08-04-E.md](HANDOFF-2026-08-04-E.md)** | Current state, the still-unfixed list with `file:line` and measured numbers, and what is blocked on someone else. **Unreleased work, when there is any, is described here** — right now there is none: master == v3.9.17. Read its §3 first (two operational rules that will trip you within minutes) then §5. |
+| 1 | **[HANDOFF-2026-08-04-E.md](HANDOFF-2026-08-04-E.md)** | Current state, the still-unfixed list with `file:line` and measured numbers, and what is blocked on someone else. **Unreleased work, when there is any, is described here** — right now there is no unreleased *behaviour*: master is ahead of `v3.9.17` only by docs and one mutation-spec baseline fix, so `git describe --tags master` reads `v3.9.17-N-g…` and that is expected (do **not** use `--exact-match`; see its §3). Read its §3 first (two operational rules that will trip you within minutes), then §0.1, then §5. |
 | 2 | **[AUDIT-LEDGER.md](AUDIT-LEDGER.md)** | Which subsystems were *actually probed*, the conclusion, and where the guard lives. Start with its "怎么读这份文件" section — it is 1200+ lines appended over twelve rounds and is **not** organised by topic. |
 | 3 | **[DEVIN-CONNECT-CUTOVER.md](DEVIN-CONNECT-CUTOVER.md)** | Production cutover runbook. `DEVIN_CONNECT` is what production actually runs (the code default is OFF; the deployment sets it), so this is not optional. Paid wire-calibration procedure in §8. |
 
