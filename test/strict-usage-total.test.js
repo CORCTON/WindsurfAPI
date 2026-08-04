@@ -25,10 +25,11 @@
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildUsageBody, strictUsageTotal, fullBillableTokens } from '../src/handlers/chat.js';
+import { buildUsageBody, strictUsageTotal } from '../src/handlers/chat.js';
 import { normalizeConnectUsage } from '../src/devin-connect.js';
 import {
   addAccountByKey, removeAccount, getAccountInternal, recordAccountSpend,
+  fullBillableTokens,
 } from '../src/auth.js';
 
 const ENV_KEY = 'WINDSURFAPI_STRICT_USAGE_TOTAL';
@@ -165,10 +166,75 @@ describe('cost accounting stays honest under BOTH shapes', () => {
     assert.equal(getAccountInternal(a.id)._totalSpend.totalTokens, 37);
   });
 
+  it('a malformed usage block can never produce a NEGATIVE spend total', () => {
+    // The tally is cumulative, so it must be monotonic. The inline version this replaced
+    // ended in `|| (prompt + completion)`, which was unreachable for real usage AND the only
+    // path able to emit a negative: a negative bucket makes the max 0, and `0 ||` then falls
+    // through to the negative sum. Upstream numbers are not ours to trust.
+    assert.equal(fullBillableTokens({ prompt_tokens: -500, completion_tokens: -10 }), 0);
+    assert.equal(fullBillableTokens({ total_tokens: -999 }), 0);
+    assert.equal(fullBillableTokens({ prompt_tokens: 10, completion_tokens: -3 }), 10,
+      'a negative bucket must be clamped, not subtracted from a sibling');
+    assert.equal(fullBillableTokens({ prompt_tokens: 'x', completion_tokens: null }), 0,
+      'non-numeric input must not produce NaN, which would poison the running total');
+
+    const a = seed('neg');
+    recordAccountSpend(a.apiKey, { prompt_tokens: -500, completion_tokens: -10, total_tokens: -510 });
+    assert.equal(getAccountInternal(a.id)._totalSpend.totalTokens, 0,
+      'the cumulative tally must never move backwards');
+  });
+
   it('a usage block with neither total nor cache fields falls back to the buckets', () => {
     assert.equal(fullBillableTokens({ prompt_tokens: 5, completion_tokens: 6 }), 11);
     assert.equal(fullBillableTokens(null), 0);
     assert.equal(fullBillableTokens({}), 0);
+  });
+});
+
+describe('every protocol front honours the flag, not just two of them', () => {
+  // The partial-path check. When the flag shipped it bound the Cascade and connect usage
+  // builders; special-agent (Devin CLI / ACP) forwarded whatever the runner reported, so
+  // with the flag ON that front could still emit total != prompt + completion. A flag that
+  // holds on some fronts and not others is worse than no flag — the client cannot tell
+  // which response it is looking at.
+  it('special-agent honours the flag even when the runner reports a non-identity total', async () => {
+    const sa = await import('../src/special-agent.js');
+    const pick = sa.__testing?.pickUsage;
+    assert.ok(typeof pick === 'function',
+      'special-agent must expose pickUsage for test — otherwise this front can only be '
+      + 'checked by reading, which is how it was missed the first time');
+
+    // A runner reporting a total that is NOT the sum of its parts. Whether real runners do
+    // this is not the point: the flag's contract is about what WE emit.
+    const raw = { inputTokens: 100, outputTokens: 40, totalTokens: 999 };
+    const messages = [{ role: 'user', content: 'hello' }];
+
+    delete process.env[ENV_KEY];
+    const loose = pick(raw, messages, 'answer');
+    assert.equal(loose.total_tokens, 999,
+      'default must forward the runner\'s own total unchanged');
+
+    process.env[ENV_KEY] = '1';
+    const strict = pick(raw, messages, 'answer');
+    assert.equal(strict.total_tokens, strict.prompt_tokens + strict.completion_tokens,
+      'with the flag on this front must satisfy the identity too');
+    assert.equal(strict.total_tokens, 140);
+    assert.equal(strict.prompt_tokens, 100, 'and the buckets themselves must not move');
+    assert.equal(strict.completion_tokens, 40);
+  });
+
+  it('all three usage builders agree on the identity under the flag', async () => {
+    process.env[ENV_KEY] = '1';
+    const sa = await import('../src/special-agent.js');
+    const cascade = buildUsageBody(SERVER_USAGE, [], 'x');
+    const connect = normalizeConnectUsage(CONNECT_USAGE);
+    const acp = sa.__testing.pickUsage(
+      { inputTokens: 100, outputTokens: 40, totalTokens: 999 }, [{ role: 'user', content: 'hi' }], 'a',
+    );
+    for (const [name, u] of [['cascade', cascade], ['connect', connect], ['acp', acp]]) {
+      assert.equal(u.total_tokens, u.prompt_tokens + u.completion_tokens,
+        `${name} breaks the identity while the flag is on — the flag must be all-or-nothing`);
+    }
   });
 });
 

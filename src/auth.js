@@ -2832,6 +2832,39 @@ export function reportSuccess(apiKey) {
  * @param {object|null} usage  { prompt_tokens, completion_tokens, total_tokens }
  * @param {object} [opts]      { creditCost?: number }
  */
+/**
+ * Full billable cost of a request, independent of whatever shape total_tokens is in.
+ *
+ * Cost accounting must NOT read total_tokens directly: with WINDSURFAPI_STRICT_USAGE_TOTAL=1
+ * that field deliberately excludes generation-side cache-write to satisfy OpenAI's
+ * arithmetic identity, so metering off it would make an operator's own spend tally
+ * under-report the moment they opted into spec compliance — they would pay for cache-writes
+ * that never appear in their own chart. The cache-write figure is on the wire either way as
+ * `cache_creation_input_tokens` (unconditional on the Cascade path, present on the connect
+ * path whenever the upstream reported it), so the full cost stays recoverable.
+ *
+ * Lives here, beside its only caller, rather than in a handler: this used to be defined in
+ * handlers/chat.js with recordAccountSpend re-implementing the same arithmetic inline. Two
+ * copies of a billing calculation is one too many, and the exported copy had no production
+ * caller at all, so its mutation guard was protecting nothing that reached the wire.
+ *
+ * The max() is over non-negative terms only. An earlier inline version ended in
+ * `|| (prompt + completion)`, which was unreachable for any real usage block AND the single
+ * path able to emit a NEGATIVE spend total (a negative bucket makes the max 0, and `0 ||`
+ * then falls through to the negative sum). Clamping instead keeps the tally monotonic,
+ * which is the one property a cumulative counter has to have.
+ */
+export function fullBillableTokens(usage) {
+  if (!usage) return 0;
+  const prompt = Math.max(0, Number(usage.prompt_tokens) || 0);
+  const completion = Math.max(0, Number(usage.completion_tokens) || 0);
+  const cacheWrite = Math.max(0, Number(usage.cache_creation_input_tokens) || 0);
+  const total = Math.max(0, Number(usage.total_tokens) || 0);
+  // The grand total already includes cache-write unless the strict flag stripped it. Taking
+  // the max covers both shapes without having to know which produced this object.
+  return Math.max(total, prompt + completion + cacheWrite);
+}
+
 export function recordAccountSpend(apiKey, usage, { creditCost = 0 } = {}) {
   if (!apiKey) return;
   const account = accounts.find(a => a.apiKey === apiKey);
@@ -2849,11 +2882,7 @@ export function recordAccountSpend(apiKey, usage, { creditCost = 0 } = {}) {
   // would pay for cache-writes that never appear in their own spend chart. The
   // cache-write figure is on the wire as cache_creation_input_tokens either way, so the
   // full cost stays recoverable regardless of which shape total_tokens is in.
-  const cacheWrite = Number(usage?.cache_creation_input_tokens) || 0;
-  const total = Math.max(
-    Number(usage?.total_tokens) || 0,
-    prompt + completion + cacheWrite,
-  ) || (prompt + completion);
+  const total = fullBillableTokens(usage);
   s.requests += 1;
   s.promptTokens += prompt;
   s.completionTokens += completion;

@@ -32,6 +32,7 @@ import { randomUUID, randomBytes, createHmac } from 'crypto';
 import * as _wireFs from 'fs';
 import * as _wirePath from 'path';
 import { log } from './config.js';
+import { strictUsageTotal } from './runtime-config.js';
 import {
   writeMessageField, writeStringField, writeVarintField, writeFixed64Field,
   parseFields, getField, getAllFields,
@@ -1799,11 +1800,14 @@ export function normalizeConnectUsage(lastUsage) {
   // WINDSURFAPI_STRICT_USAGE_TOTAL=1 restores OpenAI's arithmetic identity
   // (total == prompt + completion) for clients that validate it. Off by default: the
   // identity break is cosmetic for nearly every consumer, whereas dropping cache_write
-  // from the total under-reports real spend, so spec-strictness is the opt-in. Both
-  // protocol families read this one object, so the switch lands on all of them at once.
-  // Read live rather than snapshotted at import so it is testable and so a restart with
-  // a new env actually takes effect.
-  const strictTotal = String(process.env.WINDSURFAPI_STRICT_USAGE_TOTAL || '0') === '1';
+  // from the total under-reports real spend, so spec-strictness is the opt-in.
+  //
+  // IMPORTED rather than re-parsed here. This line used to be its own
+  // `String(process.env...) === '1'`, which meant the "only the literal 1 counts" rule —
+  // the one with an explicit assertion behind it — bound chat.js and silently not this
+  // module. Two copies of an env parse is one copy too many when the thing it gates is
+  // billing-shaped.
+  const strictTotal = strictUsageTotal();
   return {
     prompt_tokens: promptTokens,
     completion_tokens: completion,

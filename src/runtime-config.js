@@ -230,6 +230,28 @@ export function isExperimentalEnabled(key) {
   return !!_state.experimental?.[key];
 }
 
+/**
+ * True when the operator asked for OpenAI's arithmetic identity
+ * (total_tokens == prompt_tokens + completion_tokens) instead of the grand total that
+ * includes generation-side cache-write. See .env.example for why default-off is the
+ * asymmetric-risk choice.
+ *
+ * It lives HERE rather than in a handler because three unrelated modules need the same
+ * answer — chat.js (Cascade), devin-connect.js (connect) and special-agent.js (ACP/CLI).
+ * Each previously re-derived it, or omitted it: devin-connect.js re-parsed the env inline,
+ * so the "only the literal 1 counts" rule bound one module and not the others, and
+ * special-agent.js never consulted it at all, leaving that front emitting a non-identity
+ * total while the flag was on. One definition removes the whole class.
+ *
+ * Read live on every call: an import-time const cannot be flipped by a test, which is how
+ * a previous flag in this repo became untestable and left one branch permanently dead.
+ * Only the literal '1' enables it, so a truthy-looking typo ('true', 'yes') cannot
+ * silently change a billing-adjacent shape.
+ */
+export function strictUsageTotal(env = process.env) {
+  return String(env.WINDSURFAPI_STRICT_USAGE_TOTAL || '0') === '1';
+}
+
 // Whitelist of valid experimental flags, derived from DEFAULTS so a new flag is
 // covered automatically. A stale/hostile client can otherwise inject arbitrary
 // boolean junk keys that persist forever.

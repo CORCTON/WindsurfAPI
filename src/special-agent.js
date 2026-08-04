@@ -28,7 +28,7 @@ import { sanitizeText, PathSanitizeStream } from './sanitize.js';
 import { runDevinAcpProcess, probeDevinCliAvailable, acpVisionEnabled } from './devin-acp.js';
 import { extractInlineImages as extractImagesFromContent } from './devin-connect.js';
 import { systemFingerprint } from './system-fingerprint.js';
-import { getBackendSwitch } from './runtime-config.js';
+import { getBackendSwitch, strictUsageTotal } from './runtime-config.js';
 
 const SPECIAL_BACKEND = 'special_agent';
 const DEFAULT_SPECIAL_MODELS = new Set([
@@ -237,7 +237,19 @@ function pickUsage(rawUsage, messages, completionText) {
   return {
     prompt_tokens: prompt,
     completion_tokens: completion,
-    total_tokens: total ?? (prompt + completion),
+    // WINDSURFAPI_STRICT_USAGE_TOTAL=1 means the client validates OpenAI's arithmetic
+    // identity, so honour it here too rather than passing the runner's total through.
+    //
+    // This front was missed when the flag shipped: it forwards whatever the ACP runner
+    // reported, so with the flag ON a Devin CLI / ACP model could still emit
+    // total != prompt + completion and the flag would be two-thirds true. A flag that
+    // holds on some protocol fronts and not others is worse than no flag, because the
+    // client cannot tell which response it is looking at. Sixth occurrence of the
+    // partial-path trap in this repo.
+    //
+    // No billing consequence either way: this path records via recordRequest (dashboard
+    // counters), never recordAccountSpend, so no per-account spend tally reads this number.
+    total_tokens: strictUsageTotal() ? (prompt + completion) : (total ?? (prompt + completion)),
     input_tokens: prompt,
     output_tokens: completion,
     prompt_tokens_details: { cached_tokens: cached ?? 0 },
@@ -915,3 +927,8 @@ export async function handleSpecialAgentChatCompletion(body, route, deps = {}) {
     }
   }
 }
+
+// Test-only surface. pickUsage decides this front's total_tokens shape, and it was the one
+// usage builder the WINDSURFAPI_STRICT_USAGE_TOTAL flag missed on its first pass — exposing
+// it means that front is checked by assertion rather than by reading.
+export const __testing = { pickUsage, estimateTokens };
