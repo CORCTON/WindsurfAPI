@@ -149,10 +149,29 @@ async function* streamChatWithEmptyRetry(params, { env = process.env, rescueThin
   const rescueMax = (retryOnEmptyEnabled(env) && !weak) ? rescueConfigured : 0;
   // Cap for the reasoning digest: the nudge quotes only the END of the reasoning,
   // sliced once at nudge time (the consumers already hold the full reasoning text,
-  // so per-chunk trimming would only churn the GC). 0 disables the digest; a
-  // non-numeric value falls back to the default instead of silently disabling it.
+  // so per-chunk trimming would only churn the GC). 0 disables the digest; NaN
+  // (a genuinely non-numeric value like `abc`) falls back to the default.
+  //
+  // EMPTY STRING IS NOT NaN: Number('') === 0, so `…MAX_CHARS=` with nothing after
+  // the `=` disables the digest rather than falling back. That is the SAME convention
+  // the three sibling knobs in this file already have (RETRY_ON_EMPTY_MAX → 0 retries,
+  // RETRY_ON_EMPTY_MS → 0 backoff, RESCUE_MAX → rescue off), all measured, so it is
+  // left consistent rather than special-cased here — but it is written down because
+  // the previous version of this comment claimed the opposite.
+  //
+  // The ceiling exists for the reason RESCUE_MAX_CEILING does twelve lines up:
+  // Number.isFinite lets `1e9` through. Measured on this branch — reasoning of 50000
+  // chars with `1e9` set produced a 50089-byte nudge, i.e. no cap at all, on EVERY
+  // rescue of that request. Unlike RESCUE_MAX this cannot hang the request (it is one
+  // slice, not an unbounded loop), so the ceiling is not an account-protection bound;
+  // it bounds how large a single upstream body one env typo can produce. 32000 is a
+  // JUDGEMENT (16x the default, far above any plausible tuning), NOT a measured
+  // upstream limit — the real upstream body limit has never been probed.
+  const DIGEST_MAX_CEILING = 32000;
   const digestRaw = Number(env.DEVIN_CONNECT_RESCUE_REASONING_MAX_CHARS);
-  const reasoningDigestMaxChars = Number.isFinite(digestRaw) && digestRaw >= 0 ? digestRaw : 2000;
+  const reasoningDigestMaxChars = Number.isFinite(digestRaw) && digestRaw >= 0
+    ? Math.min(digestRaw, DIGEST_MAX_CEILING)
+    : 2000;
   let attemptParams = params;
   // Two speculative arms, two budgets (#240). They used to share the loop counter: the
   // rescue arm has always had its own `rescueAttempt`/`rescueMax` pair, but reaching the

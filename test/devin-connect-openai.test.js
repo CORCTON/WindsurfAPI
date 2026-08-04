@@ -884,6 +884,75 @@ describe('thinking-only rescue & promotion', () => {
     assert.equal(lastParams.messages.at(-1).content, 'Stop reasoning. Emit the tool call markup now.');
   });
 
+  // Post-merge review of #241. `Number.isFinite` lets `1e9` through, exactly as it did
+  // for the RESCUE_MAX knob twelve lines above the digest cap in the source — that one
+  // already carries RESCUE_MAX_CEILING because an unbounded value hung the request for
+  // hours of upstream calls. The digest cap shipped without the equivalent clamp.
+  //
+  // These three pin the whole sanitisation surface as ONE unit, because the failing
+  // direction differs per input and asserting only the clamp would leave the other two
+  // free to drift:
+  //   1e9  → clamped to the ceiling      (the defect this adds the clamp for)
+  //   ''   → 0, i.e. digest OFF          (Number('') === 0; the file-wide convention)
+  //   abc  → NaN, i.e. the 2000 default  (the only input the fallback actually serves)
+  describe('digest cap sanitisation (post-merge hardening)', () => {
+    const digestFor = async (envValue, reasoningLen) => {
+      let callCount = 0;
+      let lastParams = null;
+      __setStreamChatForTest(async function* (params) {
+        callCount++;
+        lastParams = params;
+        if (callCount === 1) {
+          yield { type: 'reasoning', text: 'R'.repeat(reasoningLen) };
+          yield { type: 'finish', reason: 'stop', usage: null };
+        } else {
+          yield { type: 'content', text: 'ok' };
+          yield { type: 'finish', reason: 'stop', usage: null };
+        }
+      });
+      const old = process.env.DEVIN_CONNECT_RESCUE_REASONING_MAX_CHARS;
+      process.env.DEVIN_CONNECT_RESCUE_REASONING_MAX_CHARS = envValue;
+      try {
+        await streamChatCompletion(
+          { model: 'swe-1-7', messages: [{ role: 'user', content: 'hi' }], tools: SAMPLE_TOOLS },
+          () => {},
+          { emulateTools: true },
+        );
+      } finally {
+        if (old === undefined) delete process.env.DEVIN_CONNECT_RESCUE_REASONING_MAX_CHARS;
+        else process.env.DEVIN_CONNECT_RESCUE_REASONING_MAX_CHARS = old;
+      }
+      // Precondition, not decoration: without a real rescue the nudge is never built and
+      // every length assertion below would pass on a run where nothing happened.
+      assert.equal(callCount, 2, 'precondition: the rescue must actually have fired');
+      const nudge = lastParams.messages.at(-1).content;
+      const m = nudge.match(/"""([\s\S]*)"""/);
+      return { nudge, quoted: m ? m[1] : null };
+    };
+
+    it('clamps an unbounded value (1e9) to the ceiling instead of quoting everything', async () => {
+      const { quoted } = await digestFor('1e9', 50000);
+      assert.equal(
+        quoted.length, 32000,
+        'Number.isFinite accepts 1e9; without the clamp the whole 50000-char reasoning ships in the nudge',
+      );
+    });
+
+    it('an empty value disables the digest — same convention as the sibling knobs', async () => {
+      const { nudge, quoted } = await digestFor('', 3000);
+      assert.equal(quoted, null, 'no quoted block at all');
+      assert.equal(
+        nudge, 'Stop reasoning. Emit the tool call markup now.',
+        "Number('') === 0, so an empty value reads as 0 (digest off), NOT as the 2000 default",
+      );
+    });
+
+    it('a genuinely non-numeric value falls back to the 2000 default', async () => {
+      const { quoted } = await digestFor('abc', 3000);
+      assert.equal(quoted.length, 2000, 'NaN is the only input the default fallback serves');
+    });
+  });
+
   it('rescues in native tool mode when tools are present (emulateTools=false)', async () => {
     let callCount = 0;
     __setStreamChatForTest(async function* () {
