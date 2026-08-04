@@ -1,0 +1,64 @@
+{
+  "tests": [
+    "test/session-continuity.test.js",
+    "test/devin-connect.test.js",
+    "test/messages-continuity-t4.test.js"
+  ],
+  "mutations": [
+    {
+      "name": "T1 store: the overlap-target commit path stops saving the reasoning tail",
+      "file": "src/session-continuity.js",
+      "anchor": "    target.state.commitKey = commitKey;\n    target.state.turnCount = (target.state.turnCount || 0) + 1;\n    pushReasoningTail(target.state, opts.reasoning, env);",
+      "replacement": "    target.state.commitKey = commitKey;\n    target.state.turnCount = (target.state.turnCount || 0) + 1;"
+    },
+    {
+      "name": "T1 digest keeps the head instead of the tail — intent/conclusions live at the end",
+      "file": "src/session-continuity.js",
+      "anchor": "  return s.length <= maxChars ? s : s.slice(-maxChars);",
+      "replacement": "  return s.length <= maxChars ? s : s.slice(0, maxChars);"
+    },
+    {
+      "name": "T1 inject gate defaults ON — would change every existing deploy's wire",
+      "file": "src/session-continuity.js",
+      "anchor": "export function isReasoningInjectEnabled(env = process.env) {\n  const v = String(env.DEVIN_CONNECT_SESSION_REASONING_INJECT ?? '').trim().toLowerCase();\n  return v === '1' || v === 'true' || v === 'yes' || v === 'on';\n}",
+      "replacement": "export function isReasoningInjectEnabled(env = process.env) {\n  return true;\n}"
+    },
+    {
+      "name": "T1 wire: continuity trail never reaches the system prompt",
+      "file": "src/devin-connect.js",
+      "anchor": "  if (continuityTrail) systemPrompt += continuityTrail;",
+      "replacement": ""
+    },
+    {
+      "name": "T1 block framing loses the join between digests",
+      "file": "src/session-continuity.js",
+      "anchor": "    tails.join('\\n---\\n') +",
+      "replacement": "    tails.join('\\n') +"
+    },
+    {
+      "name": "T2 anthropic-in: incoming thinking no longer captured before the drop",
+      "file": "src/handlers/messages.js",
+      "anchor": "        } else if (block.type === 'thinking') {\n          if (typeof block.thinking === 'string' && block.thinking) msgThinking.push(block.thinking);",
+      "replacement": "        } else if (block.type === 'thinking') {"
+    },
+    {
+      "name": "T4 stream: duplicate content always flushed — the dedup is gone",
+      "file": "src/handlers/messages.js",
+      "anchor": "    if (this.heldText != null) {\n      if (this.heldText !== this.seenThinking) this.emitTextDelta(this.heldText);\n      this.heldText = null;\n    }",
+      "replacement": "    if (this.heldText != null) {\n      this.emitTextDelta(this.heldText);\n      this.heldText = null;\n    }"
+    },
+    {
+      "name": "T4 non-stream: verbatim-duplicate thinking block rides again",
+      "file": "src/handlers/messages.js",
+      "anchor": "  if (choice?.message?.reasoning_content && choice?.message?.reasoning_content !== choice?.message?.content) {",
+      "replacement": "  if (choice?.message?.reasoning_content) {"
+    },
+    {
+      "name": "SURVIVOR (documented): T2 chat.js commit fallback dropped — only a handler-level integration run can see the outbound-empty path; unit layer covers capture and store",
+      "file": "src/handlers/chat.js",
+      "anchor": "commitConnectSession(callerKey || '', commitMsgs, undefined, { reasoning: r.sr?.reasoning || incomingConnectReasoning });",
+      "replacement": "commitConnectSession(callerKey || '', commitMsgs, undefined, { reasoning: r.sr?.reasoning });",
+      "expectCaught": false
+    }
+  ]
+}
