@@ -33,7 +33,12 @@ bucket 2   → 6/8               bucket 6 → 2/8
 
 判据必须镜像排序的**每一项**。第一版漏了 `recentTroubleScore`(排序的第二优先键),于是近期
 失败簇被降级的账号仍算"打平"、仍能被提上来,而且因为那一项优先级高,真正打平的账号可能排在
-不打平的后面、扫描提前停止**分片不足**。四项判据现在逐项都有隔离断言与突变。
+不打平的后面、扫描提前停止**分片不足**。
+
+**五项**判据现在逐项都有对应突变:in-flight、trouble 桶、quota 桶、RPM 剩余比例各有一条隔离
+断言,`lastUsed` 是**有据可查的漏网**(理由记在 spec 里)。其中 quota 那项此前静默未覆盖 ——
+种子账号没有 `credits` 对象,`quotaScore` 恒返回 100,**没有 fixture 能让它说话**;设上
+credits 之后实测:10% 配额的账号从「从未被选中」变成 6 个采样 callerKey 里被选中 2 次。
 
 同时修掉 `strictPin` 的一个前提错误:它由两个**面板可实时设置**的 flag 算出,而它依赖的
 sticky 钉住是 **env-only 的 module-load const**。在没设 `STICKY_SESSION_ENABLED=1` 的部署上
