@@ -244,38 +244,21 @@ describe('the spend tally is monotonic across every counter', () => {
   });
 });
 
-describe('the Cascade STREAMING path does not record per-account spend', () => {
-  // judge's request, recorded rather than fixed. This is PRE-EXISTING and bounds the
-  // strict-usage-total feature's accounting promise: recordAccountSpend has call sites on the
-  // connect paths and on Cascade NON-stream (inside nonStreamResponse), but none on the
-  // Cascade streaming path. So "the operator's spend tally stays honest under the flag" is
-  // true of the paths that report spend at all — and Cascade streaming is not one of them.
-  //
-  // Not filed as a defect here because fixing it means adding a spend call site to a hot
-  // streaming path, which is a behaviour change well outside this round's scope. Pinned so
-  // the gap is a known quantity rather than a surprise, and so that adding the call site
-  // later has a test to flip.
-  it('has no recordAccountSpend call site, unlike the non-stream and connect paths', async () => {
-    const { readFileSync } = await import('node:fs');
-    const src = readFileSync(new URL('../src/handlers/chat.js', import.meta.url), 'utf8');
-    const sites = [...src.matchAll(/recordAccountSpend\(/g)].map((m) => m.index);
-    assert.ok(sites.length >= 4,
-      `expected several recordAccountSpend call sites, found ${sites.length}`);
-
-    // streamResponse is the Cascade streaming entry point; nonStreamResponse is its sibling.
-    const streamStart = src.indexOf('\nfunction streamResponse(');
-    assert.ok(streamStart > 0, 'streamResponse must exist for this test to mean anything');
-    // Everything after streamResponse begins, up to the next top-level function, is the
-    // streaming path. Bound it by the next `\nasync function ` / `\nfunction ` at column 0.
-    const after = src.slice(streamStart + 1);
-    const nextTop = after.search(/\n(?:export )?(?:async )?function /);
-    const streamBody = nextTop > 0 ? after.slice(0, nextTop) : after;
-
-    assert.ok(!streamBody.includes('recordAccountSpend('),
-      'the Cascade streaming path now DOES record spend — that is an improvement, so delete '
-      + 'this test and update the note in .env.example / the ledger that says it does not');
-  });
-});
+// REMOVED: 'the Cascade STREAMING path does not record per-account spend'.
+//
+// That block pinned the ABSENCE of a recordAccountSpend call site on the Cascade streaming
+// path, and said in its own failure message that the right response to it going red was to
+// delete it. The call site now exists (see test/cascade-stream-account-spend.test.js, which
+// asserts the per-account tally actually moves rather than scanning the source), so keeping
+// the old assertion would pin the defect back in place.
+//
+// Worth knowing how this was found: it went red in the full gate AFTER the fix was already
+// committed, because the search that concluded "nothing pins this gap" grepped test files for
+// `recordAccountSpend` plus `stream|cascade`, saw this file match, and dismissed the matches
+// as usage-arithmetic tests without reading them. The conclusion "no test pins it" was then
+// written into the ledger as a correction of a TRUE earlier claim. The gate caught it; the
+// ledger's own rule — the reporter must be independently verified, including when the
+// reporter is yourself — is what should have.
 
 describe('every protocol front honours the flag, not just two of them', () => {
   // The partial-path check. When the flag shipped it bound the Cascade and connect usage
