@@ -5872,6 +5872,31 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
               // stream_options.include_usage (OpenAI omits it by default).
               const usage = buildUsageBody(cascadeResult?.usage || null, messages, accText, accThinking, cachePolicy);
               try { recordTokenUsage(usage); } catch {}
+              // K8: per-account lifetime spend (Cascade STREAM path).
+              //
+              // This call point was missing while the other three had it (connect stream,
+              // connect non-stream, Cascade non-stream at the `recordAccountSpend(apiKey,
+              // usage)` below), so on a Cascade deployment every streamed turn — the common
+              // case for an agent client — added nothing to the account's lifetime tally.
+              // The dashboard's per-account spend column therefore under-reported by
+              // however much of the traffic was streamed.
+              //
+              // Placed here, not earlier, on purpose. Three double-count hazards, each
+              // already realised once in this repo's history:
+              //  - retry: this block sits inside the `for (let attempt...)` loop, but the
+              //    success path returns immediately below, so a retried request records
+              //    exactly once — the earlier attempts never reach here.
+              //  - abort: a client that disconnects mid-stream throws before this point, so
+              //    a cancelled turn is not billed. That matches the rest of the codebase
+              //    deliberately treating an abort as "nothing happened" (connect's finalizer
+              //    exempts aborts from every penalty).
+              //  - cache replay: a cache hit never enters this path at all.
+              // `acct` is the account this attempt checked out; currentApiKeyForId resolves
+              // the CURRENT key for it, because a re-login mid-request rotates the key and
+              // the stale one would credit a row that no longer exists.
+              try {
+                if (acct) recordAccountSpend(currentApiKeyForId(acct.id, acct.apiKey), usage);
+              } catch {}
               if (deps.includeUsage) {
                 send({ id, object: 'chat.completion.chunk', created, model,
                   choices: [], usage });
