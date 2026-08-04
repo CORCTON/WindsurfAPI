@@ -18,16 +18,16 @@
       "replacement": "      rescueAttempt++;\n      emptyAttempt++;\n      log.warn(`DEVIN_CONNECT: thinking-only completion"
     },
     {
-      "name": "empty budget becomes unbounded — the ceiling is gone, starvation also 'fixed'",
+      "name": "the ceiling is raised — starvation would also be 'fixed' this way, wrongly",
       "file": "src/devin-connect-openai.js",
       "anchor": "    if (emptyAttempt < max && isEmptyCompletion(finishEv, sawContent)) {",
-      "replacement": "    if (isEmptyCompletion(finishEv, sawContent) && emptyAttempt < 1e9) {"
+      "replacement": "    if (emptyAttempt < max + 3 && isEmptyCompletion(finishEv, sawContent)) {"
     },
     {
-      "name": "empty counter never advances — one retry becomes unlimited retries",
+      "name": "off-by-one: the empty arm gets one retry more than the knob states",
       "file": "src/devin-connect-openai.js",
-      "anchor": "      emptyAttempt++;\n      log.warn(`DEVIN_CONNECT: empty completion",
-      "replacement": "      log.warn(`DEVIN_CONNECT: empty completion"
+      "anchor": "    if (emptyAttempt < max && isEmptyCompletion(finishEv, sawContent)) {",
+      "replacement": "    if (emptyAttempt <= max && isEmptyCompletion(finishEv, sawContent)) {"
     },
     {
       "name": "empty counter advances twice — the arm silently gets half its documented budget",
