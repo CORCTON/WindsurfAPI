@@ -40,10 +40,9 @@
   值得装的理由：直接在 master 上提交产生的历史与 ff 合并**字节级相同**，所以事后看不出
   任何异常，只能在发生的那一刻挡。
   **作用范围（实测，别照直觉推）**：`git commit` 与 `--amend` 拦；`--ff-only` 放行；
-  **`cherry-pick` 拦不住** —— git 不在那条路径上调 pre-commit，改由 `post-commit` 事后
-  警告；**`git revert` 连警告都没有** —— 实测 git 对 revert 根本不跑 post-commit，所以这条
-  路径**任何 hook 都盖不住**；冲突的 merge/rebase 会触发，且给的是那个状态下**真能执行**的
-  补救命令（`git switch -c` 在合并中会被 git 拒绝）。
+  **`cherry-pick` / `revert` 拦不住** —— git 不在那条路径上调 pre-commit，两者都改由
+  `post-commit` 事后警告（实测各自都会打印）；冲突的 merge/rebase 会触发，且给的是那个状态
+  下**真能执行**的补救命令（`git switch -c` 在合并中会被 git 拒绝）。
 
 ### 测试
 
@@ -101,9 +100,9 @@ GitHub Actions 跑 `npm run test:release`（语法校验 + 核心回归）。本
   It blocks `git commit` only, not master advancing (`--ff-only` creates no commit, so the
   release flow is untouched). Deliberate exception: `git commit --no-verify`.
   **Scope, measured — do not infer it**: `git commit` and `--amend` are blocked; `--ff-only`
-  passes; **`cherry-pick` is NOT blocked** (git never consults pre-commit there), so a
-  companion `post-commit` hook warns after the fact; **`git revert` gets no warning either** —
-  git runs no post-commit for it at all, so that route is unguarded by any hook; a conflicted
+  passes; **`cherry-pick` / `revert` are NOT blocked** (git never consults pre-commit there),
+  so a companion `post-commit` hook warns after the fact for both — verified end to end for
+  each route; a conflicted
   merge/rebase does fire, and prints recovery advice that actually works in that state
   (`git switch -c` is rejected by git mid-merge).
   Worth installing because committing straight to master yields history that is

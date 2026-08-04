@@ -16,13 +16,10 @@
 #   git commit                  BLOCKED
 #   git commit --amend          BLOCKED
 #   git merge --ff-only         allowed; creates no commit, so the release flow is untouched
-#   git cherry-pick             NOT blocked; pre-commit is never consulted. The companion
-#                               post-commit hook warns after the fact — it cannot refuse,
-#                               but it can say what landed. Verified.
-#   git revert                  NOT blocked and NOT WARNED EITHER. Measured: git runs no
-#                               post-commit for revert (instrumented the hook with an
-#                               unconditional echo; it never printed). This route is
-#                               genuinely unguarded — no hook can close it.
+#   git cherry-pick / revert    NOT blocked; pre-commit is never consulted for either. The
+#                               companion post-commit hook warns after the fact for BOTH —
+#                               it cannot refuse, but it can say what landed. Verified end
+#                               to end for each route.
 #   conflicted merge / rebase   DOES reach git commit, so this hook fires. Its ordinary
 #                               "branch first" advice is NOT followable there: git refuses
 #                               with "cannot switch branch while merging". Verified. Hence

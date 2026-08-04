@@ -9,9 +9,7 @@
 # measured, not assumed: a cherry-pick onto master completed silently while pre-commit was
 # installed and active. pre-commit's docstring used to claim it enforced "no commits authored
 # on master", which was therefore overstated.
-#
-# This hook covers cherry-pick ONLY. `git revert` does not run post-commit either (measured),
-# so it is unguarded by any hook — see the SCOPE note below.
+
 #
 # post-commit runs after the fact and cannot refuse anything, so this does not pretend to
 # block. It tells you what just landed and how to undo it, which is the most a hook can do
@@ -29,22 +27,20 @@ esac
 # master was already refused by pre-commit, so reaching here means --no-verify was used
 # deliberately, and nagging about a deliberate choice is noise.
 #
-# SCOPE — measured, and narrower than two earlier versions of this comment claimed:
+# SCOPE — measured. Both routes ARE covered, by different signals:
 #
-#   git cherry-pick   post-commit RUNS. CHERRY_PICK_HEAD is still present, so the ref test
+#   git cherry-pick   post-commit runs; CHERRY_PICK_HEAD is still present, so the ref test
 #                     below fires. Verified: 1 warning line.
-#   git revert        post-commit is NOT RUN AT ALL. Verified by instrumenting this file with
-#                     an unconditional `echo` — it never printed. So revert cannot be caught
-#                     from here by any detection logic, message-shape or otherwise; the
-#                     earlier attempt to cover it with a `^Revert "` grep was treating a
-#                     hook-invocation gap as a pattern-matching gap.
+#   git revert        post-commit runs too, but REVERT_HEAD is already CLEARED by then, so the
+#                     ref test misses and the `^Revert "` message match is what catches it.
+#                     Verified end to end: reverting a real commit on master printed the
+#                     warning naming the new commit.
 #
-# The `^Revert "` match is kept anyway, because it costs nothing and DOES fire on the one
-# route that reaches here with that message shape: `git cherry-pick` of a commit that was
-# itself a revert. It is not what makes `git revert` covered — nothing here can.
-#
-# `git revert` on master therefore remains genuinely UNGUARDED. pre-commit says so, and
-# CONTRIBUTING says so. A hook cannot close it; only `git revert` growing a hook would.
+# A previous version of this comment claimed git does not run post-commit for revert at all.
+# That was wrong, and the way it was wrong is worth keeping: the "measurement" behind it
+# instrumented this file with an unconditional echo and saw nothing — but the revert in that
+# probe never created a commit, so there was nothing for any hook to run on. An absent signal
+# was read as evidence about the hook instead of as a broken probe.
 git_dir=$(git rev-parse --git-dir)
 was_pick=0
 [ -e "$git_dir/CHERRY_PICK_HEAD" ] && was_pick=1
