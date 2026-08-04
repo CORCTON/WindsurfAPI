@@ -36,10 +36,11 @@
       "replacement": "      emptyAttempt += 2;\n      log.warn(`DEVIN_CONNECT: empty completion"
     },
     {
-      "name": "backoff keyed to the rescue count — an unrelated rescue lengthens the next empty wait",
+      "name": "DOCUMENTED SURVIVOR: backoff keyed to the combined count instead of the empty count. The multiplier is not observable — every test sets DEVIN_CONNECT_RETRY_ON_EMPTY_MS=0, so both versions sleep 0ms. A wall-clock assertion is the obvious fix and is rejected on this repo's own precedent: load inflates the correct and the mutated path together, so no margin separates 350ms from 700ms reliably (ledger round 4, the sticky TTL assertion that went red 3 times under suite load). A sleep seam in production code is out of proportion for the harm, which is bounded and cosmetic: after a rescue the next empty retry waits base×2 instead of base×1 — one extra 350ms on a request that is already several upstream calls deep, with no effect on how MANY calls are made or on the account-protection ceiling. What IS pinned is the operator-visible number: the mutation one line below (log line reports the combined count) is CAUGHT.",
       "file": "src/devin-connect-openai.js",
       "anchor": "      const backoff = retryOnEmptyBaseMs(env) * emptyAttempt;",
-      "replacement": "      const backoff = retryOnEmptyBaseMs(env) * (emptyAttempt + rescueAttempt);"
+      "replacement": "      const backoff = retryOnEmptyBaseMs(env) * (emptyAttempt + rescueAttempt);",
+      "expectCaught": false
     },
     {
       "name": "log line reports the combined count — the operator-visible budget becomes wrong after a rescue",

@@ -161,14 +161,21 @@ describe('#240 — the total ceiling is 1 + max + rescueMax and does not move', 
   });
 });
 
-describe('#240 — the empty arm reports and backs off against its OWN count', () => {
-  // The backoff is `base × <number of empty retries>`. Before the split it read the shared
-  // counter, which happened to equal that number only when no rescue had run. Keying it to
-  // the shared counter would make an unrelated rescue lengthen the next empty wait — and
-  // no call-count assertion above can see that, because the sleep is 0 in tests.
+describe('#240 — the empty arm reports its OWN count', () => {
+  // What follows pins the operator-visible NUMBER, and only that. Be precise about the
+  // limit, because the neighbouring property looks like it is covered here and is not:
   //
-  // The log line carries the same counter, so asserting it pins the property without a
-  // wall-clock assertion (this repo has been bitten by timing-precise assertions before).
+  //   covered      — the count in the log line (`retry 1/2` after a rescue, not `2/2`)
+  //   NOT covered  — the backoff MULTIPLIER, `base × <empty retries>`
+  //
+  // Every test in this file sets DEVIN_CONNECT_RETRY_ON_EMPTY_MS=0, so a mutation that
+  // keys the backoff to `emptyAttempt + rescueAttempt` sleeps 0ms either way and survives
+  // (recorded as a documented survivor in test/mutations/retry-rescue-budget-split.json).
+  // A wall-clock assertion would be the obvious cover and is deliberately not written:
+  // suite load inflates the correct and the mutated path together, so no margin reliably
+  // separates 350ms from 700ms — ledger round 4 has the sticky TTL assertion that went red
+  // three times exactly this way. The harm left uncovered is one extra 350ms wait on an
+  // already multi-call request; it cannot change how many upstream calls are made.
   it('the first empty retry after a rescue logs 1/2, not 2/2', async () => {
     const warns = [];
     const original = log.warn;
