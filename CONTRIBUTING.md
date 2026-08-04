@@ -95,6 +95,11 @@ GitHub Actions 跑 `npm run test:release`（语法校验 + 核心回归）。本
   branch → review → `git merge --ff-only` → push: `git config core.hooksPath .githooks`.
   It blocks `git commit` only, not master advancing (`--ff-only` creates no commit, so the
   release flow is untouched). Deliberate exception: `git commit --no-verify`.
+  **Scope, measured — do not infer it**: `git commit` and `--amend` are blocked; `--ff-only`
+  passes; **`cherry-pick` / `revert` are NOT blocked** (git never consults pre-commit on
+  those routes), so a companion `post-commit` hook warns after the fact instead; a conflicted
+  merge/rebase does fire, and prints recovery advice that actually works in that state
+  (`git switch -c` is rejected by git mid-merge).
   Worth installing because committing straight to master yields history that is
   **byte-identical** to the ff-merge — nothing looks wrong afterwards, so the only useful
   moment to catch it is when it happens.
