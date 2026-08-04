@@ -1,16 +1,18 @@
 {
-  "tests": ["test/strict-usage-total.test.js"],
-  "expectBaselinePass": 12,
+  "tests": [
+    "test/strict-usage-total.test.js"
+  ],
+  "expectBaselinePass": 15,
   "mutations": [
     {
       "name": "flag defaults ON — would change every existing deploy's billing shape",
-      "file": "src/handlers/chat.js",
+      "file": "src/runtime-config.js",
       "anchor": "  return String(env.WINDSURFAPI_STRICT_USAGE_TOTAL || '0') === '1';",
       "replacement": "  return String(env.WINDSURFAPI_STRICT_USAGE_TOTAL || '1') === '1';"
     },
     {
       "name": "flag accepts any truthy string — a typo silently changes billing shape",
-      "file": "src/handlers/chat.js",
+      "file": "src/runtime-config.js",
       "anchor": "  return String(env.WINDSURFAPI_STRICT_USAGE_TOTAL || '0') === '1';",
       "replacement": "  return !!env.WINDSURFAPI_STRICT_USAGE_TOTAL;"
     },
@@ -35,12 +37,12 @@
     {
       "name": "accounting meters on total_tokens — spend under-reports under the flag",
       "file": "src/auth.js",
-      "anchor": "  const total = Math.max(\n    Number(usage?.total_tokens) || 0,\n    prompt + completion + cacheWrite,\n  ) || (prompt + completion);",
+      "anchor": "  const total = fullBillableTokens(usage);",
       "replacement": "  const total = Number(usage?.total_tokens) || (prompt + completion);"
     },
     {
       "name": "fullBillableTokens ignores cache-write, so full cost is unrecoverable",
-      "file": "src/handlers/chat.js",
+      "file": "src/auth.js",
       "anchor": "  return Math.max(total, prompt + completion + cacheWrite);",
       "replacement": "  return total || (prompt + completion);"
     },
@@ -55,6 +57,18 @@
       "file": "src/handlers/chat.js",
       "anchor": "    const promptTokens = inputTokens + cacheRead;",
       "replacement": "    const promptTokens = inputTokens + cacheRead + (strictUsageTotal() ? cacheWrite : 0);"
+    },
+    {
+      "name": "special-agent front ignores the flag — identity holds on 2 of 3 builders",
+      "file": "src/special-agent.js",
+      "anchor": "    total_tokens: strictUsageTotal() ? (prompt + completion) : (total ?? (prompt + completion)),",
+      "replacement": "    total_tokens: total ?? (prompt + completion),"
+    },
+    {
+      "name": "clamp removed — a malformed usage block can drive the tally negative",
+      "file": "src/auth.js",
+      "anchor": "  const prompt = Math.max(0, Number(usage.prompt_tokens) || 0);",
+      "replacement": "  const prompt = Number(usage.prompt_tokens) || 0;"
     }
   ]
 }
