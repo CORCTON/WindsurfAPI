@@ -634,15 +634,17 @@ cache-write):
 **既有测试当了对抗者。** 这条记下来是因为它说明了守卫的第二种价值:不只防回归,还能在设计
 阶段否掉一个错误的分类。
 
-### 仍未 exhaustive 扫描 ⬜(第七轮更新)
+### 仍未 exhaustive 扫描 ⬜(第十轮更新 —— 上一版此表有三行已过期)
 
 | 面 | 缺口 |
 |---|---|
 | ~~queue-on-pin~~ | **已实现**(v3.9.12,默认关)。见第八轮 |
-| 散射的确切成因 | 移除两个排序机制后仍散射 —— 成因在候选**过滤**,未隔离 |
-| cascade 写入点的 `acquireAccountByKey` 路径 | 该路径不经 `getApiKey`,因此不经 sticky 快路径;绑定仍会被成功路径覆盖而全程无 clear。**只读推断,未驱动复现** |
+| ~~散射的确切成因~~ | **已隔离**(第十轮)。此前"成因在候选过滤"是**错的**,而错在方法:靠清账号状态来"关掉"机制,而那些字段就是机制。逐项在源码里关掉后:in-flight 对顺序散射毫无贡献,RPM 比例与 LRU 各自独立充分 |
+| ~~cascade 的 `acquireAccountByKey` 路径~~ | **已测**(第九轮)。范围比记录的窄:默认配置下两条路径不共享槽位,只有 `stickyBindByUserOnly` 折叠时才覆盖,且那是该 flag 的直接推论、不修 |
+| ~~`total_tokens` 含 `cache_write`~~ | **已做成默认关的开关**(v3.9.13)。此前记成"需拍板",而它做得成开关 —— 默认关的开关没有取舍 |
+| Cascade **流式**路径不记 per-account 消费 | 既有。`recordAccountSpend` 只在 connect 两条路径与 Cascade 非流式有调用点。已加测试钉住,未修:那要往热流式路径加调用点 |
 | billing tag 号 | 需付费 token 校准(#239) |
-| `total_tokens` 含 `cache_write` | 产品取舍,需作者拍板 |
+| #240 预算耦合 | warelik 的外部报告,66 天生产数据。`streamChatWithEmptyRetry` 里 rescue 迭代会推进共享的 `attempt`,单向饿死 empty-retry 预算。报告者明确把决定权留给维护者 |
 
 ---
 
