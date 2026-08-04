@@ -468,6 +468,16 @@
       "mergedAt": "2026-08-02",
       "title": "fix(devin-connect): rescue thinking-only finishes with a corrective nudge",
       "summary": "swe-1-7(Kimi K2 fine-tune,当前免费档,因此是很多部署的首选 SWE 模型)在 agentic 循环里间歇性把整个 turn 花在 reasoning 通道:thinking delta 有内容、content 零、tool call 零、finish=stop。严格客户端(kimi CLI)报 APIEmptyResponseError 且 10/10 同样失败,宽容客户端静默丢弃该轮、循环无限停滞。实测 agentic 25%、纯文本提问 100%,其中 60% 的推理里明确声明了工具意图。三环一链且只修一环无可观测效果:上游把 turn 花在 reasoning 通道(proto #9)、isEmptyCompletion 把 reasoning 计入 sawContent 所以空完成重试从不触发、重试历史里的零长度 assistant turn 被原样转发上游反过来诱导模型继续产空轮(这正是客户端 10 次重试全部同样失败的原因)。修复键在**失效特征**(reasoning-only finish + 有 tools)而不是模型名上 —— 本仓库吃过几次按模型名硬编码的亏,这个选择明显更耐用。实测数据扎实:纠正 nudge 24/24 恢复,盲重试仅 20%;剔除空 assistant turn 后首次成功率 100% vs 75%。issue 里还有一条方法论值得记:宽容客户端静默丢弃 thinking-only 轮,等于把可观测性也一起丢了 —— 只有 kimi CLI 的严格校验给出完整 trace,这个 bug 才成为可捕获的。评审查出两条自引入缺陷(reasoning 提升成 content 时未移除 reasoning_content 导致同一段文字返回两遍;每次 rescue 尝试的输出被拼进同一个答案),均由维护方在合并后修掉 —— 都比它们修复的缺陷轻一个数量级,不值得让贡献者再跑一轮往返。未到 MR/LR 档是因为这两条本可在提交前自查到。"
+    },
+    {
+      "login": "warelik",
+      "githubId": 54947489,
+      "pr": 241,
+      "weight": "S",
+      "weightLabel": "救援 nudge 引用失败尝试的 reasoning 尾巴 · #238 的第二层,并两轮改到位",
+      "mergedAt": "2026-08-05",
+      "title": "fix(devin-connect): rescue nudge quotes the failed attempt's reasoning tail",
+      "summary": "#238 修掉了 reasoning 被整段丢弃那一半,这个 PR 修剩下的一半:reasoning 发出来了但动作没发。原来的救援只喊\"别想了,出工具调用\",模型于是从零重想;现在 nudge 把上一次失败尝试的 reasoning 尾部(默认取尾 2000 字符,取尾是因为最后的意图在末尾)包进去,模型接着自己刚才想到哪把动作发出来。证据是 wire 级的:2026-07-28 的 trajectory 第 8 步 13 个 reasoning delta 然后 finish、content 零,而同一账号同一模型的第 3、5 步正常出工具调用 —— 账号有能力,只是有时不做;tool_choice: required 不改变结果,所以缺口在上游生成侧、恢复只能做在代理这边。三条评审意见两轮内全部改到位,而且改得比要求的更远:(1) nudge 累积 —— 每次救援从已增长的 attemptParams 重建,旧 nudge 是 role:user 所以过滤器全留下,带 digest 后第 5 次救援会塞 ~10.4KB 陈旧提示词、且模型会同时看到两条都写着\"你上次想到\"的消息各引用不同一次尝试;他改成从未经修改的原始 params 重建,并补了一条带 callCount 前置断言的测试(没有那条前置断言,长度断言会在\"什么都没发生\"的运行上恒真),还显式断言陈旧 digest 不在场。(2) 覆盖声明 —— 他原本写这修了 native 模式的覆盖缺口,维护方核出 emulateTools 在 connect 路径上字面就是 connectTools.length > 0、与新门等价;他没有辩护,直接撤下并如实改写成\"把判据从名字有误导性的 flag 换成请求自带属性\",还把维护方提的脆弱耦合顾虑写进代码注释。(3) field 0 是 protobuf 保留字段 —— 维护方只列为备注、明说不算修改要求,他仍然收进了编码器自己,并用字节长度同一性钉死。合并后维护方补了一条他没覆盖的:digest 的 cap 没有上限,而同一函数上面十二行的 RESCUE_MAX 早因同一个洞加过钳(1e9 能过 Number.isFinite),实测 50000 字符 reasoning + 1e9 → nudge 50089 字节。另外合并本身静默打断了两条既有突变 anchor(他往 rescue 判据里插了 hasTools,而那两条 anchor 正是那行),测试套件不跑 spec 所以三个绿灯都看不见 —— 这两条都不是他能预见的。未到 MR/LR 是因为 cap 缺钳属于提交前自查能发现的(邻居的注释里就写着教训)。"
     }
   ]
 }
