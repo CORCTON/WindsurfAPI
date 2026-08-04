@@ -242,6 +242,61 @@ describe('a concurrent burst spreads regardless of the caller hash', () => {
   });
 });
 
+describe('strictPin requires sticky to actually be on', () => {
+  // strictPin exempts the shard from the tied-prefix bound entirely (span = pool), on the
+  // premise that the operator asked for per-user pinning regardless of account health. That
+  // premise only holds when sticky is ON — the binding and no-rotate behaviour that make a
+  // pin meaningful live in the sticky path.
+  //
+  // The two flags are DASHBOARD-settable at runtime while sticky itself is an env-only
+  // module-load const, so the mismatch was reachable in production: flip both switches on a
+  // deploy without STICKY_SESSION_ENABLED=1 and the shard permutes the whole pool with none
+  // of the pinning that justifies it. This file runs with sticky OFF, which is exactly the
+  // state that used to be broken.
+  it('both flags on with sticky OFF must not exempt the shard', async () => {
+    const rc = await import('../src/runtime-config.js');
+    const sticky = await import('../src/account/sticky-session.js');
+    assert.equal(sticky.isStickyEnabled(), false,
+      'precondition: this file runs with sticky off, which is the vulnerable state');
+
+    // setExperimental takes a PATCH OBJECT — two positional args is a silent no-op that
+    // would make this test pass without the flags ever being on.
+    rc.setExperimental({ stickyBindByUserOnly: true, stickyNoFallback: true });
+    try {
+      assert.equal(rc.isExperimentalEnabled('stickyBindByUserOnly'), true, 'flag 1 must be on');
+      assert.equal(rc.isExperimentalEnabled('stickyNoFallback'), true, 'flag 2 must be on');
+
+      const POOL = 4;
+      seedPool(POOL);
+      const worst = auth.getAccountInternal(created[0]);
+      const now = Date.now();
+
+      let promoted = 0;
+      const sampled = ['api:k:user:alice', 'api:k:user:bob', 'api:k:user:carol',
+        'api:k:user:dave', 'api:1111111111111111:user:alice', 'caller-tension'];
+      for (const caller of sampled) {
+        makeAllTied();
+        // Make one account unambiguously the worst on TWO independent dimensions.
+        worst._rpmHistory = [];
+        for (let i = 0; i < 55; i++) worst._rpmHistory.push(now - 1000 + i);
+        worst._health = [{ t: now - 1000, k: 'e' }, { t: now - 500, k: 'e' }];
+
+        const x = auth.getApiKey([], null, caller, SELECTOR);
+        assert.ok(x, `${caller} must be served`);
+        if (x.id === worst.id) promoted++;
+        auth.releaseAccountById(x.id);
+      }
+
+      assert.equal(promoted, 0,
+        `with sticky OFF the worst account in the pool (55/60 RPM + a trouble cluster) was `
+        + `selected for ${promoted} of ${sampled.length} callers. strictPin exempted the `
+        + 'shard from the tied-prefix bound without the pinning that exemption exists for.');
+    } finally {
+      rc.setExperimental({ stickyBindByUserOnly: false, stickyNoFallback: false });
+    }
+  });
+});
+
 describe('sharding still does the job it exists for', () => {
   it('different callers on a fully-tied pool prefer different accounts', () => {
     // Removing the defect must not remove the feature: on a pool where every account is

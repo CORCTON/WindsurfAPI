@@ -1972,7 +1972,21 @@ export function getApiKey(excludeKeys = [], modelKey = null, callerKey = null, c
   //   every health metric.  This avoids overriding legitimate
   //   load-balancing when one account is clearly healthier.
   if (callerKey && candidates.length > 1) {
-    const strictPin = isExperimentalEnabled('stickyBindByUserOnly') && isExperimentalEnabled('stickyNoFallback');
+    // strictPin means "pin each caller to a fixed slot regardless of quota / RPM / tier",
+    // which is only a coherent request when sticky is actually on: the binding and the
+    // no-rotate behaviour that make the pin meaningful live in the sticky path.
+    //
+    // isStickyEnabled() is REQUIRED here, and its absence was a live defect rather than a
+    // theoretical one. The two flags are dashboard-settable at runtime while sticky itself
+    // is an env-only module-load const, so an operator flipping both switches on a deploy
+    // without STICKY_SESSION_ENABLED=1 got `span = candidates.length` — the shard permuting
+    // the ENTIRE pool, free to promote the worst account present — with none of the pinning
+    // that exemption exists to serve. Reproduced: sticky off, both flags on, and the account
+    // at 55/60 RPM carrying a two-failure trouble cluster was selected for 2 of 6 sampled
+    // callerKeys.
+    const strictPin = isStickyEnabled()
+      && isExperimentalEnabled('stickyBindByUserOnly')
+      && isExperimentalEnabled('stickyNoFallback');
     {
       // There used to be a separate gate here that computed whether candidates[0] and [1]
       // tied, and only then allowed the shard to run. It is gone because the tied-prefix

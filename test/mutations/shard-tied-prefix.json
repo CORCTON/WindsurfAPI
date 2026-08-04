@@ -4,8 +4,14 @@
     "test/scatter-attribution.test.js",
     "test/sticky-concurrency-tension.test.js"
   ],
-  "expectBaselinePass": 19,
+  "expectBaselinePass": 20,
   "mutations": [
+    {
+      "name": "strictPin drops the isStickyEnabled() requirement — dashboard flags exempt the shard with no pinning behind them",
+      "file": "src/auth.js",
+      "anchor": "    const strictPin = isStickyEnabled()\n      && isExperimentalEnabled('stickyBindByUserOnly')\n      && isExperimentalEnabled('stickyNoFallback');",
+      "replacement": "    const strictPin = isExperimentalEnabled('stickyBindByUserOnly') && isExperimentalEnabled('stickyNoFallback');"
+    },
     {
       "name": "the original defect: shard indexes the WHOLE array again",
       "file": "src/auth.js",
