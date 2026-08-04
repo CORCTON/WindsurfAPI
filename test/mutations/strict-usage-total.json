@@ -2,7 +2,7 @@
   "tests": [
     "test/strict-usage-total.test.js"
   ],
-  "expectBaselinePass": 15,
+  "expectBaselinePass": 18,
   "mutations": [
     {
       "name": "flag defaults ON — would change every existing deploy's billing shape",

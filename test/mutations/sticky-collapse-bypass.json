@@ -1,6 +1,8 @@
 {
-  "tests": ["test/sticky-collapse-bypass.test.js"],
-  "expectBaselinePass": 4,
+  "tests": [
+    "test/sticky-collapse-bypass.test.js"
+  ],
+  "expectBaselinePass": 5,
   "mutations": [
     {
       "name": "collapse removed — stickyBindByUserOnly becomes a no-op",
