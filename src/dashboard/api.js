@@ -15,6 +15,7 @@ import {
   getAccountInternal, isLocalBindHost, maskApiKey, safeEqualString,
   checkLockout, failedAuthAttempt, successfulAuthAttempt,
   getDroughtSummary, getPoolHealthWindow,
+  getCurrentlyFreeConnectSelectors, isConnectSelectorCurrentlyFree,
 } from '../auth.js';
 import { restartLsForProxy } from '../langserver.js';
 import { getLsStatus, stopLanguageServerAndWait, startLanguageServer, isLanguageServerRunning, getLsAdmissionStatus } from '../langserver.js';
@@ -1775,6 +1776,10 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
   // would not: the reporter needs to SEE the paid ones, greyed, not have them vanish.
   if (subpath === '/models' && method === 'GET') {
     const isReachable = buildConnectReachability();
+    // Pool-wide, so resolved once rather than per row: null means no active account has a
+    // usable rate table, which is what lets `currentlyFree` below distinguish "costs quota"
+    // from "we do not know yet".
+    const freeSet = getCurrentlyFreeConnectSelectors();
     const models = filterModelKeysByCloudCatalog().map((id) => {
       const info = MODELS[id];
       const { reachable, selector } = isReachable(id);
@@ -1788,6 +1793,24 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
         // transport. Surfaced for diagnosis: "unreachable" and "does not resolve at all"
         // look identical in the UI otherwise.
         connectSelector: selector,
+        // Does the upstream currently charge nothing for it (#235)? TRI-STATE:
+        //   true  — rate table says rate === 0, or it is a FREE_REACHABLE selector
+        //   false — it costs quota
+        //   null  — unknown: either the name resolves to nothing here, or NO account has a
+        //           usable rate table yet
+        //
+        // The unknown state is carried rather than flattened, and that is the whole point of
+        // this field. The reporter had a PRO account, set GLM-5-2 believing it was free on
+        // that plan, and burned the entire weekly allowance. Reporting "unknown" as `false`
+        // (paid) would be safe-ish, but reporting it as `true` would repeat their loss —
+        // and `isConnectSelectorCurrentlyFree` returns a plain `false` in BOTH the "costs
+        // money" and the "no data" cases, so calling it alone cannot make that distinction.
+        // Hence the explicit freeSet null-check: auth.js:304 returns null for "no table
+        // anywhere" precisely so callers do not have to guess, and flattening it here would
+        // throw away the one thing that function went out of its way to preserve.
+        currentlyFree: !selector ? null
+          : isConnectSelectorCurrentlyFree(selector) ? true
+          : (freeSet === null ? null : false),
       };
     });
     // Selectors that ARE serveable but have no MODELS row (`swe-1-6-slow` is in neither the
@@ -1813,6 +1836,10 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
           credit: null,
           reachable: true,
           connectSelector: selector,
+          // Unconditionally true, and not routed through the predicate: membership in
+          // FREE_REACHABLE_SELECTORS is the definition of free-to-any-account here, which is
+          // also why the predicate's own first line short-circuits on it (auth.js:321).
+          currentlyFree: true,
         });
       }
     }

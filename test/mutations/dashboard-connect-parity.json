@@ -4,7 +4,7 @@
     "test/connect-discovery-rebuild.test.js",
     "test/cloud-catalog-backend-boundary.test.js"
   ],
-  "expectBaselinePass": 18,
+  "expectBaselinePass": 22,
   "mutations": [
     {
       "name": "the original defect: dashboard stops annotating and reports everything reachable",
@@ -54,6 +54,24 @@
       "anchor": "    return { reachable: !!(mapped && known(selector) && entitled(selector)), selector: mapped ? selector : null };",
       "replacement": "    return { reachable: !!(mapped && entitled(selector)), selector: mapped ? selector : null };",
       "expectCaught": false
+    },
+    {
+      "name": "#235 unknown cost is flattened to 'billable' — a guess rendered as a fact",
+      "file": "src/dashboard/api.js",
+      "anchor": "        currentlyFree: !selector ? null\n          : isConnectSelectorCurrentlyFree(selector) ? true\n          : (freeSet === null ? null : false),",
+      "replacement": "        currentlyFree: selector ? isConnectSelectorCurrentlyFree(selector) : null,"
+    },
+    {
+      "name": "#235 unknown cost is flattened to 'free' — the reporter's exact loss, reintroduced",
+      "file": "src/dashboard/api.js",
+      "anchor": "        currentlyFree: !selector ? null\n          : isConnectSelectorCurrentlyFree(selector) ? true\n          : (freeSet === null ? null : false),",
+      "replacement": "        currentlyFree: !selector ? null : (freeSet === null ? true : isConnectSelectorCurrentlyFree(selector)),"
+    },
+    {
+      "name": "#235 the field is dropped entirely — the panel goes back to not answering the question",
+      "file": "src/dashboard/api.js",
+      "anchor": "        currentlyFree: !selector ? null\n          : isConnectSelectorCurrentlyFree(selector) ? true\n          : (freeSet === null ? null : false),",
+      "replacement": ""
     },
     {
       "name": "predicate ignores the transport — a Cascade deployment gets its panel filtered by connect rules",

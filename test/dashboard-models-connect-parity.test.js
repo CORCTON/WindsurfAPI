@@ -222,6 +222,77 @@ describe('dashboard /models agrees with /v1/models on the Connect namespace (#23
       + 'test/mutations/dashboard-connect-parity.json');
   });
 
+  // #235: the panel must say whether a model COSTS QUOTA, and must not guess when it cannot
+  // tell. The reporter had a pro account, set GLM-5-2 believing it was free on that plan, and
+  // burned the whole weekly allowance. The rate-table wiring that answers this shipped in
+  // v3.9.8 but had one production caller, inside the drought decision — the data existed and
+  // no surface showed it.
+  //
+  // The load-bearing case is UNKNOWN. `isConnectSelectorCurrentlyFree` returns a plain
+  // `false` both when a model costs money and when no account has a rate table at all, so
+  // reporting its result directly would render "we have no idea" as "billable" — and the
+  // mirror of that mistake, rendering unknown as free, is the reporter's exact loss.
+  describe('#235: whether a model costs quota', () => {
+    it('reports null (unknown), not false, when no account has a rate table', async () => {
+      // A seeded account has no credits.rateTable, so the pool-wide answer is "no data".
+      seed('free');
+      const rows = await dashboardModels();
+      const withSelector = rows.filter((r) => r.connectSelector);
+      assert.ok(withSelector.length > 0, 'precondition: some row must resolve to a selector');
+
+      // Every row that is not a FREE_REACHABLE selector must be unknown, never false.
+      const wronglyPaid = withSelector.filter(
+        (r) => r.connectSelector !== CONNECT_FREE_SELECTOR && r.currentlyFree === false,
+      );
+      assert.deepEqual(wronglyPaid.map((r) => r.id), [],
+        'a row claimed "costs quota" while no rate table exists anywhere. That is a guess '
+        + 'presented as a fact — the predicate returns false for both "billable" and "no '
+        + 'data", so the route must consult the pool-wide free-set to tell them apart');
+    });
+
+    it('reports the free-reachable selector as free even with no rate table', async () => {
+      seed('free');
+      const rows = await dashboardModels();
+      const free = rows.find((r) => r.id === CONNECT_FREE_SELECTOR);
+      assert.equal(free.currentlyFree, true,
+        'FREE_REACHABLE membership IS the definition of free-to-any-account, and it must not '
+        + 'depend on a rate table the pool may never report');
+    });
+
+    it('carries the field on every row so the UI never has to infer it', async () => {
+      seed('free');
+      const rows = await dashboardModels();
+      for (const r of rows) {
+        assert.ok('currentlyFree' in r, `${r.id} is missing currentlyFree`);
+        assert.ok(
+          r.currentlyFree === true || r.currentlyFree === false || r.currentlyFree === null,
+          `${r.id} has a non-tri-state currentlyFree: ${JSON.stringify(r.currentlyFree)}`,
+        );
+      }
+    });
+
+    it('reports false — not unknown — once a rate table says the selector is billable', async () => {
+      // Without this, "always null" would satisfy every assertion above.
+      const acct = seed('free');
+      const rows0 = await dashboardModels();
+      const target = rows0.find((r) => r.connectSelector && r.connectSelector !== CONNECT_FREE_SELECTOR);
+      assert.ok(target, 'precondition: need a resolving non-free selector to price');
+
+      acct.credits = { rateTable: { [target.connectSelector]: 4 } };
+      const rows1 = await dashboardModels();
+      const priced = rows1.find((r) => r.id === target.id);
+      assert.equal(priced.currentlyFree, false,
+        `${target.id} resolves to ${target.connectSelector} which the rate table prices at 4, `
+        + 'so it must read as billable rather than unknown');
+
+      acct.credits = { rateTable: { [target.connectSelector]: 0 } };
+      const rows2 = await dashboardModels();
+      assert.equal(rows2.find((r) => r.id === target.id).currentlyFree, true,
+        'rate === 0 must read as free — otherwise the field is stuck and tells the operator '
+        + 'nothing that changes');
+    });
+  });
+
   it('treats every model as reachable when the Connect backend is off', async () => {
     delete process.env.DEVIN_CONNECT;
     _resetRuntimeConfigForTests();

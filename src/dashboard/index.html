@@ -1446,6 +1446,18 @@ tbody tr:hover td { background: var(--surface-2); }
   border-style: dashed;
 }
 .model-chip.unreachable:hover { opacity: .8; }
+/* #235 — does this model cost quota. Only rendered when the answer is KNOWN; absence of a
+   badge means "no rate table yet", which must not look like either answer. */
+.chip-badge {
+  margin-left: 5px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .02em;
+}
+.chip-badge.free { background: var(--success); color: #fff; }
+.chip-badge.paid { background: var(--warn); color: #fff; }
 .model-chip .remove {
   color: var(--error);
   font-weight: 700;
@@ -7398,10 +7410,20 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
           // reachable===false means this deployment cannot serve it now. Undefined on an
           // older API response — treated as reachable so a version skew greys out nothing.
           const unreachable = m.reachable === false;
+          // #235: does it cost quota? Tri-state — true free, false paid, null unknown (no
+          // rate table yet, or the name resolves to nothing here). Unknown deliberately
+          // shows NO badge: a "free" badge on unknown is what burned the reporter's weekly
+          // allowance, and a "paid" badge on unknown would be a guess dressed as a fact.
+          const free = m.currentlyFree;
+          const badge = free === true ? `<span class="chip-badge free">${I18n.t('model.freeBadge')}</span>`
+            : free === false ? `<span class="chip-badge paid">${I18n.t('model.paidBadge')}</span>`
+            : '';
           const title = unreachable
             ? I18n.t('model.unreachableHint')
-            : (m.connectSelector ? `selector: ${m.connectSelector}` : '');
-          return `<span class="model-chip ${inList ? 'selected' : ''}${unreachable ? ' unreachable' : ''}"${title ? ` title="${this.esc(title)}"` : ''} onclick="App.toggleModelInList('${this.escJsAttr(m.id)}')">${this.esc(m.name)}</span>`;
+            : free === null
+              ? I18n.t('model.costUnknownHint')
+              : (m.connectSelector ? `selector: ${m.connectSelector}` : '');
+          return `<span class="model-chip ${inList ? 'selected' : ''}${unreachable ? ' unreachable' : ''}"${title ? ` title="${this.esc(title)}"` : ''} onclick="App.toggleModelInList('${this.escJsAttr(m.id)}')">${this.esc(m.name)}${badge}</span>`;
         }).join('')}</div>
       </div>
     `).join('') || `<div class="text-sm text-dim">${I18n.t('table.empty.models')}</div>`;
