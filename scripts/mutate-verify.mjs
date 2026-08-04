@@ -140,8 +140,17 @@ function runSuite(tests) {
   // The child then reports 0 tests, the baseline check calls that "not green", and the real
   // failure is invisible behind a message about the suite. Deleting the variable is the whole
   // fix; forcing --test-reporter does not help, because nothing runs to be reported.
+  // FORCE_COLOR must not reach the child either, for the same reason and with a worse
+  // disguise. With it set, node wraps the summary in SGR codes — `\x1b[34mℹ pass 62\x1b[39m`
+  // — so the anchored counters below match nothing, every run reports pass=0, and guard 2
+  // refuses with "baseline is not green". The suite ran perfectly; only the measurement
+  // failed. Any value forces colour EXCEPT '0' (measured: '3', '1' and the EMPTY string all
+  // colour, '0' does not), so this deletes rather than overwrites. TERM/COLORTERM alone do
+  // not colour a piped child, which is why this only shows up in harnesses that export
+  // FORCE_COLOR explicitly — CI, and some terminal wrappers.
   const env = { ...process.env };
   delete env.NODE_TEST_CONTEXT;
+  delete env.FORCE_COLOR;
   let out = '';
   try {
     out = execFileSync(process.execPath, args, { encoding: 'utf8', env, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -149,6 +158,17 @@ function runSuite(tests) {
     // node --test exits non-zero when tests fail; the output is still what we need.
     out = `${e.stdout || ''}${e.stderr || ''}`;
   }
+  // Deliberate redundancy, and measured as such: EITHER the delete above OR this strip alone
+  // takes the harness's own suite from 5/9 to 14/0. Neither is load-bearing given the other,
+  // so this is not a second half of one fix — do not read it as one.
+  //
+  // Both are kept because they fail differently. The delete addresses the one colour source
+  // that exists today; this strip addresses the shape of the parse — the counters are anchored
+  // to line start/end, so ANY future SGR wrapper zeroes them again, and a zeroed count reads
+  // as "suite broken" rather than "parser broken". The vocabulary of "what can colour a piped
+  // child" was derived by testing today's node, which is exactly the kind of source the ledger
+  // warns is open-ended (round 8: where did this guard's vocabulary come from?).
+  out = out.replace(/\x1b\[[0-9;]*m/g, '');
   const sum = (re) => [...out.matchAll(re)].reduce((n, m) => n + Number(m[1]), 0);
   const pass = sum(/^ℹ pass (\d+)$/gm);
   const fail = sum(/^ℹ fail (\d+)$/gm);

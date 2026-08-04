@@ -79,12 +79,13 @@ after(() => {
  * The spec file lives OUTSIDE the clone. Writing it inside makes the tree dirty, and guard 1
  * then refuses to run — which is the guard working correctly and this test measuring nothing.
  */
-function runHarness(spec, extraArgs = []) {
+function runHarness(spec, extraArgs = [], envOverrides = null) {
   const specPath = join(specDir, 'spec.json');
   writeFileSync(specPath, JSON.stringify(spec, null, 2));
+  const env = envOverrides ? { ...process.env, ...envOverrides } : process.env;
   try {
     const out = execFileSync(process.execPath, ['scripts/mutate-verify.mjs', specPath, ...extraArgs],
-      { cwd: clone, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+      { cwd: clone, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env });
     return { code: 0, out };
   } catch (e) {
     return { code: e.status, out: `${e.stdout || ''}${e.stderr || ''}` };
@@ -254,5 +255,54 @@ describe('an unexpected verdict exits 1, distinct from a harness error', () => {
     const status = execFileSync('git', ['status', '--porcelain'], { cwd: clone, encoding: 'utf8' });
     assert.equal(status.trim(), '',
       `the harness left the scratch repo dirty:\n${status}`);
+  });
+});
+
+// A caller that exports FORCE_COLOR made the harness unusable: node wraps the summary in
+// SGR codes, the anchored `ℹ pass N` counters match nothing, and EVERY run ends at guard 2
+// with "baseline is not green" while the suite was in fact perfectly green.
+//
+// It failed safe — a zero count can never manufacture a false SURVIVED — but the message
+// blamed the suite for a defect in the measurement, which is the same disguise as the
+// round-3 false SURVIVEDs (`pass=0` is "not measured", never "not caught").
+//
+// Not hypothetical: with FORCE_COLOR=3 exported, 6 of the 10 tests in THIS file failed, so
+// the repo's own gate was green only because the ambient environment happened not to set it.
+//
+// The env is passed explicitly rather than inherited so the assertion holds both ways: the
+// bug reproduces on a machine that does not set FORCE_COLOR, and the control case stays a
+// control on a machine that does.
+describe('the measurement survives a colour-forcing caller', () => {
+  const spec = () => ({
+    tests: ['test/fixture.test.js'],
+    expectBaselinePass: 4,
+    mutations: [{
+      name: 'beta returns the wrong letter',
+      file: 'src.mjs',
+      anchor: "export function beta() { return 'b'; }",
+      replacement: "export function beta() { return 'z'; }",
+    }],
+  });
+
+  for (const value of ['3', '1', '']) {
+    it(`FORCE_COLOR=${JSON.stringify(value)} still yields a real baseline and verdict`, () => {
+      const r = runHarness(spec(), [], { FORCE_COLOR: value });
+      const out = strip(r.out);
+      assert.doesNotMatch(out, /baseline is not green/,
+        `FORCE_COLOR=${JSON.stringify(value)} zeroed the counters: the suite ran, the parser `
+        + 'did not. Measured before the fix — every value except "0" colours the summary, '
+        + `including the empty string.\n${out}`);
+      assert.match(out, /baseline 4 pass \/ 0 fail/,
+        'the baseline count must be the real one, not a colour-mangled 0');
+      assert.match(out, /CAUGHT/, 'and the verdict must still be produced');
+      assert.equal(r.code, 0);
+    });
+  }
+
+  it('FORCE_COLOR=0 (the one value that does not colour) is unaffected', () => {
+    const r = runHarness(spec(), [], { FORCE_COLOR: '0' });
+    const out = strip(r.out);
+    assert.match(out, /baseline 4 pass \/ 0 fail/);
+    assert.equal(r.code, 0);
   });
 });
