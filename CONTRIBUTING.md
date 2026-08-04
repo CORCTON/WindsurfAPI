@@ -38,7 +38,11 @@
   它只挡 `git commit`，不挡 master 前进 —— `--ff-only` 不产生 commit，所以发版流程不受
   影响。刻意例外用 `git commit --no-verify`。
   值得装的理由：直接在 master 上提交产生的历史与 ff 合并**字节级相同**，所以事后看不出
-  任何异常，只能在发生的那一刻挡
+  任何异常，只能在发生的那一刻挡。
+  **作用范围（实测，别照直觉推）**：`git commit` 与 `--amend` 拦；`--ff-only` 放行；
+  **`cherry-pick` / `revert` 拦不住** —— git 不在那条路径上调 pre-commit，所以改由
+  `post-commit` 事后警告；冲突的 merge/rebase 会触发，且给的是那个状态下**真能执行**的
+  补救命令（`git switch -c` 在合并中会被 git 拒绝）。
 
 ### 测试
 
