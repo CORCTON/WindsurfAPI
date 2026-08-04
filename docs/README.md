@@ -2,12 +2,14 @@
 
 ## Taking this project over? Read in this order
 
-1. **[HANDOFF-2026-08-04-B.md](HANDOFF-2026-08-04-B.md)** — the current handoff: state, the
-   still-unfixed list (with `file:line` and measured numbers), what needs a maintainer
-   decision, and the two tools this round added. **When there is unreleased work, this is
-   where it is described** — right now there is none: master == v3.9.13. Its §5 is the part
-   worth reading before touching anything; §5.1 in particular ("fixes themselves need a
-   review pass") is why this round found six defects in its own repairs.
+1. **[HANDOFF-2026-08-04-C.md](HANDOFF-2026-08-04-C.md)** — the current handoff: state, the
+   still-unfixed list (with `file:line` and measured numbers), and what is waiting on an
+   external contributor. **When there is unreleased work, this is where it is described** —
+   right now there is none: master == v3.9.14. Its §1 lists three places the previous
+   handoff went stale, including an open PR it never recorded. Read §5 of
+   [HANDOFF-2026-08-04-B.md](HANDOFF-2026-08-04-B.md) as well — that section is still the
+   best thing to read before touching anything, and §5.1 in particular ("fixes themselves
+   need a review pass") is why that round found six defects in its own repairs.
 2. **[AUDIT-LEDGER.md](AUDIT-LEDGER.md)** — which subsystems were *actually probed*, what the
    conclusion was, and where the guard lives. It exists because "scanned and clean" is itself
    an asset: without the record, the next person burns the same time again.
@@ -15,7 +17,9 @@
    `DEVIN_CONNECT` is the **default production backend**, so this is not optional reading.
    Includes the paid wire-calibration procedure (§8).
 
-Earlier handoffs: [HANDOFF-2026-08-05.md](HANDOFF-2026-08-05.md) (v3.9.12 + queue-on-pin;
+Earlier handoffs: [HANDOFF-2026-08-04-B.md](HANDOFF-2026-08-04-B.md) (v3.9.13 + the caller-shard
+fix and the two tools; **its §0 state table and §4 unfixed list are stale**, its §5 is not) ·
+[HANDOFF-2026-08-05.md](HANDOFF-2026-08-05.md) (v3.9.12 + queue-on-pin;
 **its filename date is wrong** — the work was 08-04 — and its §3/§4 were superseded within
 that same session, kept on purpose) · [HANDOFF-2026-08-04.md](HANDOFF-2026-08-04.md)
 (v3.9.9–v3.9.11; its §3 corrects four claims in the handoffs before it) ·
