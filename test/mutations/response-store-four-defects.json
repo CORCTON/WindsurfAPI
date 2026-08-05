@@ -1,0 +1,147 @@
+{
+  "tests": [
+    "test/response-store-flag-normalization.test.js",
+    "test/response-store-entry-cap-array.test.js",
+    "test/response-store-expiry-ownership.test.js",
+    "test/response-store-absolute-retention.test.js",
+    "test/response-store.test.js",
+    "test/response-store-byte-budget.test.js",
+    "test/response-store-dedup.test.js",
+    "test/response-store-e2e.test.js"
+  ],
+  "expectBaselinePass": 124,
+  "mutations": [
+    {
+      "name": "D1 original defect: store honoured only when STRICTLY false — \"false\"/0/\"no\"/null all get retained",
+      "file": "src/response-store.js",
+      "anchor": "!wantsPersistence(opts.store)",
+      "replacement": "opts.store === false"
+    },
+    {
+      "name": "D1 over-reach in the other direction: absent store reads as opted out, so every default client stops chaining",
+      "file": "src/response-store.js",
+      "anchor": "store === undefined) return true",
+      "replacement": "store === undefined) return false"
+    },
+    {
+      "name": "D1 truthiness instead of a token list: \"false\" is a non-empty string, so the string spelling is retained again",
+      "file": "src/response-store.js",
+      "anchor": "return !FALSY_STORE_TOKENS.has(store.trim().toLowerCase())",
+      "replacement": "return store.length > 0"
+    },
+    {
+      "name": "D1 no case folding — \"FALSE\" stops being an opt-out",
+      "file": "src/response-store.js",
+      "anchor": "FALSY_STORE_TOKENS.has(store.trim().toLowerCase())",
+      "replacement": "FALSY_STORE_TOKENS.has(store)"
+    },
+    {
+      "name": "D1 numeric 0 stops opting out",
+      "file": "src/response-store.js",
+      "anchor": "typeof store === 'number') return store !== 0",
+      "replacement": "typeof store === 'number') return true"
+    },
+    {
+      "name": "D2 original defect: the field walk only looks at the top level, so array content is invisible again",
+      "file": "src/response-store.js",
+      "anchor": "depth > 5 || node == null",
+      "replacement": "depth > 0 || node == null"
+    },
+    {
+      "name": "D2 the biggest field is no longer chosen — the first candidate wins, so a huge block can be skipped",
+      "file": "src/response-store.js",
+      "anchor": "if (!biggest || slot.len > biggest.len) biggest = slot;",
+      "replacement": "if (!biggest) biggest = slot;"
+    },
+    {
+      "name": "D2 tool_call_id becomes shrinkable — cutting it orphans the tool result from its call",
+      "file": "src/response-store.js",
+      "anchor": "const UNSHRINKABLE_KEYS = new Set(['type', 'role', 'id', 'tool_call_id', 'name']);",
+      "replacement": "const UNSHRINKABLE_KEYS = new Set(['type', 'role', 'name']);"
+    },
+    {
+      "name": "D2 the block discriminator becomes shrinkable — a truncated `type` is no longer a text/image_url block",
+      "file": "src/response-store.js",
+      "anchor": "const UNSHRINKABLE_KEYS = new Set(['type', 'role', 'id', 'tool_call_id', 'name']);",
+      "replacement": "const UNSHRINKABLE_KEYS = new Set(['role', 'id', 'tool_call_id', 'name']);"
+    },
+    {
+      "name": "D2 the copy-on-write write becomes an in-place one — the caller's own request messages get rewritten",
+      "file": "src/response-store.js",
+      "anchor": "  const copy = Array.isArray(node) ? [...node] : { ...node };\n  copy[key] = rest.length ? withStringAt(node[key], rest, value) : value;\n  return copy;",
+      "replacement": "  node[key] = rest.length ? withStringAt(node[key], rest, value) : value;\n  return node;"
+    },
+    {
+      "name": "D2 the marker is dropped — the cut becomes silent, which is the failure mode this module exists to remove",
+      "file": "src/response-store.js",
+      "anchor": "current.slice(0, keep) + TRUNCATION_MARKER",
+      "replacement": "current.slice(0, keep)"
+    },
+    {
+      "name": "D3 original defect: expiry acts before ownership, so a stranger's read reaps the owner's expired entry",
+      "file": "src/response-store.js",
+      "anchor": "  if (entry.callerKey !== callerKey) {\n    _stats.rejected++;",
+      "replacement": "  if (isPastIdle(entry, now) || isPastMaxAge(entry, now)) {\n    dropEntry(responseId);\n    _stats.expires++;\n    return { ok: false, reason: 'expired' };\n  }\n  if (entry.callerKey !== callerKey) {\n    _stats.rejected++;"
+    },
+    {
+      "name": "D3 the foreign branch drops the entry as a side effect — the delete primitive, written explicitly",
+      "file": "src/response-store.js",
+      "anchor": "    log.warn(`[response-store] rejected cross-caller lookup of ${String(responseId).slice(0, 24)}`);\n    return { ok: false, reason: 'forbidden' };",
+      "replacement": "    log.warn(`[response-store] rejected cross-caller lookup of ${String(responseId).slice(0, 24)}`);\n    dropEntry(responseId);\n    return { ok: false, reason: 'forbidden' };"
+    },
+    {
+      "name": "D3 the owner's own expired entry stops being reaped on lookup — collection waits for the 5-minute sweep",
+      "file": "src/response-store.js",
+      "anchor": "  if (isPastIdle(entry, now) || isPastMaxAge(entry, now)) {\n    dropEntry(responseId);\n    _stats.expires++;\n    return { ok: false, reason: 'expired' };\n  }\n\n  entry.lastAccess = now;",
+      "replacement": "  if (isPastIdle(entry, now) || isPastMaxAge(entry, now)) {\n    _stats.expires++;\n    return { ok: false, reason: 'expired' };\n  }\n\n  entry.lastAccess = now;"
+    },
+    {
+      "name": "D4 original defect: the lookup path stops checking the absolute bound, so read-refresh makes retention unbounded again",
+      "file": "src/response-store.js",
+      "anchor": "  if (isPastIdle(entry, now) || isPastMaxAge(entry, now)) {\n    dropEntry(responseId);\n    _stats.expires++;\n    return { ok: false, reason: 'expired' };\n  }\n\n  entry.lastAccess = now;",
+      "replacement": "  if (isPastIdle(entry, now)) {\n    dropEntry(responseId);\n    _stats.expires++;\n    return { ok: false, reason: 'expired' };\n  }\n\n  entry.lastAccess = now;"
+    },
+    {
+      "name": "D4 the absolute bound is measured from lastAccess, so a read refreshes it and it collapses into the idle timeout",
+      "file": "src/response-store.js",
+      "anchor": "now - entry.createdAt > MAX_AGE_MS",
+      "replacement": "now - entry.lastAccess > MAX_AGE_MS"
+    },
+    {
+      "name": "D4 a same-id refresh restarts the absolute clock — re-writing an id resets its age",
+      "file": "src/response-store.js",
+      "anchor": "createdAt = existing?.createdAt || now",
+      "replacement": "createdAt = now"
+    },
+    {
+      "name": "D4 the default bound shrinks to a minute — a long agent session would be dropped mid-run",
+      "file": "src/response-store.js",
+      "anchor": "n : 24 * 60 * 60 * 1000; // 24 hours",
+      "replacement": "n : 60 * 1000; // mutated"
+    },
+    {
+      "name": "D4 the env override is ignored — the knob exists but does nothing",
+      "file": "src/response-store.js",
+      "anchor": "parseInt(process.env.RESPONSE_STORE_MAX_AGE_MS || '', 10)",
+      "replacement": "NaN"
+    },
+    {
+      "name": "D3+D4 the sweep stops checking the idle timeout — an abandoned entry sits until the absolute bound",
+      "file": "src/response-store.js",
+      "anchor": "      if (isPastIdle(entry, now) || isPastMaxAge(entry, now)) {\n        dropEntry(id);",
+      "replacement": "      if (isPastMaxAge(entry, now)) {\n        dropEntry(id);"
+    },
+    {
+      "name": "D4 the sweep stops checking the absolute bound — an entry nobody reads is never age-collected",
+      "file": "src/response-store.js",
+      "anchor": "      if (isPastIdle(entry, now) || isPastMaxAge(entry, now)) {\n        dropEntry(id);",
+      "replacement": "      if (isPastIdle(entry, now)) {\n        dropEntry(id);"
+    },
+    {
+      "name": "stats stop reporting the absolute bound — an operator asking how long a conversation is kept only sees the idle half",
+      "file": "src/response-store.js",
+      "anchor": "maxAgeMs: MAX_AGE_MS,",
+      "replacement": "maxAgeMs: TTL_MS,"
+    }
+  ]
+}
