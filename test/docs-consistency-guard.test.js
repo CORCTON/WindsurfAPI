@@ -244,3 +244,53 @@ describe('docs: mutation specs and the gate agree', () => {
     assert.deepEqual(problems, [], `mutation specs referencing files that do not exist:\n  ${problems.join('\n  ')}`);
   });
 });
+
+describe('docs: version claims match the repository', () => {
+  // The index's first row said "master == `v3.9.20`" while no such tag existed and master
+  // was five commits past v3.9.19 — wrong in both directions at once, and directly opposed
+  // to the current handoff, which devotes a section to those unreleased commits. It survived
+  // because every other assertion in this file checks *links and structure*: a version claim
+  // is prose that happens to be mechanically checkable, and nothing was checking it.
+  //
+  // Deliberately narrow. It asserts only that a `vX.Y.Z` named as the state of `master`
+  // resolves to a real tag; it does NOT try to decide whether master should equal that tag,
+  // because "unreleased commits ride along until the next behaviour change" is a legitimate
+  // and documented state (releases/README.md, "Should this even be a release?").
+  const tags = new Set(
+    readdirSync(join(ROOT, '.git', 'refs', 'tags'), { withFileTypes: true })
+      .filter((d) => d.isFile())
+      .map((d) => d.name),
+  );
+
+  it('the packaged version is a plain semver string', () => {
+    const pkg = JSON.parse(read(join(ROOT, 'package.json')));
+    assert.match(pkg.version, /^\d+\.\d+\.\d+$/, 'package.json version must be bare semver');
+  });
+
+  it('no doc claims master equals a tag that does not exist', () => {
+    // Packed refs are the normal state for older tags, so a tag missing from refs/tags is not
+    // evidence of anything. Read packed-refs too, and skip the check entirely if neither
+    // source is readable rather than reporting a false failure (a broken probe that reports
+    // "clean" is this repo's most expensive recurring mistake — so this one says why it skipped).
+    let known = tags;
+    const packed = join(ROOT, '.git', 'packed-refs');
+    if (existsSync(packed)) {
+      known = new Set([...tags]);
+      for (const line of read(packed).split('\n')) {
+        const m = line.match(/refs\/tags\/(\S+)$/);
+        if (m) known.add(m[1]);
+      }
+    }
+    assert.ok(known.size > 0, 'probe check: no tags readable at all, so this assertion would be vacuous');
+
+    const problems = [];
+    for (const f of mdFiles()) {
+      const body = read(f);
+      // "master == `v3.9.20`", "master is v3.9.20", "master == v3.9.20"
+      for (const m of body.matchAll(/master\s*(?:==|=|is|:)\s*`?(v\d+\.\d+\.\d+)`?/gi)) {
+        if (!known.has(m[1])) problems.push(`${rel(f)} claims master == ${m[1]}, which is not a tag`);
+      }
+    }
+    assert.deepEqual(problems, [], `version claims naming a non-existent tag:\n  ${problems.join('\n  ')}`);
+  });
+});
