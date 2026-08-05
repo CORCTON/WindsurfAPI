@@ -132,6 +132,98 @@ const ARTICLE_PREFIX_RE = /^(?:a|an|the|this|that|these|those|your|my|our|some|a
 // / "某种参数" — same idea as ARTICLE_PREFIX_RE but for CJK.
 const CN_VAGUE_PREFIX_RE = /^(?:某个?|一个|这个|那个|某种|什么|任何|每个|所有的?)/;
 
+// ─── Non-actionable regions ────────────────────────────────────────────────
+//
+// WHY. Every layer below scrapes call-shaped text out of prose, and none of them
+// asked whether the prose was ASSERTING the call or DISCLAIMING it. Measured on
+// master with tools=[shell_exec{command}] and an actionable user prompt:
+//
+//   'You should never write: shell_exec("rm -rf /important")'   -> a tool call
+//   'what NOT to do:\n```\nshell_exec("rm -rf /")\n```'          -> a tool call
+//   'Let me run shell_exec("ls -la") now.'                       -> a tool call
+//
+// All three at confidence 0.85, indistinguishable. That matters more here than in
+// a normal false positive, because the consumer does not re-prompt: handlers/chat.js
+// REPLACES the (empty) tool_calls with the recovered ones and clears the assistant
+// text, so the fabricated call is what a client that executes tool calls receives.
+//
+// The fix MASKS those regions with spaces instead of deleting them, so every
+// layer's regex offsets stay aligned with the original text and each layer gets the
+// benefit without being touched. Masking is deliberately the last step before the
+// layers, not a per-match test inside each one — three call sites that each decide
+// "is this negated" is how the layers drifted apart in the first place.
+//
+// CALIBRATION. Over-suppression is the expensive direction: this recovery exists
+// because GLM/Kimi narrate instead of emitting, and it is ON BY DEFAULT for them
+// (see WINDSURFAPI_NLU_RETRY). Silently declining to recover turns a working
+// request into a stalled loop. So the cue must precede the call ON THE SAME CLAUSE:
+// "never run shell_exec(...)" is suppressed, while "I will run X, and I will not
+// touch Y" keeps X. A cue anywhere-in-the-message rule would have suppressed the
+// second one too.
+const NEGATION_CUE_RE = new RegExp(
+  '(?:'
+  + "\\b(?:never|don'?t|do\\s+not|avoid|must\\s+not|should\\s+not|shouldn'?t|cannot|can'?t|"
+  + 'without|instead\\s+of|rather\\s+than|counter-?example|anti-?pattern|'
+  + 'not\\s+(?:to\\s+)?(?:run|call|use|execute|invoke|write|do)|'
+  + 'wrong|incorrect|bad\\s+example|what\\s+not\\s+to)\\b'
+  + '|不要|不能|不可|不应|切勿|禁止|避免|错误示例|反例|而不是|请勿'
+  + ')',
+  'i',
+);
+
+// A clause ends at a sentence terminator or a newline. Colons and dashes do NOT
+// end one: "never write: fn(...)" and "avoid this — fn(...)" are the shapes that
+// actually appear, and treating ':' as a boundary would let both through.
+const CLAUSE_SPLIT_RE = /[.!?;]\s|\n/;
+
+/** Replace [start,end) with spaces, preserving length so offsets stay valid. */
+function blank(text, start, end) {
+  return text.slice(0, start) + text.slice(start, end).replace(/[^\n]/g, ' ') + text.slice(end);
+}
+
+/**
+ * Blank out fenced code blocks and negated clauses.
+ *
+ * Fences are masked wholesale: a model showing a call inside ``` is illustrating,
+ * not calling. That is true even when the fence has no negation cue at all — a
+ * fenced example is a quotation, and the emulation protocol this repo uses puts
+ * REAL calls in `<tool_call>` markup, not in prose fences.
+ */
+export function maskNonActionableRegions(text) {
+  let out = String(text);
+
+  // Fenced blocks, both ``` and ~~~, including an unterminated trailing fence
+  // (a truncated stream ends mid-fence, and the tail is still illustrative).
+  const fenceRe = /(^|\n)[ \t]*(`{3,}|~{3,})[^\n]*\n?([\s\S]*?)(?:\n[ \t]*\2[ \t]*(?=\n|$)|$)/g;
+  let m;
+  while ((m = fenceRe.exec(out)) !== null) {
+    out = blank(out, m.index, m.index + m[0].length);
+    fenceRe.lastIndex = m.index + m[0].length;
+  }
+
+  // Negated clauses. Walk clause by clause so a cue only reaches its own clause.
+  const parts = [];
+  let cursor = 0;
+  while (cursor < out.length) {
+    CLAUSE_SPLIT_RE.lastIndex = 0;
+    const rest = out.slice(cursor);
+    const hit = rest.match(CLAUSE_SPLIT_RE);
+    const end = hit ? cursor + hit.index + hit[0].length : out.length;
+    parts.push([cursor, end]);
+    cursor = end;
+  }
+  for (const [s, e] of parts) {
+    const clause = out.slice(s, e);
+    const cue = clause.match(NEGATION_CUE_RE);
+    if (!cue) continue;
+    // Only the part of the clause AFTER the cue is disclaimed. Text before it is
+    // ordinary prose and may carry a genuine call.
+    out = blank(out, s + cue.index, e);
+  }
+
+  return out;
+}
+
 function looksLikePlaceholderValue(value) {
   if (typeof value !== 'string' || !value.trim()) return true;
   const v = value.trim();
@@ -153,7 +245,7 @@ function looksLikePlaceholderValue(value) {
  *   shell_exec("echo X")
  *   function_call: name=shell_exec args={"command":"echo X"}
  */
-function extractLayer1(text, names) {
+function extractLayer1(text, names, primaryParam) {
   const out = [];
   // function_name(arg=value) or function_name("value")
   const reExplicit = /\b([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*(?:([A-Za-z_][A-Za-z0-9_]*)\s*=\s*)?["'`]([^"'`)]{1,2000})["'`]\s*\)/g;
@@ -162,11 +254,26 @@ function extractLayer1(text, names) {
     const [, fn, paramName, value] = m;
     if (!names.has(fn)) continue;
     if (looksLikePlaceholderValue(value)) continue;
-    const args = paramName ? { [paramName]: value } : { _value: value };
+    // The positional form `fn("value")` used to emit `{_value: "..."}`. No tool
+    // declares `_value`, so even a CORRECT extraction produced an argument name the
+    // callee cannot bind — the recovery reported success while handing the client an
+    // unusable call. Bind it to the tool's primary declared parameter instead
+    // (indexTools already resolves that: first required string param, which is the
+    // one narrative names — `command`, `file_path`, `query`).
+    //
+    // When it cannot be resolved, DROP the extraction rather than invent a name.
+    // A dropped extraction falls through to the retry-with-correction path, which
+    // asks the model to emit the call properly; a wrongly-named argument does not,
+    // and arrives at the client looking valid. Layers 2 and 3 already refuse to
+    // extract without a primaryParam, so this only aligns layer 1 with them.
+    const slot = paramName || primaryParam?.get(fn);
+    if (!slot) continue;
     out.push({
       name: fn,
-      argumentsJson: JSON.stringify(args),
+      argumentsJson: JSON.stringify({ [slot]: value }),
       layer: 'explicit-syntax',
+      // An explicitly named parameter is still stronger evidence than one we
+      // inferred from the schema, so the confidence split is preserved.
       confidence: paramName ? 0.95 : 0.85,
     });
   }
@@ -346,6 +453,12 @@ export function detectToolIntentInNarrative(text, tools, opts = {}) {
   if (!userPromptLooksActionable(lastUserText)) return null;
   const { names } = indexTools(tools);
   if (!names.size) return null;
+  // Same masking as the extractor: a tool named ONLY inside a disclaimer or a
+  // fenced counter-example is not intent, and this function's answer decides
+  // whether to spend an extra upstream round-trip telling the model to emit it.
+  // Gating one of the two entry points would leave the retry loop chasing a call
+  // the model explicitly said not to make.
+  text = maskNonActionableRegions(text);
   // Verb forms (English + Chinese) that signal "I'm about to call X".
   const verbPattern = /\b(?:call|invoke|run|use|execute|exec|trigger|fire|going to|will|let me|i'?ll|i'?m going|need to|should)\b|(?:调用|使用|运行|执行|触发|启动|让我|我会|我将|准备|打算|想要|需要|应该)/i;
   if (!verbPattern.test(text)) return null;
@@ -398,10 +511,15 @@ export function extractIntentFromNarrative(text, tools, opts = {}) {
   const { names, primaryParam } = indexTools(tools);
   if (!names.size) return [];
 
+  // Mask disclaimed regions ONCE, before any layer runs. Offsets are preserved
+  // (regions become spaces), so every layer's regex behaves as before on the prose
+  // that is actually asserting something.
+  const candidate = maskNonActionableRegions(text);
+
   const all = [
-    ...extractLayer1(text, names),
-    ...extractLayer2(text, names, primaryParam),
-    ...(!skipLayer3 && userPromptLooksActionable(lastUserText) ? extractLayer3(text, names, primaryParam) : []),
+    ...extractLayer1(candidate, names, primaryParam),
+    ...extractLayer2(candidate, names, primaryParam),
+    ...(!skipLayer3 && userPromptLooksActionable(lastUserText) ? extractLayer3(candidate, names, primaryParam) : []),
   ];
   if (!all.length) return [];
 

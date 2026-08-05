@@ -1,0 +1,69 @@
+{
+  "tests": [
+    "test/nlu-negation-and-arg-slot.test.js",
+    "test/intent-extractor.test.js"
+  ],
+  "expectBaselinePass": 38,
+  "mutations": [
+    {
+      "name": "the original defect: negated clauses are no longer masked — 'never write: fn(\"rm -rf /\")' becomes a tool call again",
+      "file": "src/handlers/intent-extractor.js",
+      "anchor": "    out = blank(out, s + cue.index, e);",
+      "replacement": ""
+    },
+    {
+      "name": "the original defect on fences: a fenced counter-example is extracted again",
+      "file": "src/handlers/intent-extractor.js",
+      "anchor": "    out = blank(out, m.index, m.index + m[0].length);\n    fenceRe.lastIndex = m.index + m[0].length;",
+      "replacement": "    fenceRe.lastIndex = m.index + m[0].length;"
+    },
+    {
+      "name": "the extractor stops masking — only the retry gate is protected, so the fabricated call still reaches the client",
+      "file": "src/handlers/intent-extractor.js",
+      "anchor": "  const candidate = maskNonActionableRegions(text);",
+      "replacement": "  const candidate = text;"
+    },
+    {
+      "name": "the retry gate stops masking — the correction loop chases a call the model explicitly refused to make",
+      "file": "src/handlers/intent-extractor.js",
+      "anchor": "  text = maskNonActionableRegions(text);",
+      "replacement": ""
+    },
+    {
+      "name": "masking DELETES instead of blanking — offsets shift and later layers suppress the wrong span",
+      "file": "src/handlers/intent-extractor.js",
+      "anchor": "  return text.slice(0, start) + text.slice(start, end).replace(/[^\\n]/g, ' ') + text.slice(end);",
+      "replacement": "  return text.slice(0, start) + text.slice(end);"
+    },
+    {
+      "name": "the negation cue masks the WHOLE clause instead of from the cue onward — a real call standing before the cue is thrown away (over-suppression)",
+      "file": "src/handlers/intent-extractor.js",
+      "anchor": "    out = blank(out, s + cue.index, e);",
+      "replacement": "    out = blank(out, s, e);"
+    },
+    {
+      "name": "the cue scope widens to the whole message — 'I will run X. I will not delete anything.' loses its real call",
+      "file": "src/handlers/intent-extractor.js",
+      "anchor": "const CLAUSE_SPLIT_RE = /[.!?;]\\s|\\n/;",
+      "replacement": "const CLAUSE_SPLIT_RE = /\\u0000never-matches\\u0000/;"
+    },
+    {
+      "name": "the positional form reverts to _value — a parameter no tool declares, so the recovered call cannot bind",
+      "file": "src/handlers/intent-extractor.js",
+      "anchor": "    const slot = paramName || primaryParam?.get(fn);\n    if (!slot) continue;",
+      "replacement": "    const slot = paramName || '_value';"
+    },
+    {
+      "name": "an unresolvable slot invents a name instead of dropping the extraction",
+      "file": "src/handlers/intent-extractor.js",
+      "anchor": "    if (!slot) continue;",
+      "replacement": "    if (!slot) { out.push({ name: fn, argumentsJson: JSON.stringify({ _value: value }), layer: 'explicit-syntax', confidence: 0.85 }); continue; }"
+    },
+    {
+      "name": "the confidence split collapses — an inferred slot ranks equal to an explicitly named one",
+      "file": "src/handlers/intent-extractor.js",
+      "anchor": "      confidence: paramName ? 0.95 : 0.85,",
+      "replacement": "      confidence: 0.95,"
+    }
+  ]
+}
