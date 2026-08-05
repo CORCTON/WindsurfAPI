@@ -2,7 +2,9 @@
   "tests": [
     "test/session-continuity.test.js",
     "test/devin-connect.test.js",
-    "test/messages-continuity-t4.test.js"
+    "test/messages-incoming-thinking.test.js",
+    "test/reasoning-dedup.test.js",
+    "test/devin-connect-openai.test.js"
   ],
   "mutations": [
     {
@@ -48,22 +50,35 @@
       "replacement": "        } else if (block.type === 'thinking') {"
     },
     {
-      "name": "T4 stream: duplicate content always flushed — the dedup is gone",
-      "file": "src/handlers/messages.js",
-      "anchor": "    if (this.heldText != null) {\n      if (this.heldText !== this.seenThinking) this.emitTextDelta(this.heldText);\n      this.heldText = null;\n    }",
-      "replacement": "    if (this.heldText != null) {\n      this.emitTextDelta(this.heldText);\n      this.heldText = null;\n    }"
-    },
-    {
-      "name": "T4 non-stream: verbatim-duplicate thinking block rides again",
-      "file": "src/handlers/messages.js",
-      "anchor": "  if (choice?.message?.reasoning_content && choice?.message?.reasoning_content !== choice?.message?.content) {",
-      "replacement": "  if (choice?.message?.reasoning_content) {"
-    },
-    {
       "name": "SURVIVOR (documented): T2 chat.js commit fallback dropped — only a handler-level integration run can see the outbound-empty path; unit layer covers capture and store",
       "file": "src/handlers/chat.js",
       "anchor": "commitConnectSession(callerKey || '', commitMsgs, undefined, { reasoning: r.sr?.reasoning || incomingConnectReasoning });",
       "replacement": "commitConnectSession(callerKey || '', commitMsgs, undefined, { reasoning: r.sr?.reasoning });",
+      "expectCaught": false
+    },
+    {
+      "name": "T4 root: settle always flushes — verbatim duplicate reaches every egress protocol",
+      "file": "src/reasoning-dedup.js",
+      "anchor": "      const flush = held !== seenReasoning ? held : '';",
+      "replacement": "      const flush = held;"
+    },
+    {
+      "name": "T4 root: content never held — dedup dead for content-after-reasoning",
+      "file": "src/reasoning-dedup.js",
+      "anchor": "      if (!seenReasoning) return text; // content before any reasoning: pass through\n      held = (held || '') + text;",
+      "replacement": "      return text;"
+    },
+    {
+      "name": "T4 non-stream adapter: duplicate reasoning_content rides again",
+      "file": "src/devin-connect-openai.js",
+      "anchor": "  const verbatimDup = Boolean(content) && content === reasoning;",
+      "replacement": "  const verbatimDup = false;"
+    },
+    {
+      "name": "SURVIVOR (documented): chat.js settle-flush removed — needs an e2e harness of the unified stream (mock upstream → SSE capture) which does not exist yet; helper and adapter layers are unit-pinned",
+      "file": "src/handlers/chat.js",
+      "anchor": "            const dedupFlush = reasoningDedup.settle();\n            if (dedupFlush) {",
+      "replacement": "            const dedupFlush = '';\n            if (dedupFlush) {",
       "expectCaught": false
     }
   ]

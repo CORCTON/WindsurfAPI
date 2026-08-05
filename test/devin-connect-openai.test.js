@@ -24,6 +24,32 @@ const SAMPLE = [
 ];
 
 describe('toChatCompletion (non-stream)', () => {
+  // ★ Thinking-core T4 root dedup (non-stream): verbatim duplicate → keep the
+  // text (actionable channel), drop the reasoning copy.
+  it('drops reasoning_content when content duplicates it verbatim', async () => {
+    __setStreamChatForTest(fakeStream([
+      { type: 'reasoning', text: 'echoed reasoning' },
+      { type: 'content', text: 'echoed reasoning' },
+      { type: 'finish', reason: 'stop', usage: null },
+    ]));
+    const { body } = await toChatCompletion({ model: 'swe-1-6-slow', messages: [] });
+    const msg = body.choices[0].message;
+    assert.equal(msg.content, 'echoed reasoning', 'text kept');
+    assert.equal(msg.reasoning_content, undefined, 'duplicate reasoning dropped');
+  });
+
+  it('keeps both when reasoning and content differ', async () => {
+    __setStreamChatForTest(fakeStream([
+      { type: 'reasoning', text: 'the deliberation' },
+      { type: 'content', text: 'the answer' },
+      { type: 'finish', reason: 'stop', usage: null },
+    ]));
+    const { body } = await toChatCompletion({ model: 'swe-1-6-slow', messages: [] });
+    const msg = body.choices[0].message;
+    assert.equal(msg.content, 'the answer');
+    assert.equal(msg.reasoning_content, 'the deliberation');
+  });
+
   it('assembles a chat.completion with separated content and reasoning', async () => {
     __setStreamChatForTest(fakeStream(SAMPLE));
     const { status, body } = await toChatCompletion({ model: 'swe-1-6-slow', messages: [] });

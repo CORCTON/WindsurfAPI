@@ -59,6 +59,7 @@ import { isRetryable as isConnectRetryable, getToolDefTags, parseToolCallTagMap 
 import { isRouterModel, assignModel as _assignModel } from '../devin-connect-catalog.js';
 import { bumpConnect } from '../devin-connect-metrics.js';
 import { resolveSessionId as resolveConnectSessionId, commitAfterResponse as commitConnectSession, getSessionModelConfig as getSessionConnectModelConfig, getSessionReasoningTrail as getSessionConnectReasoningTrail } from '../session-continuity.js';
+import { createStreamReasoningDedup } from '../reasoning-dedup.js';
 import { newTraceId, traceClientRequest, traceRouting, traceClientResponse, traceEnabled } from '../trace.js';
 import { sanitizeText, sanitizeToolCall, PathSanitizeStream } from '../sanitize.js';
 import { systemFingerprint } from '../system-fingerprint.js';
@@ -5342,6 +5343,9 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
       // if a path straddles a chunk boundary. See src/sanitize.js.
       let pathStreamText = new PathSanitizeStream();
       let pathStreamThinking = new PathSanitizeStream();
+      // T4 root dedup (Thinking-core): one decision point for every egress
+      // protocol — they all consume this unified stream.
+      const reasoningDedup = createStreamReasoningDedup();
       let nativeFunctionParser = nativeBridgeOn
         ? new NativeFunctionCallStreamParser(nativeOpts?.callerLookup || new Map())
         : null;
@@ -5354,13 +5358,19 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
         // middle of a stream (fence might straddle a chunk, and we'd need
         // lookahead). On finish we'll emit one clean JSON payload.
         if (wantJson) return;
+        // T4: hold while reasoning is part of this response; settle() decides.
+        const pass = reasoningDedup.holdOrPass(clean);
+        if (!pass) return;
         emittedClientPayload = true;
         send({ id, object: 'chat.completion.chunk', created, model,
-          choices: [{ index: 0, delta: { content: clean }, finish_reason: null }] });
+          choices: [{ index: 0, delta: { content: pass }, finish_reason: null }] });
       };
       const emitThinking = (clean, { accumulate = true } = {}) => {
         if (!clean) return;
-        if (accumulate) accThinking += clean;
+        if (accumulate) {
+          accThinking += clean;
+          reasoningDedup.noteReasoning(clean);
+        }
         emittedClientPayload = true;
         send({ id, object: 'chat.completion.chunk', created, model,
           choices: [{ index: 0, delta: { reasoning_content: clean }, finish_reason: null }] });
@@ -5939,11 +5949,22 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
               send({ id, object: 'chat.completion.chunk', created, model,
                 choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }] });
             }
+            // T4 root dedup verdict: flush held content unless it is a
+            // verbatim duplicate of the streamed reasoning. Client-visible
+            // only — accText/accThinking keep the full view for the logic
+            // below (fallback, narrative scan, cascade history).
+            const dedupFlush = reasoningDedup.settle();
+            if (dedupFlush) {
+              emittedClientPayload = true;
+              send({ id, object: 'chat.completion.chunk', created, model,
+                choices: [{ index: 0, delta: { content: dedupFlush }, finish_reason: null }] });
+            }
             // For response_format=json_* we buffered all content — flush one
             // clean JSON payload now. extractJsonPayload strips fences and
             // any preamble text, returning raw parseable JSON (or the
-            // trimmed original when nothing parses).
-            if (wantJson && accText) {
+            // trimmed original when nothing parses). A verbatim duplicate of
+            // the reasoning is suppressed here too (degenerate echo, not JSON).
+            if (wantJson && accText && !(accThinking && accText === accThinking)) {
               const cleaned = stabilizeJsonPayload(accText, messages);
               if (cleaned) {
                 send({ id, object: 'chat.completion.chunk', created, model,

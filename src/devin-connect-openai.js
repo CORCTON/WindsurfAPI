@@ -446,7 +446,13 @@ export async function toChatCompletion(params, { id = newId(), created = nowSeco
 
   // OpenAI convention: content is a string (may be empty), never undefined.
   const message = { role: 'assistant', content: content || '' };
-  if (reasoning && !promotedReasoning) message.reasoning_content = reasoning;
+  // T4 root dedup (Thinking-core): non-stream has free choice — when the
+  // content is a verbatim duplicate of the reasoning, keep the text (the
+  // actionable channel) and drop the reasoning copy. Stream paths suppress the
+  // later side instead (see src/reasoning-dedup.js) because reasoning must
+  // stream live.
+  const verbatimDup = Boolean(content) && content === reasoning;
+  if (reasoning && !promotedReasoning && !verbatimDup) message.reasoning_content = reasoning;
   if (toolCalls.length) {
     message.tool_calls = toolCalls.map((tc, i) => ({
       id: tc.id || `call_${i}_${Date.now().toString(36)}`,

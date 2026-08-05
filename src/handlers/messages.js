@@ -803,9 +803,7 @@ export function openAIToAnthropic(result, model, msgId, cachePolicy = null, stop
   const choice = result.choices?.[0];
   const usage = result.usage || {};
   const content = [];
-  // T4: when the visible content is a verbatim duplicate of the reasoning,
-  // keep the text block (the actionable channel) and drop the thinking block.
-  if (choice?.message?.reasoning_content && choice?.message?.reasoning_content !== choice?.message?.content) {
+  if (choice?.message?.reasoning_content) {
     // Anthropic thinking blocks may carry an opaque encrypted `signature` that
     // the *real* Anthropic server decrypts on multi-turn replay. Our upstream
     // (Devin #9 / Cascade) never emits one, so when it is missing we omit the
@@ -1024,13 +1022,6 @@ class AnthropicStreamTranslator {
     this.emittedTextTail = '';
     this.messageStarted = false;
     this.messageStopped = false;
-    // T4 thinking/text dedup (Thinking-core): this upstream can deliver the
-    // reasoning twice — once as reasoning_content and once verbatim as content.
-    // Buffer text deltas while reasoning is part of the response and decide at
-    // finish(): a verbatim duplicate is suppressed, anything else flushes
-    // untouched. Text-before-thinking (reversed order) emits immediately.
-    this.seenThinking = '';
-    this.heldText = null;
     // True once the upstream delivered an authoritative end-of-stream signal:
     // a choice.finish_reason, a `data: [DONE]` frame, or an explicit error
     // frame. finish() uses this to tell a clean completion apart from an
@@ -1262,18 +1253,12 @@ class AnthropicStreamTranslator {
     const choice = chunk.choices?.[0];
     if (choice) {
       const delta = choice.delta || {};
-      if (delta.reasoning_content) {
-        this.seenThinking += delta.reasoning_content;
-        this.emitThinkingDelta(delta.reasoning_content);
-      }
+      if (delta.reasoning_content) this.emitThinkingDelta(delta.reasoning_content);
       // Forward-compat: if a future upstream attaches a real encrypted signature
       // to the reasoning stream, capture it so closeCurrentBlock round-trips the
       // genuine value instead of the empty-string placeholder.
       if (delta.reasoning_signature) this.pendingThinkingSignature = delta.reasoning_signature;
-      if (delta.content) {
-        if (this.seenThinking) this.heldText = (this.heldText || '') + delta.content;
-        else this.emitTextDelta(delta.content);
-      }
+      if (delta.content) this.emitTextDelta(delta.content);
       if (Array.isArray(delta.tool_calls)) {
         for (const tc of delta.tool_calls) this.emitToolCallDelta(tc);
       }
@@ -1346,11 +1331,6 @@ class AnthropicStreamTranslator {
     // content) no longer reaches here: the BUG1 guard above now catches a missing
     // terminal signal regardless of whether content started.
     if (!this.messageStarted) this.startMessage();
-    // T4: resolve the held text now that the full reasoning is known.
-    if (this.heldText != null) {
-      if (this.heldText !== this.seenThinking) this.emitTextDelta(this.heldText);
-      this.heldText = null;
-    }
     this.closeCurrentBlock();
     // B1: interleaved-fragment edge case. flushToolArgs only emits arg fragments
     // while a tool's block is the currently-open one; a tool_use block that got
