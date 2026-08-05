@@ -1,0 +1,124 @@
+{
+  "tests": [
+    "test/identity-neutralize-paragraph-bound.test.js",
+    "test/client-identity-neutralize.test.js",
+    "test/identity-neutralize-shapes.test.js"
+  ],
+  "expectBaselinePass": 63,
+  "mutations": [
+    {
+      "name": "the original defect: the brand-block span goes back to [\\s\\S]*? and eats the caller's paragraphs (measured 213 -> 59 bytes)",
+      "file": "src/handlers/identity-neutralize.js",
+      "anchor": "new RegExp(`Claude Code is available as a CLI${WITHIN_PARAGRAPH}available on Opus [\\\\d.\\\\/]+\\\\.`, 'i')",
+      "replacement": "/Claude Code is available as a CLI[\\s\\S]*?available on Opus [\\d.\\/]+\\./i"
+    },
+    {
+      "name": "the original defect on the catalogue span (measured 208 -> 18 bytes)",
+      "file": "src/handlers/identity-neutralize.js",
+      "anchor": "new RegExp(`The most recent Claude models are${WITHIN_PARAGRAPH}most capable Claude models\\\\.`, 'i')",
+      "replacement": "/The most recent Claude models are[\\s\\S]*?most capable Claude models\\./i"
+    },
+    {
+      "name": "the original defect on the security-paragraph span",
+      "file": "src/handlers/identity-neutralize.js",
+      "anchor": "new RegExp(`IMPORTANT:\\\\s*Assist with authorized security testing${WITHIN_PARAGRAPH}(?:defensive use cases\\\\.|security research[^.]*\\\\.)`, 'i')",
+      "replacement": "/IMPORTANT:\\s*Assist with authorized security testing[\\s\\S]*?(?:defensive use cases\\.|security research[^.]*\\.)/i"
+    },
+    {
+      "name": "WITHIN_PARAGRAPH loses the whole bound — every span crosses blank lines again",
+      "file": "src/handlers/identity-neutralize.js",
+      "anchor": "const WITHIN_PARAGRAPH = '(?:[^\\\\n]|\\\\n(?!\\\\s*\\\\n))*?';",
+      "replacement": "const WITHIN_PARAGRAPH = '[\\\\s\\\\S]*?';"
+    },
+    {
+      "name": "the lookahead drops \\s* — a 'blank' line carrying spaces stops counting as a paragraph break",
+      "file": "src/handlers/identity-neutralize.js",
+      "anchor": "'(?:[^\\\\n]|\\\\n(?!\\\\s*\\\\n))*?'",
+      "replacement": "'(?:[^\\\\n]|\\\\n(?!\\\\n))*?'"
+    },
+    {
+      "name": "over-corrected to LINE-bounded — the wrapped Environment paragraph stops being neutralized (529 defence regressed)",
+      "file": "src/handlers/identity-neutralize.js",
+      "anchor": "const WITHIN_PARAGRAPH = '(?:[^\\\\n]|\\\\n(?!\\\\s*\\\\n))*?';",
+      "replacement": "const WITHIN_PARAGRAPH = '[^\\\\n]*?';"
+    },
+    {
+      "name": "the a4-cli-line fallback is dropped — the bounded span declines and 'Claude Code' leaks upstream",
+      "file": "src/handlers/identity-neutralize.js",
+      "anchor": "  rule('a4-cli-line', /Claude Code is available as a CLI[^\\n]*\\n?/gi, 'This coding assistant runs in a terminal.\\n');",
+      "replacement": ""
+    },
+    {
+      "name": "the a4-catalogue-line fallback is dropped — the catalogue header leaks when its tail is a paragraph away",
+      "file": "src/handlers/identity-neutralize.js",
+      "anchor": "  rule('a4-catalogue-line', /The most recent Claude models are[^\\n]*\\n?/gi, '');",
+      "replacement": ""
+    },
+    {
+      "name": "the b-security-line fallback is dropped — 'Assist with authorized security testing' leaks upstream",
+      "file": "src/handlers/identity-neutralize.js",
+      "anchor": "  rule('b-security-line',\n    /IMPORTANT:\\s*Assist with authorized security testing[^\\n]*/i,\n    SECURITY_BENIGN,\n  );",
+      "replacement": ""
+    },
+    {
+      "name": "the WARN threshold is raised out of reach — an over-large deletion becomes invisible again",
+      "file": "src/handlers/identity-neutralize.js",
+      "anchor": "const OVER_DELETION_WARN_BYTES = 512;",
+      "replacement": "const OVER_DELETION_WARN_BYTES = 1e9;"
+    },
+    {
+      "name": "the threshold drops to 0 — a line per request, which is noise and gets filtered",
+      "file": "src/handlers/identity-neutralize.js",
+      "anchor": "const OVER_DELETION_WARN_BYTES = 512;",
+      "replacement": "const OVER_DELETION_WARN_BYTES = 0;"
+    },
+    {
+      "name": "the threshold check is dropped entirely — every substitution logs",
+      "file": "src/handlers/identity-neutralize.js",
+      "anchor": "    if (removed > OVER_DELETION_WARN_BYTES) {",
+      "replacement": "    if (true) {"
+    },
+    {
+      "name": "the check becomes cumulative-per-prompt instead of per-substitution — heavy but legitimate prompts start warning",
+      "file": "src/handlers/identity-neutralize.js",
+      "anchor": "    if (removed > OVER_DELETION_WARN_BYTES) {",
+      "replacement": "    if (Buffer.byteLength(String(text), 'utf8') - Buffer.byteLength(next, 'utf8') > OVER_DELETION_WARN_BYTES) {"
+    },
+    {
+      "name": "the WARN reports the threshold instead of the measured delta — the number stops being evidence",
+      "file": "src/handlers/identity-neutralize.js",
+      "anchor": "rule ${id} removed ${removed} bytes in one `",
+      "replacement": "rule ${id} removed ${OVER_DELETION_WARN_BYTES} bytes in one `"
+    },
+    {
+      "name": "the delta is counted in characters — a CJK prompt under-reports 3x and slips under the threshold",
+      "file": "src/handlers/identity-neutralize.js",
+      "anchor": "    const removed = Buffer.byteLength(out, 'utf8') - Buffer.byteLength(next, 'utf8');",
+      "replacement": "    const removed = out.length - next.length;"
+    },
+    {
+      "name": "rule() stops writing back — every rewrite silently does nothing (the whole 529 defence off)",
+      "file": "src/handlers/identity-neutralize.js",
+      "anchor": "    out = next;\n  };",
+      "replacement": "  };"
+    },
+    {
+      "name": "rule() returns early only when the text SHRANK — a pure rewrite (Cline boast, a7) stops being applied",
+      "file": "src/handlers/identity-neutralize.js",
+      "anchor": "    if (next === out) return;",
+      "replacement": "    if (Buffer.byteLength(next, 'utf8') >= Buffer.byteLength(out, 'utf8')) return;"
+    },
+    {
+      "name": "the care block gets paragraph-bounded too — multi-paragraph safety prose is left half-stripped, tags and all",
+      "file": "src/handlers/identity-neutralize.js",
+      "anchor": "rule('a6-grok2-care', /<executing_actions_with_care>[\\s\\S]*?<\\/executing_actions_with_care>/gi, '');",
+      "replacement": "rule('a6-grok2-care', new RegExp(`<executing_actions_with_care>${WITHIN_PARAGRAPH}<\\\\/executing_actions_with_care>`, 'gi'), '');"
+    },
+    {
+      "name": "the off-switch stops covering the module — opt-out clients get rewritten anyway",
+      "file": "src/handlers/identity-neutralize.js",
+      "anchor": "  if (!text || String(env.WINDSURFAPI_NEUTRALIZE_CLIENT_ID || '1') === '0') return text;",
+      "replacement": "  if (!text) return text;"
+    }
+  ]
+}
