@@ -51,9 +51,13 @@ newest always wins.
 
 ## Release history
 
-- [Release notes index](releases/): what changed in each version.
-- Release notes are **append-only** history. House style: user-visible first, engineering
-  second; every entry states the mechanism and the measured number, never a changelog line.
+- [releases/](releases/): one file per version, v2.0.6 → present. Append-only published
+  history — each file is a GitHub Release body.
+- **[releases/README.md](releases/README.md) is the release runbook** — the ordered
+  procedure, the gate, and the house style for writing notes all live there, next to the
+  task, rather than being summarised here. Read it before shipping anything: the version
+  it replaced would have failed at step 3, because it told you to commit on `master`
+  and the pre-commit hook refuses that.
 
 ## Generated output
 

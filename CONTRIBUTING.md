@@ -51,9 +51,21 @@
 或把 parseFields 改成自动递归)。
 
 项目有完整的自动测试套件，PR 合并前 CI 会自动跑。权威计数口径是
-`npm run test:release`（逐文件进程隔离）—— v3.9.14 是 **3418 pass / 261 个文件**；每版的
-数字见最新交接文档的门禁表。全量 `npm test` 的总数会因 `--test-force-exit` 的输出竞态轻微
-波动，所以别拿它的数字对账。
+`npm run test:release`（逐文件进程隔离）。**当前数字见
+[最新交接文档](docs/README.md) 的门禁表，本文不复述** —— 这里此前钉着 v3.9.14 的
+"3418 / 261"，而那之后又发了五个版本。一个数字写在不是它权威来源的地方就会烂。
+全量 `npm test` 的总数会因 `--test-force-exit` 的输出竞态轻微波动，所以别拿它的数字对账。
+
+**门禁全绿并不等于你没弄坏东西。** 测试套件**不跑**突变 spec（`test/mutations/*.json`），
+所以如果你改的那一行正好是某条突变的 anchor，它会静默失配 —— 而你和 CI 都看不见。
+PR #241 真发生过这件事：贡献者的套件全绿、维护者复测也全绿、合并后的门禁也全绿，
+三个绿灯都没看见两条 anchor 已经断了。改了 `src/` 就顺手跑一次：
+
+```bash
+for s in test/mutations/*.json; do npm run mutate -- "$s"; done
+```
+
+它排他持有工作树（每步都在"写入 → 跑测试 → 还原"），跑起来之后别碰仓库。
 
 提 PR 时建议在描述里补充：
 
@@ -120,10 +132,25 @@ Where you see 🛡, take care not to change the guarded property (e.g. adding UR
 the routed path, or making parseFields recurse).
 
 The project has a full automated test suite and CI runs it on every PR. The authoritative
-count comes from `npm run test:release` (one process per file) — **3418 pass across 261 files**
-as of v3.9.14; per-version numbers live in the gate table of the newest handoff. Totals from a
-plain `npm test` drift slightly because of an output race under `--test-force-exit`, so don't
-reconcile against that number. In your PR description, also include:
+count comes from `npm run test:release` (one process per file). **The current number lives in
+the gate table of the newest handoff ([docs/README.md](docs/README.md) points at it) and is
+deliberately not repeated here** — this spot used to pin "3418 / 261 as of v3.9.14" and five
+releases shipped after that. A number written anywhere other than its authoritative source
+rots. Totals from a plain `npm test` drift slightly because of an output race under
+`--test-force-exit`, so don't reconcile against that number.
+
+**A green gate does not mean you broke nothing.** The test suite does **not** run the mutation
+specs (`test/mutations/*.json`), so if you edit a line one of them anchors on, the anchor
+silently stops matching — invisibly to both you and CI. This really happened on PR #241: the
+contributor's suite was green, the maintainer's re-run was green, and the post-merge gate was
+green, and all three missed two broken anchors. If you touched `src/`, run:
+
+```bash
+for s in test/mutations/*.json; do npm run mutate -- "$s"; done
+```
+
+It holds the working tree exclusively (every step writes, tests, then restores), so don't edit
+anything while it runs. In your PR description, also include:
 
 - What curl commands or smoke scenarios you ran
 - Which dashboard panels you clicked through

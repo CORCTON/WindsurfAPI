@@ -10,10 +10,113 @@ in the dashboard "About" panel.
 
 ## Adding a new release
 
-1. Bump `package.json#version`
-2. Write `docs/releases/RELEASE_NOTES_<new-version>.md`
-3. Commit and push to `master`
-4. Tag: `git tag v<new-version> && git push origin v<new-version>`
+> The four-step version this section used to carry was wrong in four ways, one of
+> which **blocked execution**: it said "commit and push to `master`", and
+> `.githooks/pre-commit` refuses to author a commit on `master`. It also bumped only
+> `package.json` (the lock carries the version **twice**), created a *lightweight*
+> tag while every shipped tag is annotated, and named no gate at all. Corrected below
+> from what the last several releases actually did.
 
-The release workflow builds the GHCR image and publishes the GitHub
-Release. The body comes from the matching file in this folder.
+The order matters — every step below has a reason someone learned the hard way.
+
+**1. Land your own fixes before merging anyone else's.** Master must never sit on a
+commit that is in a known-bad state, so a fix that a PR depends on goes first, the
+merge second.
+
+**2. Pass the gate.** All three, on a clean tree:
+
+```bash
+npm run test:release          # per-file process isolation; this is the authoritative count
+node scripts/secret-scan.mjs  # EXIT=0. Scope: TRACKED files only, and it skips test/
+git diff --check              # no whitespace damage
+```
+
+`npm test` (single process) is *not* the authoritative count — its total fluctuates
+with output races. If a count surprises you, diff per-file before suspecting the code.
+
+**3. Run the mutation loop if you touched `src/`.**
+
+```bash
+for s in test/mutations/*.json; do npm run mutate -- "$s"; done
+```
+
+**The test suite does not run mutation specs, so a green gate cannot tell you an
+anchor broke.** Editing a line that a spec anchors on silently invalidates it, and
+adding assertions to a file a spec covers invalidates its `expectBaselinePass`. Both
+have happened. The loop holds the working tree exclusively — do not edit anything
+while it runs.
+
+**4. Bump the version in BOTH files.** `package.json` once, `package-lock.json`
+**twice** (top level and `packages.""`). `src/version.js` reads from `package.json`,
+so that is the single source — do not hardcode a version anywhere else.
+
+**5. Write `RELEASE_NOTES_<new-version>.md`** in this folder. House style below.
+
+**6. Branch, then merge — you cannot commit on `master`.** `.githooks/pre-commit`
+refuses it by design (the flow is branch → review → `git merge --ff-only`, and
+landing straight on master skips the point where a branch name and a diff get looked
+at as a unit). Note the hook fires *after* your `git add`, so a refused commit leaves
+the tree dirty.
+
+```bash
+git checkout -b chore/release-<version>
+# ... commit ...
+git checkout master && git merge --ff-only chore/release-<version>
+git push origin master
+```
+
+**7. Tag annotated, and only after master is pushed.**
+
+```bash
+git tag -a v<version> -m "..."   # -a matters: every shipped tag is an annotated object
+git push origin v<version>
+```
+
+The tag must land **on master** or `git describe` and provenance both get awkward.
+
+**8. Verify the terminal state of every job — do not read intent from comments.**
+The macOS x64 job showed as `queued` for four consecutive releases while its real
+terminal state was `cancelled`; the workflow comment saying "x64 may queue for hours"
+was believed four times. Check the artifact instead: `windsurfapi-macos.zip` is
+~22 MB without the x64 binary and ~45 MB with it.
+
+### Should this even be a release?
+
+**The test is "is there anything a user needs to install", not "how many lines
+changed."** A `v*` tag triggers four artifact builds; if those artifacts behave
+identically to the previous tag, the release asks users to download nothing.
+
+- Zero behaviour change (docs, tests, dead-code removal) → **do not tag**. Let the
+  commits ride along with the next release that does change behaviour.
+- One `opt-in`, default-off feature → **do tag**. A default-off switch changes nothing
+  for anyone who does not set it, which is exactly why it is safe to ship.
+- A fix whose absence makes an already-published release note *false* → **do tag**.
+  v3.9.19 shipped for this reason: v3.9.18's notes described a fix that landed after
+  its tag, and rewording the notes would have left users on the version with the hole.
+
+The release workflow builds the GHCR image and publishes the GitHub Release. The body
+comes from the matching file in this folder.
+
+## House style for the notes themselves
+
+These files are **published** — each one becomes a GitHub Release body — and they are
+**append-only history** afterwards. Both facts shape how to write them.
+
+- **User-visible first, engineering second.** Open with what changes for someone
+  running the proxy. A reader deciding whether to upgrade should not have to parse a
+  diff summary.
+- **State the mechanism and the measured number, never a changelog line.**
+  "修了个 bug" tells nobody anything. "上游在带 tools 的轮次里只发 reasoning、不给
+  tool call,实测 25% 的 agentic 轮次" is a mechanism plus a measurement.
+- **Every number must be re-measurable, and say what produced it.** A number that
+  cannot answer "who ran this, and with what command" will be assumed and then
+  inherited. One handoff carried a mutation total that was *correct* but had never
+  been run — which is harder to catch than a wrong one, because the numbers beside it
+  were real and lent it their credibility.
+- **Name the blast radius when a fix is conditional.** "Only affects deployments that
+  set X" is the sentence an operator is looking for.
+- **Correcting a published note:** fix it in place **and** leave an errata block saying
+  what it said before. Silent edits to something already published are worse than the
+  original error, because the next reader cannot tell the note changed. Version
+  attributions especially — they drive "which release do I upgrade from".
+- Notes for a superseded claim get a forward pointer, not a rewrite.
