@@ -3,7 +3,7 @@
     "test/nlu-negation-and-arg-slot.test.js",
     "test/intent-extractor.test.js"
   ],
-  "expectBaselinePass": 36,
+  "expectBaselinePass": 38,
   "mutations": [
     {
       "name": "the original defect: negated clauses are no longer masked — 'never write: fn(\"rm -rf /\")' becomes a tool call again",

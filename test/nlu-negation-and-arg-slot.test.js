@@ -84,6 +84,27 @@ describe('NLU recovery: disclaimed calls are not intent', () => {
     assert.deepEqual(JSON.parse(r[0].argumentsJson), { command: 'ls -la' });
   });
 
+  it('a negation in an EARLIER sentence does not reach a later real call', () => {
+    // This is the shape that makes clause splitting load-bearing, and the one my
+    // first version of this file missed: the cue comes FIRST and the genuine call
+    // comes after it, in its own sentence. Without per-clause scoping the mask runs
+    // from the cue to the end of the message and eats the real call — the
+    // over-suppression failure mode. (Found by a mutation that widened the cue
+    // scope and SURVIVED: the assertions below it only covered cue-after-call, so
+    // nothing failed. The mutation was right that the guard had a hole.)
+    const r = extract('Never use sudo here. Let me run shell_exec("ls -la") now.');
+    assert.equal(r.length, 1, 'the call is in a later clause than the cue, so it stands');
+    assert.deepEqual(JSON.parse(r[0].argumentsJson), { command: 'ls -la' });
+  });
+
+  it('a newline also ends a clause', () => {
+    // Models emit bullet lists of "don't do this" followed by the real action on a
+    // new line with no sentence terminator at all.
+    const r = extract('- never delete files\nLet me run shell_exec("ls -la") now.');
+    assert.equal(r.length, 1);
+    assert.deepEqual(JSON.parse(r[0].argumentsJson), { command: 'ls -la' });
+  });
+
   it('text BEFORE a negation cue in the same clause is still live', () => {
     // Only the span from the cue to the end of the clause is disclaimed.
     const r = extract('Run shell_exec("ls -la"), never with sudo.');
