@@ -18,6 +18,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { openAIToGemini, GeminiStreamTranslator } from '../src/handlers/gemini.js';
 import { openAIToAnthropic } from '../src/handlers/messages.js';
+import { log } from '../src/config.js';
 
 // Truncated mid-object: what an upstream that stops emitting produces. Carries
 // two parameters, so "the parameters survived" is observable rather than vacuous.
@@ -124,6 +125,39 @@ describe('gemini egress: malformed tool arguments stay recoverable (B4 parity)',
 
     const call = parseSseFrames(res.body).map(geminiFunctionCall).find(Boolean);
     assert.deepEqual(call.args, { file_path: '/etc/hosts', limit: 5 });
+  });
+
+  it('the failure is logged with the tool name and the raw string', () => {
+    // Preserving the data and reporting it are separate properties: a silent
+    // recovery still leaves an operator unable to see that the upstream is
+    // emitting truncated tool calls at all. The original defect lost BOTH, and
+    // an assertion on only the data would let the log half regress unnoticed.
+    const warns = [];
+    const original = log.warn;
+    log.warn = (...args) => { warns.push(args.join(' ')); };
+    try {
+      openAIToGemini(upstreamWithArgs(MALFORMED), 'gemini-3.0-pro');
+    } finally {
+      log.warn = original;
+    }
+    const lines = warns.filter((w) => w.includes('functionCall arguments JSON parse failed'));
+    assert.equal(lines.length, 1, `expected exactly one parse-failure line, got:\n${warns.join('\n')}`);
+    assert.match(lines[0], /read_file/, 'the tool name makes the line actionable');
+    assert.match(lines[0], /file_path/, 'the raw string must be in the log, not just the return value');
+  });
+
+  it('a well-formed payload logs nothing', () => {
+    // Negative control. Without it the assertion above passes on a version that
+    // logs unconditionally, which would flood an operator on every tool call.
+    const warns = [];
+    const original = log.warn;
+    log.warn = (...args) => { warns.push(args.join(' ')); };
+    try {
+      openAIToGemini(upstreamWithArgs(WELL_FORMED), 'gemini-3.0-pro');
+    } finally {
+      log.warn = original;
+    }
+    assert.equal(warns.filter((w) => w.includes('JSON parse failed')).length, 0);
   });
 
   it('both frontends recover the same malformed payload — the parity claim itself', () => {

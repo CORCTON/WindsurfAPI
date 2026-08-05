@@ -3,7 +3,7 @@
     "test/gemini-tool-args-parity.test.js",
     "test/gemini.test.js"
   ],
-  "expectBaselinePass": 77,
+  "expectBaselinePass": 79,
   "mutations": [
     {
       "name": "B4 parity reverted: malformed arguments collapse to {} again — every tool parameter lost with no trace",
@@ -12,11 +12,10 @@
       "replacement": "    return {};"
     },
     {
-      "name": "the log line is dropped — the loss becomes unobservable even though the data survives",
+      "name": "the log line is dropped — the loss becomes unobservable even though the data survives. Was first declared a documented survivor on the grounds that asserting log output needs a harness; that was wrong — test/retry-rescue-budget-split.test.js has swapped log.warn since round 11, so the tool was already in the repo",
       "file": "src/handlers/gemini.js",
       "anchor": "    log.warn(`gemini: functionCall arguments JSON parse failed for tool \"${toolName || 'unknown'}\" — ${e.message}; raw=${JSON.stringify(rawArgs)}`);",
-      "replacement": "    void e;",
-      "expectCaught": false
+      "replacement": "    void e;"
     },
     {
       "name": "non-stream site stops using the shared helper — the two parse sites can diverge again",
