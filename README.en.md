@@ -315,6 +315,47 @@ In your client's settings for **Custom OpenAI Compatible**:
 | `RESPONSE_STORE_TTL_MS` | `3600000` | Conversation retention (1 hour), renewed on each turn. |
 | `RESPONSE_STORE_MAX` | `2000` | Max stored conversations, LRU-evicted with a per-tenant fair share. |
 | `RESPONSE_STORE_MAX_BYTES` | `128m` | Total byte budget for stored conversations (b/k/kb/m/mb/g/gb). The count caps bound cardinality, not memory — a realistic agent conversation measures ~167KB, so 2000 entries is ~327MB. Eviction triggers on whichever limit binds first. |
+| `DEVIN_CONNECT_IMAGE_TAG` | empty (= off) | **Master switch for images on DEVIN_CONNECT.** Unset means images are dropped before they reach upstream: a client can send a picture, get a reply that ignores it, and find nothing in the log. The verified value is `10` — see below. |
+
+The full list lives in [.env.example](.env.example); the table above covers the common ones.
+
+## Enabling images / vision
+
+Vision is **off by default** on the `DEVIN_CONNECT` backend. Turn it on explicitly:
+
+```sh
+DEVIN_CONNECT_IMAGE_TAG=10
+```
+
+`10` was **verified from the wire on 2026-07-06** — a MITM capture of a real devin.exe
+`GetChatMessage` carrying an image (teams account). Leave it unset and the image field is never
+emitted, so the model does not see the picture. **That is why "the model acts like there was no
+image" comes with a clean log**: nothing failed, the path was simply closed.
+
+Why it defaults to off: emitting images on every request is a behaviour change, and only a
+*subset* of upstream models accept vision input.
+
+### One thing to know first: the proxy does not filter by model
+
+Measured, same image, only the model name changed:
+
+| Model | `IMAGE_TAG` unset | `IMAGE_TAG=10` |
+|---|---|---|
+| `swe-1-7` | 1008 bytes | **1486 bytes** |
+| `claude-sonnet-4-6-medium` | 1025 bytes | **1503 bytes** |
+
+Both models get **the same +478 bytes** — the picture. There is **no per-model branching here**,
+and there cannot be: the upstream catalog carries no vision-capability field (each entry is only
+selector / provider / alias), so the proxy cannot know in advance which model will ignore an image.
+
+**So if one model sees your picture and another does not, that difference is upstream, not here.**
+
+### Related sub-switches
+
+All of them are read *only* when the master switch is on; with it unset the wire is byte-identical
+to the pre-vision path. Each is documented in [.env.example](.env.example):
+`DEVIN_CONNECT_IMAGE_TOOLDEF` (defaults **on**), `DEVIN_CONNECT_IMAGE_INNER_TAGS`, and the two
+paid-experiment knobs `DEVIN_CONNECT_IMAGE_REASONING` / `_PROVIDER`.
 
 ## Dashboard Features
 

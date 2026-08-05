@@ -308,6 +308,45 @@ curl http://localhost:3003/v1/messages \
 | `RESPONSE_STORE_TTL_MS` | `3600000` | 会话保留时长(1 小时),每轮访问自动续期 |
 | `RESPONSE_STORE_MAX` | `2000` | 最多保留多少个会话,LRU 驱逐 + 租户公平配额 |
 | `RESPONSE_STORE_MAX_BYTES` | `128m` | 会话总字节预算(支持 b/k/kb/m/mb/g/gb)。条数上限约束的是数量不是内存 —— 实测真实 agent 会话每条约 167KB,2000 条约 327MB。按条数与字节两个维度中先触发的那个驱逐 |
+| `DEVIN_CONNECT_IMAGE_TAG` | 空（= 关） | **DEVIN_CONNECT 上的图片总开关。** 不设则图片在到达上游之前就被丢掉，客户端发了图也拿不到关于图的回答、且日志里没有任何提示。已验证值是 `10`，见下节 |
+
+完整清单在 [.env.example](.env.example) —— 上表只列常用的。
+
+## 图片 / 视觉怎么开
+
+`DEVIN_CONNECT` 后端上视觉**默认关闭**，要显式打开：
+
+```sh
+DEVIN_CONNECT_IMAGE_TAG=10
+```
+
+`10` 这个值是 **2026-07-06 从真实 devin.exe 的请求里抓包验证的**（teams 账号，带图的
+`GetChatMessage`）。不设 → 图片字段整个不发 → 模型看不到图。**这就是"发了图但模型像没看见"
+且日志干净的原因** —— 它不是失败，是那条路没打开。
+
+默认关的理由：给每个请求都发图是行为变更，而只有**一部分**上游模型接受视觉输入。
+
+### 一条要先知道的事：代理不按模型过滤
+
+实测同一张图、只换模型名，量出去的字节数：
+
+| 模型 | `IMAGE_TAG` 未设 | `IMAGE_TAG=10` |
+|---|---|---|
+| `swe-1-7` | 1008 字节 | **1486 字节** |
+| `claude-sonnet-4-6-medium` | 1025 字节 | **1503 字节** |
+
+两个模型**都是 +478 字节**，就是那张图。代理这一侧**没有任何按模型分支的逻辑**，也没法有：
+上游模型目录里不带视觉能力字段（每个条目只有 selector / provider / alias），所以代理无法预先
+知道哪个模型会忽略图片。
+
+**所以如果一个模型能识图、另一个不能，那个差异在上游，不在这里。**
+
+### 相关子开关
+
+都只在总开关打开时才被读到，关着时线上字节与开关前完全一致。全部在
+[.env.example](.env.example) 里有说明：`DEVIN_CONNECT_IMAGE_TOOLDEF`（默认**开**）、
+`DEVIN_CONNECT_IMAGE_INNER_TAGS`、以及两个付费实验用的
+`DEVIN_CONNECT_IMAGE_REASONING` / `_PROVIDER`。
 
 ## Dashboard 功能面板
 

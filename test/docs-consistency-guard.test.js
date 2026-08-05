@@ -279,6 +279,101 @@ describe('docs: version claims match the repository', () => {
     assert.match(pkg.version, /^\d+\.\d+\.\d+$/, 'package.json version must be bare semver');
   });
 
+  it('every env var named in prose docs also appears in .env.example', () => {
+    // `.env.example` is the only file a reader consults to find out what can be turned on.
+    // DEVIN_CONNECT_IMAGE_TAG was documented ONLY in the cutover runbook, so vision looked
+    // like it did not exist: a user sent a picture, the proxy dropped it before the wire, and
+    // nothing appeared in any log. That reached us as a bug report (#244).
+    //
+    // Checked in this direction on purpose. Enumerating every name read out of `src/` needs a
+    // parser — env access here spans `env.X`, `env['X']`, `positiveIntEnv('X', …)` and a
+    // `{ env: 'X' }` registry, and a regex sweep over string literals returns hundreds of
+    // false positives (error codes and enum values look identical). "Somebody wrote prose
+    // about this switch, so a reader can find out it exists" is both mechanically decidable
+    // and the property that actually failed.
+    const doc = read(join(ROOT, '.env.example'));
+    const declared = new Set(
+      [...doc.matchAll(/^[ \t]*#?[ \t]*([A-Z][A-Z0-9_]+)=/gm)].map((m) => m[1]),
+    );
+    assert.ok(declared.size > 20, `probe check: only ${declared.size} names parsed out of .env.example — the extraction is broken, not the docs`);
+
+    // Prose only. Handoffs and the ledger are audit records that legitimately discuss
+    // one-off calibration knobs; the reader-facing surface is the READMEs and the runbook.
+    const prose = ['README.md', 'README.en.md', join('docs', 'DEVIN-CONNECT-CUTOVER.md')];
+    const missing = new Map();
+    for (const rel_ of prose) {
+      const body = read(join(ROOT, rel_));
+      for (const m of body.matchAll(/\b(DEVIN_CONNECT_[A-Z0-9_]+|WINDSURFAPI_[A-Z0-9_]+)\b/g)) {
+        if (!declared.has(m[1])) {
+          if (!missing.has(m[1])) missing.set(m[1], rel_);
+        }
+      }
+    }
+    const problems = [...missing].map(([name, where]) => `${name} (documented in ${where})`);
+    assert.deepEqual(problems, [], `env vars written about in prose but absent from .env.example:\n  ${problems.join('\n  ')}`);
+  });
+
+  // SELF-TEST. The two assertions above scan real files, so when the corpus is clean they pass
+  // whether the detection works or not — the exact shape of a test that cannot fail. And a
+  // guard cannot be mutation-verified against itself: weakening it makes no other test go red,
+  // so a spec that mutated these lines would report four survivors with no premise keeping them
+  // harmless (which is the anti-pattern this repo rejects in review). Instead, drive the
+  // detection logic on synthetic inputs where the answer is known.
+  //
+  // Both detectors are duplicated here deliberately rather than exported: what is being pinned
+  // is that a checker of THIS SHAPE rejects THESE inputs. If the assertions above are ever
+  // rewritten to a different mechanism, these fixtures should be rewritten with them.
+  describe('self-test: the detectors reject known-bad inputs', () => {
+    const declaredIn = (envExample) =>
+      new Set([...envExample.matchAll(/^[ \t]*#?[ \t]*([A-Z][A-Z0-9_]+)=/gm)].map((m) => m[1]));
+
+    it('the .env.example parser sees both commented and uncommented declarations', () => {
+      const d = declaredIn('PORT=3003\n# DEVIN_CONNECT_IMAGE_TAG=10\n#WINDSURFAPI_TRACE=1\n   # LS_PORT=42100\n');
+      assert.ok(d.has('PORT'), 'plain declaration');
+      assert.ok(d.has('DEVIN_CONNECT_IMAGE_TAG'), 'commented with a space — the dominant style in this file');
+      assert.ok(d.has('WINDSURFAPI_TRACE'), 'commented with no space');
+      assert.ok(d.has('LS_PORT'), 'indented comment');
+      assert.ok(!d.has('NOPE'), 'does not invent names');
+    });
+
+    it('a prose mention absent from .env.example is detected', () => {
+      // The #244 shape: documented in a runbook, missing from the file a reader consults.
+      const declared = declaredIn('# DEVIN_CONNECT_SESSION_REUSE=0\n');
+      const prose = 'Set `DEVIN_CONNECT_IMAGE_TAG=10` to turn vision on.';
+      const found = [...prose.matchAll(/\b(DEVIN_CONNECT_[A-Z0-9_]+|WINDSURFAPI_[A-Z0-9_]+)\b/g)]
+        .map((m) => m[1]).filter((n) => !declared.has(n));
+      assert.deepEqual(found, ['DEVIN_CONNECT_IMAGE_TAG'], 'must flag the undocumented switch');
+    });
+
+    it('a documented mention is not flagged', () => {
+      const declared = declaredIn('# DEVIN_CONNECT_IMAGE_TAG=10\n');
+      const prose = 'Set `DEVIN_CONNECT_IMAGE_TAG=10` to turn vision on.';
+      const found = [...prose.matchAll(/\b(DEVIN_CONNECT_[A-Z0-9_]+|WINDSURFAPI_[A-Z0-9_]+)\b/g)]
+        .map((m) => m[1]).filter((n) => !declared.has(n));
+      assert.deepEqual(found, [], 'no false positive when the switch IS documented');
+    });
+
+    const staleClaims = (body, pkgVersion) => {
+      const stripped = body.split('\n').filter((l) => !l.trimStart().startsWith('>')).join('\n');
+      return [...stripped.matchAll(/master\s*(?:==|=|is)\s*`?v(\d+\.\d+\.\d+)`?/gi)]
+        .map((m) => m[1]).filter((v) => v !== pkgVersion);
+    };
+
+    it('a stale version claim is detected, and a current one is not', () => {
+      assert.deepEqual(staleClaims('right now master == `v3.9.17`.', '3.9.20'), ['3.9.17']);
+      assert.deepEqual(staleClaims('right now master == `v3.9.20`.', '3.9.20'), []);
+      assert.deepEqual(staleClaims('master is v1.0.0', '3.9.20'), ['1.0.0'], 'the `is` spelling too');
+    });
+
+    it('a quoted claim inside a blockquote is NOT treated as a claim', () => {
+      // This is what broke the first two versions of the version assertion: an erratum
+      // correcting a bad claim had to restate it, and the guard flagged the correction.
+      const body = '> The old row said master == `v3.9.17`, which was never a tag.\n\nmaster == `v3.9.20` today.';
+      assert.deepEqual(staleClaims(body, '3.9.20'), [],
+        'a citation of a wrong claim must not be read as making it');
+    });
+  });
+
   it('a doc describing the current state names the packaged version, not another one', () => {
     const pkgVersion = JSON.parse(read(join(ROOT, 'package.json'))).version;
     // The live handoff is whichever one the index's first row points at — reuse the same
