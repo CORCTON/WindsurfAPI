@@ -1,0 +1,123 @@
+{
+  "tests": [
+    "test/tool-emulation-ref-fanout.test.js",
+    "test/tool-emulation.test.js"
+  ],
+  "expectBaselinePass": 72,
+  "mutations": [
+    {
+      "name": "the original defect: cycle check only, no size bound at all (levels=20 -> 18193 ms / 61.9 MB)",
+      "file": "src/handlers/tool-emulation.js",
+      "anchor": "  if (budget.remaining <= 0) {\n    budget.exhausted = true;\n    return { type: 'object' };\n  }\n  budget.remaining--;\n",
+      "replacement": ""
+    },
+    {
+      "name": "the bound is present but unreachable — remaining can never satisfy it",
+      "file": "src/handlers/tool-emulation.js",
+      "anchor": "if (budget.remaining <= 0) {",
+      "replacement": "if (budget.remaining <= -1e9) {"
+    },
+    {
+      "name": "the counter never advances, so the bound never binds",
+      "file": "src/handlers/tool-emulation.js",
+      "anchor": "  budget.remaining--;\n  if (typeof schema.$ref === 'string') {",
+      "replacement": "  if (typeof schema.$ref === 'string') {"
+    },
+    {
+      "name": "off-by-one the other way: the counter is refunded on every $ref inline, so a fan-out pays nothing",
+      "file": "src/handlers/tool-emulation.js",
+      "anchor": "    return stripSchemaDocs({ ...resolved, ...siblings }, root, [...refStack, ref], budget);",
+      "replacement": "    budget.remaining++;\n    return stripSchemaDocs({ ...resolved, ...siblings }, root, [...refStack, ref], budget);"
+    },
+    {
+      "name": "budget not threaded into the $ref recursion — every inlined subtree gets a FRESH 50000 (the plumbing bug that looks bounded)",
+      "file": "src/handlers/tool-emulation.js",
+      "anchor": "[...refStack, ref], budget);",
+      "replacement": "[...refStack, ref]);"
+    },
+    {
+      "name": "budget not threaded into the properties recursion — fresh budget per property",
+      "file": "src/handlers/tool-emulation.js",
+      "anchor": "props[pk] = stripSchemaDocs(pv, root, refStack, budget);",
+      "replacement": "props[pk] = stripSchemaDocs(pv, root, refStack);"
+    },
+    {
+      "name": "budget not threaded into the items/oneOf/anyOf/allOf recursion",
+      "file": "src/handlers/tool-emulation.js",
+      "anchor": "      out[k] = stripSchemaDocs(v, root, refStack, budget);\n    } else if (k === 'additionalProperties') {",
+      "replacement": "      out[k] = stripSchemaDocs(v, root, refStack);\n    } else if (k === 'additionalProperties') {"
+    },
+    {
+      "name": "budget not threaded into the additionalProperties recursion",
+      "file": "src/handlers/tool-emulation.js",
+      "anchor": "else if (v && typeof v === 'object') out[k] = stripSchemaDocs(v, root, refStack, budget);",
+      "replacement": "else if (v && typeof v === 'object') out[k] = stripSchemaDocs(v, root, refStack);"
+    },
+    {
+      "name": "budget not threaded into the array map — each element gets a fresh one",
+      "file": "src/handlers/tool-emulation.js",
+      "anchor": "if (Array.isArray(schema)) return schema.map(s => stripSchemaDocs(s, root, refStack, budget));",
+      "replacement": "if (Array.isArray(schema)) return schema.map(s => stripSchemaDocs(s, root, refStack));"
+    },
+    {
+      "name": "the bound is charged to the array node, so an exhausted anyOf stops being an array (invalid JSON Schema)",
+      "file": "src/handlers/tool-emulation.js",
+      "anchor": "  if (Array.isArray(schema)) return schema.map(s => stripSchemaDocs(s, root, refStack, budget));\n  if (budget.remaining <= 0) {\n    budget.exhausted = true;\n    return { type: 'object' };\n  }",
+      "replacement": "  if (budget.remaining <= 0) {\n    budget.exhausted = true;\n    return { type: 'object' };\n  }\n  if (Array.isArray(schema)) return schema.map(s => stripSchemaDocs(s, root, refStack, budget));"
+    },
+    {
+      "name": "budget allocated per tool instead of per build — 12 fan-out tools cost 12x the stall",
+      "file": "src/handlers/tool-emulation.js",
+      "anchor": "  const budget = newSchemaInlineBudget();\n  let firstTruncated = null;\n  for (const t of tools) {",
+      "replacement": "  let firstTruncated = null;\n  for (const t of tools) {\n    const budget = newSchemaInlineBudget();"
+    },
+    {
+      "name": "the ceiling is raised past any plausible schema — the blow-up returns",
+      "file": "src/handlers/tool-emulation.js",
+      "anchor": "const SCHEMA_INLINE_NODE_BUDGET = 50000;",
+      "replacement": "const SCHEMA_INLINE_NODE_BUDGET = 5000000;"
+    },
+    {
+      "name": "over-reach: the ceiling is lowered until it truncates an ordinary schema",
+      "file": "src/handlers/tool-emulation.js",
+      "anchor": "const SCHEMA_INLINE_NODE_BUDGET = 50000;",
+      "replacement": "const SCHEMA_INLINE_NODE_BUDGET = 500;"
+    },
+    {
+      "name": "the exhausted flag is never set — the stall goes back to being silent",
+      "file": "src/handlers/tool-emulation.js",
+      "anchor": "    budget.exhausted = true;\n    return { type: 'object' };",
+      "replacement": "    return { type: 'object' };"
+    },
+    {
+      "name": "the warning is dropped — bounded now, but an operator still cannot see it happen",
+      "file": "src/handlers/tool-emulation.js",
+      "anchor": "  if (budget.exhausted) {\n    log.warn(",
+      "replacement": "  if (false) {\n    log.warn("
+    },
+    {
+      "name": "the warning loses the tool name — the one field that says WHICH schema to fix",
+      "file": "src/handlers/tool-emulation.js",
+      "anchor": "      + ` (first exhausted at tool \"${firstTruncated}\", ${tools.length} tool(s));`",
+      "replacement": "      + ` (${tools.length} tool(s));`"
+    },
+    {
+      "name": "the tool name is recorded unconditionally, so it names the LAST tool rather than the one that blew the budget",
+      "file": "src/handlers/tool-emulation.js",
+      "anchor": "      if (!wasExhausted && budget.exhausted) firstTruncated = name;",
+      "replacement": "      if (budget.exhausted) firstTruncated = name;"
+    },
+    {
+      "name": "the warning stops reporting the budget it hit — the number an operator needs to judge the schema against",
+      "file": "src/handlers/tool-emulation.js",
+      "anchor": "log.warn(`TOOL_PREAMBLE: $ref inlining hit the ${SCHEMA_INLINE_NODE_BUDGET}-node budget`",
+      "replacement": "log.warn('TOOL_PREAMBLE: $ref inlining hit its node budget'"
+    },
+    {
+      "name": "exhausted subtrees emit a dangling $ref instead of the placeholder — $defs are stripped, so the model cannot resolve it",
+      "file": "src/handlers/tool-emulation.js",
+      "anchor": "    budget.exhausted = true;\n    return { type: 'object' };\n  }\n  budget.remaining--;",
+      "replacement": "    budget.exhausted = true;\n    return { $ref: '#/$defs/truncated' };\n  }\n  budget.remaining--;"
+    }
+  ]
+}
