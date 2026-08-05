@@ -43,10 +43,10 @@
       "replacement": ""
     },
     {
-      "name": "the error frame no longer latches `finished` — the premise the FINISH_MAP default rests on",
+      "name": "the error frame no longer latches `finished` — the premise the FINISH_MAP default rests on. NOTE: the anchor must be the LATCH, not error()'s early-return guard: mutating the guard leaves `this.finished = true` in place, so finish() still returns early and the mutation injects nothing (it SURVIVED for that reason on the first attempt — the mutation was wrong, not the guard)",
       "file": "src/handlers/gemini.js",
-      "anchor": "  error(err) {\n    if (this.finished) return;",
-      "replacement": "  error(err) {\n    if (false) return;"
+      "anchor": "      this.frameCount++;\n    }\n    this.finished = true;\n  }",
+      "replacement": "      this.frameCount++;\n    }\n  }"
     }
   ]
 }
