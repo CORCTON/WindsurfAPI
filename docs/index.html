@@ -1498,7 +1498,12 @@ client = OpenAI(
     grid.innerHTML = groups.map(group => {
       const latest = group.latest || {};
       const summary = latest.summary || latest.title || '';
-      const prs = group.prs.slice(0,4).map(prLabel).join(' · ');
+      // Dedupe: a contributor can legitimately have two ledger rows carrying the SAME pr —
+      // one cumulative ("四次出手累计"), one for that specific PR — and aict666 (#54) plus
+      // baily-zhang (#61) both do. Without the Set those render as "PR #54 · PR #54".
+      // Deduping here rather than in contributors.json deliberately: the double row may be
+      // intentional, and the display bug is fixable without deciding that.
+      const prs = [...new Set(group.prs.map(prLabel))].slice(0,4).join(' · ');
       const extra = group.prs.length > 4 ? ` · +${group.prs.length - 4}` : '';
       const loginRaw = String(group.login);
       const login = esc(loginRaw);
