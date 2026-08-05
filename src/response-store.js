@@ -24,11 +24,13 @@
  *     eviction with a per-tenant fair share so one caller cannot flush everyone
  *     else's conversations (same lesson as account/sticky-session.js).
  *   - `store: false` on the request skips persistence, per the OpenAI contract —
- *     such a response cannot later be used as a `previous_response_id`.
+ *     such a response cannot later be used as a `previous_response_id`. The value
+ *     is NORMALIZED here rather than trusted as a boolean; see wantsPersistence.
  *
  * Configure via env:
  *   RESPONSE_STORE_ENABLED=0        — disable (default: on)
- *   RESPONSE_STORE_TTL_MS=3600000   — entry TTL in ms (default: 1 hour)
+ *   RESPONSE_STORE_TTL_MS=3600000   — IDLE timeout in ms (default: 1 hour)
+ *   RESPONSE_STORE_MAX_AGE_MS=86400000 — absolute retention bound (default: 24 hours)
  *   RESPONSE_STORE_MAX=2000         — max stored responses (default: 2000)
  *   RESPONSE_STORE_MAX_MESSAGES=400 — per-conversation message cap (default: 400)
  *   RESPONSE_STORE_MAX_BYTES=128m   — total byte budget (default: 128MB; b/k/kb/m/mb/g/gb)
@@ -38,9 +40,35 @@ import { log } from './config.js';
 
 const ENABLED = process.env.RESPONSE_STORE_ENABLED !== '0';
 
+// IDLE timeout: measured from lastAccess, which every successful read refreshes.
+// That refresh is deliberate — a chained agent loop touching the same id every few
+// seconds must not have its context expire underneath it — but it means TTL_MS on
+// its own bounds nothing: a client polling GET /v1/responses/{id} keeps an entry
+// alive forever (measured at RESPONSE_STORE_TTL_MS=120: polled every 40ms for
+// 1020ms, i.e. 8.5x the TTL, 25 successful reads, entry still alive). No floor
+// either — `n > 0` accepts 1ms, which is fine for tuning and useless as a bound.
+// MAX_AGE_MS below is the bound that does not depend on read traffic.
 const TTL_MS = (() => {
   const n = parseInt(process.env.RESPONSE_STORE_TTL_MS || '', 10);
   return Number.isFinite(n) && n > 0 ? n : 60 * 60 * 1000; // 1 hour
+})();
+
+// ABSOLUTE retention bound, measured from createdAt and NOT refreshed by reads. It
+// is what makes "retained for a limited time" true; the idle timeout above only
+// says "collected when abandoned".
+//
+// 24 hours, chosen against the workload this store exists to serve rather than
+// against the smallest defensible number. An agent loop can legitimately run for
+// hours, and dropping its context mid-run is a worse failure than over-retention:
+// the caller gets a 404 on a conversation it is actively using, with nothing to
+// recover from. Note the bound is per response id and createdAt survives a
+// same-id refresh, so a real chain is unaffected either way — every turn mints a
+// NEW id and starts its own 24 hours. What the bound actually kills is the entry
+// that is read but never superseded, which is exactly the shape that had no upper
+// limit at all.
+const MAX_AGE_MS = (() => {
+  const n = parseInt(process.env.RESPONSE_STORE_MAX_AGE_MS || '', 10);
+  return Number.isFinite(n) && n > 0 ? n : 24 * 60 * 60 * 1000; // 24 hours
 })();
 
 const MAX_ENTRIES = (() => {
@@ -188,6 +216,16 @@ function oldestId(tenant = null, exclude = null) {
   return null;
 }
 
+// The two expiry predicates, named so the lookup path and the sweep cannot drift
+// apart. `lastAccess` is refreshed by every read (idle timeout); `createdAt` is
+// not (absolute bound).
+function isPastIdle(entry, now) {
+  return now - entry.lastAccess > TTL_MS;
+}
+function isPastMaxAge(entry, now) {
+  return now - entry.createdAt > MAX_AGE_MS;
+}
+
 // Periodic sweep so an idle process does not hold expired conversations. The
 // per-lookup TTL check is the primary enforcement; this is the safety net.
 let _sweepTimer = null;
@@ -196,7 +234,10 @@ function ensureSweepTimer() {
   _sweepTimer = setInterval(() => {
     const now = Date.now();
     for (const [id, entry] of [..._entries]) {
-      if (now - entry.lastAccess > TTL_MS) {
+      // Both bounds, for the same reason getResponse checks both: an entry kept
+      // warm by reads never trips the idle timeout, and one nobody ever reads
+      // again would sit until the absolute bound if only that were checked here.
+      if (isPastIdle(entry, now) || isPastMaxAge(entry, now)) {
         dropEntry(id);
         _stats.expires++;
       }
@@ -313,23 +354,136 @@ function capEntryBytes(messages) {
 
 const TRUNCATION_MARKER = '\n\n[... truncated by the response store to stay within RESPONSE_STORE_MAX_BYTES ...]';
 
-function trimContentToFit(messages) {
-  const out = messages.map(m => ({ ...m }));
-  // Shrink from the LARGEST string field down until the entry fits.
-  let guard = 64;
-  while (approxBytes(out) > MAX_ENTRY_BYTES && guard-- > 0) {
-    let biggest = -1;
-    let biggestLen = 0;
-    for (let i = 0; i < out.length; i++) {
-      const c = out[i]?.content;
-      const len = typeof c === 'string' ? c.length : 0;
-      if (len > biggestLen) { biggestLen = len; biggest = i; }
+// Keys whose STRING value must never be cut, because it is an identifier or a
+// discriminator rather than payload. `tool_call_id` and `id` pair an assistant
+// tool_call with its tool result — cutting either breaks the pairing and the
+// upstream rejects the whole conversation. `type` is the block discriminator the
+// wire layer dispatches on; `role` and `name` are likewise structural.
+const UNSHRINKABLE_KEYS = new Set(['type', 'role', 'id', 'tool_call_id', 'name']);
+
+/**
+ * Every string in a message that MAY be shortened, as a path from the message
+ * object (e.g. `['content', 2, 'text']`, `['tool_calls', 0, 'function',
+ * 'arguments']`, or `['content']` for the plain-string shape).
+ *
+ * WHY a walk rather than reading `.content`: the previous version read
+ * `typeof m.content === 'string' ? m.content.length : 0`, so for the ARRAY content
+ * shape — which is the DEFAULT for the Responses API, since responsesToChat
+ * normalizes every input item into typed blocks — no candidate was ever found,
+ * `biggest` stayed -1 and the loop broke on its first iteration. MAX_ENTRY_BYTES
+ * was therefore a no-op for the common case, while approxBytes/strBytes counted
+ * those arrays correctly: the metering was fixed and the enforcement was not,
+ * which is why the byte-budget tests passed with the cap doing nothing.
+ * MEASURED at RESPONSE_STORE_MAX_BYTES=400k (MAX_ENTRY_BYTES 102400):
+ *   content as string, 200000 chars -> stored  50124 chars, marker present
+ *   content as array,  200000 chars -> stored 200000 chars, NO marker, 400104 bytes
+ * i.e. ~3.9x the per-entry ceiling, which is enough for one tenant to LRU-evict
+ * the whole store.
+ *
+ * Depth 5 matches strBytes' own depth guard, so anything the metering charges for
+ * is also reachable here.
+ */
+function shrinkableSlots(node, path = [], depth = 0, out = []) {
+  if (depth > 5 || node == null || typeof node !== 'object') return out;
+  const entries = Array.isArray(node)
+    ? node.map((v, i) => [i, v])
+    : Object.entries(node);
+  for (const [key, value] of entries) {
+    if (typeof value === 'string') {
+      if (typeof key === 'string' && UNSHRINKABLE_KEYS.has(key)) continue;
+      // Below the marker length, replacing the text with the marker would GROW it.
+      if (value.length <= TRUNCATION_MARKER.length) continue;
+      out.push({ path: [...path, key], len: value.length });
+    } else if (value && typeof value === 'object') {
+      shrinkableSlots(value, [...path, key], depth + 1, out);
     }
-    if (biggest < 0 || biggestLen <= TRUNCATION_MARKER.length) break;
-    const keep = Math.max(1, Math.floor(biggestLen / 2));
-    out[biggest].content = out[biggest].content.slice(0, keep) + TRUNCATION_MARKER;
   }
   return out;
+}
+
+/**
+ * Copy-on-write assignment along `path`. Copies every node it descends through so
+ * the CALLER's message objects are never mutated — `messages.map(m => ({...m}))`
+ * is a shallow copy, so a content array and its blocks are still shared with the
+ * live request body, and writing through them would rewrite what the upstream is
+ * about to be sent.
+ */
+function withStringAt(node, path, value) {
+  const [key, ...rest] = path;
+  const copy = Array.isArray(node) ? [...node] : { ...node };
+  copy[key] = rest.length ? withStringAt(node[key], rest, value) : value;
+  return copy;
+}
+
+function trimContentToFit(messages) {
+  let out = messages.map(m => ({ ...m }));
+  // Shrink from the LARGEST string field down until the entry fits. The field may
+  // live inside a content-block array or inside a tool_call, not only at
+  // `m.content` — see shrinkableSlots.
+  let guard = 64;
+  while (approxBytes(out) > MAX_ENTRY_BYTES && guard-- > 0) {
+    let biggest = null;
+    for (let i = 0; i < out.length; i++) {
+      for (const slot of shrinkableSlots(out[i], [i])) {
+        if (!biggest || slot.len > biggest.len) biggest = slot;
+      }
+    }
+    // No candidate left, or the biggest one is already at the floor: stop rather
+    // than shrink forever. (Unchanged intent; shrinkableSlots applies the same
+    // marker-length floor per candidate.)
+    if (!biggest) break;
+    const keep = Math.max(1, Math.floor(biggest.len / 2));
+    const [msgIndex, ...rest] = biggest.path;
+    const current = rest.reduce((n, k) => n[k], out[msgIndex]);
+    const cut = current.slice(0, keep) + TRUNCATION_MARKER;
+    // The block STRUCTURE is preserved: only the string at this path changes, so a
+    // `{type:'text', text}` block stays a text block and the next turn can still be
+    // replayed from the array. `rest` is never empty — shrinkableSlots always
+    // appends at least one key to the message index.
+    out[msgIndex] = withStringAt(out[msgIndex], rest, cut);
+  }
+  return out;
+}
+
+// Tokens a JSON client uses to mean "no" in a field the schema types as boolean.
+const FALSY_STORE_TOKENS = new Set(['false', '0', 'no', 'off', '']);
+
+/**
+ * Does this `store` value ask for persistence?
+ *
+ * The check used to be `opts.store === false` — strict, on a value that arrives
+ * RAW off the request body (handlers/responses.js passes `store: body.store` with
+ * no normalization). So only a real JSON `false` opted out. MEASURED against HEAD:
+ *   store=false  -> not stored (correct)
+ *   store="false" / 0 / "no" / "off" / null / ""  -> ALL stored and retrievable
+ * A client that spells the flag as a string — form-encoded relays, shell wrappers
+ * and hand-rolled clients all do — got retention it explicitly opted out of, and
+ * had no way to tell.
+ *
+ * WHERE this belongs: here, not only at the HTTP boundary. The retention decision
+ * is the store's own contract ("`store:false` means this response is not
+ * retained"), and the store is what would have to be audited if the promise were
+ * broken. A boundary-only fix leaves the strict comparison in place for every
+ * other caller, present and future, and this call site was added by exactly that
+ * kind of later wiring. The boundary is still where a MALFORMED request should be
+ * rejected outright; normalizing here means the store never over-retains even when
+ * it is not.
+ *
+ * `undefined` means the field was absent, and the OpenAI default is store=true —
+ * so absent must NOT read as opted out. An explicit `null` does: it is a value the
+ * client chose to send, and for a retention decision the safe reading of an
+ * ambiguous explicit value is "do not retain" (the cost is a 404 on a later chain
+ * attempt, which is diagnosable; the cost of the other reading is silent retention
+ * of data the caller may believe was never kept). An unrecognized token
+ * ("maybe", {}) is not an opt-out signal and keeps the documented default.
+ */
+export function wantsPersistence(store) {
+  if (store === undefined) return true;
+  if (store === null) return false;
+  if (typeof store === 'boolean') return store;
+  if (typeof store === 'number') return store !== 0;
+  if (typeof store === 'string') return !FALSY_STORE_TOKENS.has(store.trim().toLowerCase());
+  return true;
 }
 
 /**
@@ -338,14 +492,15 @@ function trimContentToFit(messages) {
  * @param {string} responseId  the id handed back to the client
  * @param {Array}  messages    FULL conversation for this turn (input + output)
  * @param {string} callerKey   tenant/identity scope
- * @param {object} [opts]      { model?: string, store?: boolean }
+ * @param {object} [opts]      { model?: string, store?: boolean|string|number|null }
  * @returns {boolean} true when persisted
  */
 export function putResponse(responseId, messages, callerKey, opts = {}) {
   if (!ENABLED || !responseId || !Array.isArray(messages) || !messages.length) return false;
   // The OpenAI contract: `store: false` means this response is not retained, so
-  // it can never serve as a later previous_response_id.
-  if (opts.store === false) return false;
+  // it can never serve as a later previous_response_id. Normalized rather than
+  // compared strictly — see wantsPersistence for what the strict check let through.
+  if (!wantsPersistence(opts.store)) return false;
   // No caller scope means no way to isolate this conversation from another
   // tenant's — refuse rather than create a shared-readable entry.
   if (!callerKey) { _stats.rejected++; return false; }
@@ -451,19 +606,37 @@ export function getResponse(responseId, callerKey) {
   if (!entry) { _stats.misses++; return { ok: false, reason: 'not_found' }; }
 
   const now = Date.now();
-  if (now - entry.lastAccess > TTL_MS) {
-    dropEntry(responseId);
-    _stats.expires++;
-    return { ok: false, reason: 'expired' };
-  }
 
-  // Cross-tenant guard: an id minted for another caller must not resolve here.
-  // Fails closed and is reported as not_found so a caller cannot probe which ids
-  // exist for other tenants.
+  // Ownership is settled BEFORE anything is dropped. This used to be the other way
+  // round: the expiry branch called dropEntry() and returned nine lines above this
+  // guard, so a foreign caller who guessed a valid id DELETED the owner's expired
+  // entry. Probing was indeed closed (the guard's own promise), but the branch above
+  // it had already acted. MEASURED at RESPONSE_STORE_TTL_MS=60, entry owned by A:
+  //   after expiry, B reads -> ok=false reason='expired'
+  //   then A reads          -> ok=false reason='not_found'   <- B's read reaped it
+  // Reordering keeps both properties, and the reason each case returns is:
+  //   foreign caller, entry fresh OR expired -> 'forbidden', and NOTHING is dropped.
+  //     The outward result is identical to a miss (handlers/responses.js maps
+  //     'forbidden', 'expired' and 'not_found' to the same 404 body, so the reason
+  //     was never the leak — the DELETION was), and the foreign caller now also
+  //     cannot distinguish an expired id from a fresh one by its side effect.
+  //   owner, entry expired -> 'expired', and the entry IS reaped, so the owner's
+  //     own dead conversation is still collected on the lookup path rather than
+  //     waiting for the 5-minute sweep.
   if (entry.callerKey !== callerKey) {
     _stats.rejected++;
     log.warn(`[response-store] rejected cross-caller lookup of ${String(responseId).slice(0, 24)}`);
     return { ok: false, reason: 'forbidden' };
+  }
+
+  // Two independent bounds, both reported as 'expired' because the client-visible
+  // meaning is the same ("this conversation is gone, send full context"):
+  // the IDLE timeout, which a read refreshes, and the ABSOLUTE age, which it does
+  // not. Without the second one a periodic GET kept an entry alive without limit.
+  if (isPastIdle(entry, now) || isPastMaxAge(entry, now)) {
+    dropEntry(responseId);
+    _stats.expires++;
+    return { ok: false, reason: 'expired' };
   }
 
   entry.lastAccess = now;
@@ -496,6 +669,11 @@ export function getResponseStoreStats() {
     size: _entries.size,
     bytes: _bytes,
     maxBytes: MAX_BYTES,
+    // Both time bounds, reported for the same reason maxBytes is: an operator
+    // asking "how long is a conversation kept?" has two different answers, and the
+    // idle one on its own does not bound retention at all.
+    ttlMs: TTL_MS,
+    maxAgeMs: MAX_AGE_MS,
     enabled: ENABLED,
     tenants: _tenantCounts.size,
   };
