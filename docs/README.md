@@ -5,7 +5,7 @@
 | # | File | Why |
 |---|---|---|
 | 1 | **[HANDOFF-2026-08-04-E.md](HANDOFF-2026-08-04-E.md)** | Current state, the still-unfixed list with `file:line` and measured numbers, and what is blocked on someone else. **Unreleased work, when there is any, is described here** — right now there is none: master == `v3.9.18`. That handoff is **closed** (its §7): v3.9.18 shipped, so the next round starts a new file rather than appending. Read its §3 first (two operational rules that will trip you within minutes), then §0.1, then §5–§6. |
-| 2 | **[AUDIT-LEDGER.md](AUDIT-LEDGER.md)** | Which subsystems were *actually probed*, the conclusion, and where the guard lives. Start with its "怎么读这份文件" section — it is 1200+ lines appended over twelve rounds and is **not** organised by topic. |
+| 2 | **[AUDIT-LEDGER.md](AUDIT-LEDGER.md)** | Which subsystems were *actually probed*, the conclusion, and where the guard lives. Start with its "怎么读这份文件" section — it is 1400+ lines appended over thirteen rounds and is **not** organised by topic. That section states its own round count; trust the section, not this row (this row has already been one round stale once). |
 | 3 | **[DEVIN-CONNECT-CUTOVER.md](DEVIN-CONNECT-CUTOVER.md)** | Production cutover runbook. `DEVIN_CONNECT` is what production actually runs (the code default is OFF; the deployment sets it), so this is not optional. Paid wire-calibration procedure in §8. |
 
 Two sections are worth reading even though they sit in superseded files:
@@ -19,10 +19,12 @@ Two sections are worth reading even though they sit in superseded files:
 
 ### The rest of the handoffs are archive
 
-Newest first. Every one carries a banner pointing here, so opening the wrong file is
-recoverable — but **`ls docs/` does not sort chronologically**: `-B.md` sorts before `.md`, and
-`HANDOFF-2026-08-05.md` has a wrong filename date (the work was 08-04, it covers v3.9.12).
-Trust this list, not the directory listing.
+Newest first. Every one carries a banner naming the then-current handoff, and seven of the eight
+also link back to this index — `HANDOFF-2026-08-05.md` links only onward, so from that one file
+you cannot get here in one hop. Opening the wrong file is otherwise recoverable, but **`ls docs/`
+does not sort chronologically**: `-B.md` sorts before `.md`, and `HANDOFF-2026-08-05.md` has a
+wrong filename date (the work was 08-04, it covers v3.9.12). Trust this list, not the directory
+listing.
 
 | Handoff | Covers |
 |---|---|
