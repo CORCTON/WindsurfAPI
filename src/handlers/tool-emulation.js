@@ -581,9 +581,57 @@ function resolveLocalSchemaRef(ref, root) {
   return cur && typeof cur === 'object' ? cur : null;
 }
 
-function stripSchemaDocs(schema, root = schema, refStack = []) {
+// Ceiling on how many object nodes ONE preamble build may materialise while
+// inlining `$ref`s. The cycle check below (`refStack.includes`) bounds a
+// recursive schema but NOT a directed acyclic one: a `$ref` repeated in several
+// SIBLING positions is never on its own ancestor chain, so a diamond fans out
+// as branch^depth with no cycle anywhere in the input. Measured on a schema of
+// $defs L0..Lk where each Li has two properties both `{$ref:'#/$defs/L(i+1)'}`:
+//
+//   levels=12   1.2 KB in ->    38 ms,    244 KB out
+//   levels=16   1.6 KB in ->   680 ms,    3.9 MB out
+//   levels=20   1.9 KB in -> 18193 ms,   61.9 MB out
+//   levels=22   2.1 KB in -> 37275 ms,  247.5 MB out
+//
+// Node is single-threaded, so those seconds block every other tenant, and the
+// old code left no trace: applyToolPreambleBudget walks full -> schema-compact
+// -> skinny and keeps the first tier under the soft cap, so the multi-megabyte
+// string is measured, discarded, and the request returns ok=true on a lower
+// tier with not one log line. A DEPTH limit does not help — the fan-out above
+// is already a quarter-million nodes at depth 12.
+//
+// Why 50000, and why it cannot silently truncate a schema anyone could have
+// used: the tier ladder only ACCEPTS a schema-compact preamble under
+// TOOL_PREAMBLE_HARD_BYTES (default 48000). Minified, the cheapest node costs
+// ~26 B (measured over 5000 short-named `{"type":"object"}` properties), so an
+// accepted preamble holds on the order of 2000 nodes — and real tool schemas
+// are far smaller still (a MultiEdit-shaped schema is 16 nodes, 458 B). This
+// budget sits more than an order of magnitude above that: exhausting it yields
+// ~740 KB (measured, and flat from levels=20 through levels=30), i.e. ~15x the
+// hard cap, so the ladder discards that tier for skinny exactly as it did
+// before. Exhaustion can therefore only cancel work whose result was already
+// unusable — it never changes which tier a request ends up on at default caps.
+//
+// The budget is shared by the whole build rather than per tool, because per
+// tool it would still multiply by the tool count — 128 tools x 50000 is the
+// same event-loop stall wearing a different hat.
+const SCHEMA_INLINE_NODE_BUDGET = 50000;
+
+function newSchemaInlineBudget() {
+  return { remaining: SCHEMA_INLINE_NODE_BUDGET, exhausted: false };
+}
+
+function stripSchemaDocs(schema, root = schema, refStack = [], budget = newSchemaInlineBudget()) {
   if (!schema || typeof schema !== 'object') return schema;
-  if (Array.isArray(schema)) return schema.map(s => stripSchemaDocs(s, root, refStack));
+  // Arrays do not consume budget themselves; their object elements do, which is
+  // what keeps `anyOf`/tuple `items` a valid ARRAY under exhaustion instead of
+  // being replaced wholesale by an object placeholder.
+  if (Array.isArray(schema)) return schema.map(s => stripSchemaDocs(s, root, refStack, budget));
+  if (budget.remaining <= 0) {
+    budget.exhausted = true;
+    return { type: 'object' };
+  }
+  budget.remaining--;
   if (typeof schema.$ref === 'string') {
     const ref = schema.$ref;
     // On cycles, replace the recursive edge with a generic object placeholder.
@@ -593,7 +641,7 @@ function stripSchemaDocs(schema, root = schema, refStack = []) {
     const resolved = resolveLocalSchemaRef(ref, root);
     if (!resolved) return { type: 'object' };
     const siblings = Object.fromEntries(Object.entries(schema).filter(([k]) => k !== '$ref'));
-    return stripSchemaDocs({ ...resolved, ...siblings }, root, [...refStack, ref]);
+    return stripSchemaDocs({ ...resolved, ...siblings }, root, [...refStack, ref], budget);
   }
   const KEEP = new Set(['type', 'enum', 'properties', 'items', 'required', 'oneOf', 'anyOf', 'allOf', 'const', 'format', 'additionalProperties']);
   const out = {};
@@ -601,13 +649,13 @@ function stripSchemaDocs(schema, root = schema, refStack = []) {
     if (!KEEP.has(k)) continue;
     if (k === 'properties' && v && typeof v === 'object') {
       const props = {};
-      for (const [pk, pv] of Object.entries(v)) props[pk] = stripSchemaDocs(pv, root, refStack);
+      for (const [pk, pv] of Object.entries(v)) props[pk] = stripSchemaDocs(pv, root, refStack, budget);
       out[k] = props;
     } else if ((k === 'items' || k === 'oneOf' || k === 'anyOf' || k === 'allOf') && v) {
-      out[k] = stripSchemaDocs(v, root, refStack);
+      out[k] = stripSchemaDocs(v, root, refStack, budget);
     } else if (k === 'additionalProperties') {
       if (v === false) out[k] = false;
-      else if (v && typeof v === 'object') out[k] = stripSchemaDocs(v, root, refStack);
+      else if (v && typeof v === 'object') out[k] = stripSchemaDocs(v, root, refStack, budget);
     } else {
       out[k] = v;
     }
@@ -670,6 +718,9 @@ export function buildSchemaCompactToolPreambleForProto(tools, toolChoice, enviro
   }
   lines.push('');
   lines.push('Available functions:');
+  // One budget for the whole build: see SCHEMA_INLINE_NODE_BUDGET.
+  const budget = newSchemaInlineBudget();
+  let firstTruncated = null;
   for (const t of tools) {
     if (t?.type !== 'function' || !t.function) continue;
     const { name, description, parameters } = t.function;
@@ -677,8 +728,21 @@ export function buildSchemaCompactToolPreambleForProto(tools, toolChoice, enviro
     lines.push(`### ${name}`);
     if (description) lines.push(firstSentence(description));
     if (parameters) {
-      lines.push(`Params: ${JSON.stringify(stripSchemaDocs(parameters))}`);
+      const wasExhausted = budget.exhausted;
+      const stripped = stripSchemaDocs(parameters, parameters, [], budget);
+      if (!wasExhausted && budget.exhausted) firstTruncated = name;
+      lines.push(`Params: ${JSON.stringify(stripped)}`);
     }
+  }
+  // Without this the stall is invisible: the caller burns the event loop, the
+  // oversized tier is thrown away by applyToolPreambleBudget, and the request
+  // succeeds on a lower tier reporting nothing unusual.
+  if (budget.exhausted) {
+    log.warn(`TOOL_PREAMBLE: $ref inlining hit the ${SCHEMA_INLINE_NODE_BUDGET}-node budget`
+      + ` (first exhausted at tool "${firstTruncated}", ${tools.length} tool(s));`
+      + ' the remaining subtrees were emitted as {"type":"object"} placeholders.'
+      + ' A $ref repeated in sibling positions fans out multiplicatively — look for a'
+      + ' diamond in that schema rather than for a cycle.');
   }
   return lines.join('\n');
 }
