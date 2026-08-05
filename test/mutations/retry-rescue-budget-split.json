@@ -51,8 +51,8 @@
     {
       "name": "rescue budget starts drinking from the empty pot (the mirror defect)",
       "file": "src/devin-connect-openai.js",
-      "anchor": "    if (rescueThinkingOnly && hasTools && rescueAttempt < rescueMax && isStopOrNull",
-      "replacement": "    if (rescueThinkingOnly && hasTools && (rescueAttempt + emptyAttempt) < rescueMax && isStopOrNull"
+      "anchor": "hasTools && rescueAttempt < rescueMax && isStopOrNull",
+      "replacement": "hasTools && (rescueAttempt + emptyAttempt) < rescueMax && isStopOrNull"
     },
     {
       "name": "master off switch stops covering the empty arm",
@@ -69,14 +69,14 @@
     {
       "name": "the rescue arm's OWN budget goes off-by-one — nothing about the split would show it",
       "file": "src/devin-connect-openai.js",
-      "anchor": "    if (rescueThinkingOnly && hasTools && rescueAttempt < rescueMax && isStopOrNull",
-      "replacement": "    if (rescueThinkingOnly && hasTools && rescueAttempt <= rescueMax && isStopOrNull"
+      "anchor": "hasTools && rescueAttempt < rescueMax && isStopOrNull",
+      "replacement": "hasTools && rescueAttempt <= rescueMax && isStopOrNull"
     },
     {
       "name": "the rescue gate stops requiring tools — plain chat turns that end in reasoning get rescued (#241's gate removed)",
       "file": "src/devin-connect-openai.js",
-      "anchor": "    if (rescueThinkingOnly && hasTools && rescueAttempt < rescueMax && isStopOrNull",
-      "replacement": "    if (rescueThinkingOnly && rescueAttempt < rescueMax && isStopOrNull"
+      "anchor": "    if (hasTools && rescueAttempt < rescueMax && isStopOrNull",
+      "replacement": "    if (rescueAttempt < rescueMax && isStopOrNull"
     },
     {
       "name": "the digest cap loses its ceiling — `1e9` ships the entire reasoning in every nudge",

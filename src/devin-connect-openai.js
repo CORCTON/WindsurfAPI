@@ -116,7 +116,15 @@ function isEmptyCompletion(finishEv, sawContent) {
  * by appending a corrective user nudge and dropping empty assistant turns.
  * Yields the same event stream as streamChat; on a non-empty turn it is a pass-through.
  */
-async function* streamChatWithEmptyRetry(params, { env = process.env, rescueThinkingOnly = true } = {}) {
+// There used to be a `rescueThinkingOnly` option here. It was removed in v3.9.20 because it
+// had become dead configuration: #241 moved the real gate INSIDE this function (`hasTools`,
+// derived from the request), after which both call sites passed a literal `true` and nothing —
+// production or test — ever passed `false`. A knob with one reachable value is worse than no
+// knob: it reads as a variation point that a reviewer must reason about, and any mutation
+// guard aimed at it guards code that cannot be reached (the exact shape of the v3.9.13 medium
+// defect). If a caller ever genuinely needs to opt out, add the option back THEN, with a test
+// that passes `false` — that test is what makes it a knob rather than decoration.
+async function* streamChatWithEmptyRetry(params, { env = process.env } = {}) {
   // Weak models (fable) return DETERMINISTIC empties on complex multi-turn / large
   // system — paid E2E (2026-07-08, 27/27) proved retry never heals them, it only
   // triples the upstream load and burns the account into a 3h rate limit. So for
@@ -231,7 +239,7 @@ async function* streamChatWithEmptyRetry(params, { env = process.env, rescueThin
     const isStopOrNull = finishEv && (finishEv.reason == null || finishEv.reason === 'stop');
     const hasNoToolCalls = !finishEv?.toolCalls || finishEv.toolCalls.length === 0;
     const hasTools = Boolean(params?.tools?.length);
-    if (rescueThinkingOnly && hasTools && rescueAttempt < rescueMax && isStopOrNull && hasNoToolCalls && sawReasoning && !sawText) {
+    if (hasTools && rescueAttempt < rescueMax && isStopOrNull && hasNoToolCalls && sawReasoning && !sawText) {
       rescueAttempt++;
       log.warn(`DEVIN_CONNECT: thinking-only completion (reasoning-only, finish=${finishEv?.reason ?? 'null'}) — rescue retry ${rescueAttempt}/${rescueMax} (nudge appended)`);
       const backoff = retryOnEmptyBaseMs(env) * rescueAttempt;
@@ -337,7 +345,7 @@ export async function toChatCompletion(params, { id = newId(), created = nowSeco
   for (let attempt = 0; ; attempt++) {
     try {
       content = ''; reasoning = ''; finishReason = 'stop'; usage = null; nativeToolCalls = [];
-      for await (const ev of streamChatWithEmptyRetry(params, { rescueThinkingOnly: true })) {
+      for await (const ev of streamChatWithEmptyRetry(params)) {
         // A rescue attempt REPLACES the previous one; drop what it produced or the
         // client is handed every attempt concatenated.
         if (ev.type === 'attempt_reset') { content = ''; reasoning = ''; nativeToolCalls = []; billing = null; continue; }
@@ -562,7 +570,7 @@ export async function streamChatCompletion(params, send, { id = newId(), created
     }
   };
 
-  for await (const ev of streamChatWithEmptyRetry(params, { rescueThinkingOnly: true })) {
+  for await (const ev of streamChatWithEmptyRetry(params)) {
     // A rescue attempt REPLACES the previous one. The deltas already sent cannot be
     // retracted (documented at the promotion site below), but the accumulators must
     // not keep the abandoned attempt — otherwise `content` ends up holding every
