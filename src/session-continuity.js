@@ -412,10 +412,15 @@ export function isModelConfigStableEnabled(env = process.env) {
 // never as an assistant message (self-reflection-loop anti-pattern).
 
 // Total injection budget AND per-digest cap. Default 4000; 0 disables capture.
+// Ceiling-clamped (same post-merge lesson as #241's DIGEST_MAX_CEILING): `1e9`
+// passes isFinite, and an uncapped digest here would let one 30KB reasoning turn
+// ride the system prompt whole — exactly the unbounded-body failure mode.
+const SESSION_REASONING_MAX_CHARS_CEILING = 32000;
 export function getSessionReasoningMaxChars(env = process.env) {
   const n = Number(env.DEVIN_CONNECT_SESSION_REASONING_MAX_CHARS);
   if (!Number.isFinite(n) || n < 0) return 4000;
-  return Math.floor(n);
+  if (n === 0) return 0;
+  return Math.min(Math.floor(n), SESSION_REASONING_MAX_CHARS_CEILING);
 }
 
 // Queue length in turns (how many per-turn digests the state keeps). Default 5.

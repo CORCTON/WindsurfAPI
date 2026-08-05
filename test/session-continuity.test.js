@@ -456,6 +456,7 @@ describe('T1 reasoning continuity — digest, store queue, injection (Thinking-c
     assert.equal(getSessionReasoningMaxChars({}), 4000);
     assert.equal(getSessionReasoningMaxChars({ DEVIN_CONNECT_SESSION_REASONING_MAX_CHARS: '0' }), 0);
     assert.equal(getSessionReasoningMaxChars({ DEVIN_CONNECT_SESSION_REASONING_MAX_CHARS: 'junk' }), 4000);
+    assert.equal(getSessionReasoningMaxChars({ DEVIN_CONNECT_SESSION_REASONING_MAX_CHARS: '1e9' }), 32000, 'ceiling clamp — 1e9 must not pass through uncapped');
     assert.equal(getSessionReasoningCount({}), 5);
     assert.equal(getSessionReasoningCount({ DEVIN_CONNECT_SESSION_REASONING_COUNT: '99' }), 32, 'queue length capped');
     assert.equal(isReasoningInjectEnabled({ DEVIN_CONNECT_SESSION_REASONING_INJECT: 'on' }), true);

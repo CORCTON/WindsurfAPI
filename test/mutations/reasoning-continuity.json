@@ -18,6 +18,12 @@
       "replacement": "  return s.length <= maxChars ? s : s.slice(0, maxChars);"
     },
     {
+      "name": "T1 budget knob loses the ceiling clamp — 1e9 rides whole reasoning into the system prompt",
+      "file": "src/session-continuity.js",
+      "anchor": "  if (n === 0) return 0;\n  return Math.min(Math.floor(n), SESSION_REASONING_MAX_CHARS_CEILING);",
+      "replacement": "  return Math.floor(n);"
+    },
+    {
       "name": "T1 inject gate defaults ON — would change every existing deploy's wire",
       "file": "src/session-continuity.js",
       "anchor": "export function isReasoningInjectEnabled(env = process.env) {\n  const v = String(env.DEVIN_CONNECT_SESSION_REASONING_INJECT ?? '').trim().toLowerCase();\n  return v === '1' || v === 'true' || v === 'yes' || v === 'on';\n}",
