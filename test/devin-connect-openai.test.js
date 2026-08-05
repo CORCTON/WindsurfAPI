@@ -922,8 +922,13 @@ describe('thinking-only rescue & promotion', () => {
         if (old === undefined) delete process.env.DEVIN_CONNECT_RESCUE_REASONING_MAX_CHARS;
         else process.env.DEVIN_CONNECT_RESCUE_REASONING_MAX_CHARS = old;
       }
-      // Precondition, not decoration: without a real rescue the nudge is never built and
-      // every length assertion below would pass on a run where nothing happened.
+      // Precondition, not decoration — but NOT for the reason the first version of this
+      // comment claimed. It said the length assertions "would pass on a run where nothing
+      // happened"; they would not, they would THROW: with no rescue, .at(-1) is the original
+      // user turn, the `"""` regex returns null, and `m[1]` is a TypeError. What this buys is
+      // a NAMED failure ("the rescue must actually have fired") instead of a bare
+      // "Cannot read properties of null", which is what sent an earlier debugging round
+      // looking at the regex instead of at the fixture.
       assert.equal(callCount, 2, 'precondition: the rescue must actually have fired');
       const nudge = lastParams.messages.at(-1).content;
       const m = nudge.match(/"""([\s\S]*)"""/);
@@ -950,6 +955,26 @@ describe('thinking-only rescue & promotion', () => {
     it('a genuinely non-numeric value falls back to the 2000 default', async () => {
       const { quoted } = await digestFor('abc', 3000);
       assert.equal(quoted.length, 2000, 'NaN is the only input the default fallback serves');
+    });
+
+    // Found by the post-release review pass, and it is the OTHER HALF of the 1e9 hole: the
+    // clamp alone does not cover it, because Math.min(0.5, 32000) is correctly 0.5 — the
+    // inversion happens one step later, in slice(). Measured before the fix: MAX_CHARS=0.5
+    // shipped all 50000 chars. Fractional values above 1 are the benign direction (they
+    // truncate downward), so both are pinned to keep the asymmetry visible.
+    it('a fractional cap below 1 does not invert into "no cap" (slice(-0.5) === slice(0))', async () => {
+      const { nudge, quoted } = await digestFor('0.5', 5000);
+      // Math.floor(0.5) === 0, and cap 0 takes the same branch as an explicit 0: bare nudge,
+      // no fence at all. The assertion that matters is the FIRST one — before the fix this
+      // shipped the entire 5000-char reasoning.
+      assert.equal(quoted, null, 'no fence: a sub-1 cap floors to 0, i.e. digest disabled');
+      assert.equal(nudge, 'Stop reasoning. Emit the tool call markup now.');
+      assert.ok(!nudge.includes('R'.repeat(50)), 'the reasoning body must not appear anywhere in the nudge');
+    });
+
+    it('a fractional cap above 1 truncates downward rather than throwing', async () => {
+      const { quoted } = await digestFor('100.9', 5000);
+      assert.equal(quoted.length, 100, 'Math.floor(100.9) === 100');
     });
   });
 

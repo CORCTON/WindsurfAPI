@@ -3,7 +3,7 @@
     "test/retry-rescue-budget-split.test.js",
     "test/devin-connect-openai.test.js"
   ],
-  "expectBaselinePass": 79,
+  "expectBaselinePass": 81,
   "mutations": [
     {
       "name": "the original defect: the empty arm reads the shared loop counter again",
@@ -89,6 +89,12 @@
       "file": "src/devin-connect-openai.js",
       "anchor": "  const DIGEST_MAX_CEILING = 32000;",
       "replacement": "  const DIGEST_MAX_CEILING = 1e9;"
+    },
+    {
+      "name": "Math.floor dropped from the digest cap — a sub-1 fraction inverts into no cap at all, since slice(-0.5) === slice(0)",
+      "file": "src/devin-connect-openai.js",
+      "anchor": "    ? Math.floor(Math.min(digestRaw, DIGEST_MAX_CEILING))",
+      "replacement": "    ? Math.min(digestRaw, DIGEST_MAX_CEILING)"
     },
     {
       "name": "the digest default becomes 0 — the whole #241 feature silently turns off for unset deployments",

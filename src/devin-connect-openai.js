@@ -159,18 +159,24 @@ async function* streamChatWithEmptyRetry(params, { env = process.env, rescueThin
   // left consistent rather than special-cased here — but it is written down because
   // the previous version of this comment claimed the opposite.
   //
-  // The ceiling exists for the reason RESCUE_MAX_CEILING does twelve lines up:
-  // Number.isFinite lets `1e9` through. Measured on this branch — reasoning of 50000
-  // chars with `1e9` set produced a 50089-byte nudge, i.e. no cap at all, on EVERY
-  // rescue of that request. Unlike RESCUE_MAX this cannot hang the request (it is one
-  // slice, not an unbounded loop), so the ceiling is not an account-protection bound;
-  // it bounds how large a single upstream body one env typo can produce. 32000 is a
-  // JUDGEMENT (16x the default, far above any plausible tuning), NOT a measured
-  // upstream limit — the real upstream body limit has never been probed.
+  // The ceiling exists for the reason RESCUE_MAX_CEILING does (see rescueConfigured above):
+  // Number.isFinite lets `1e9` through. Measured — reasoning of 50000 chars with `1e9` set
+  // produced a 50089-byte nudge, i.e. no cap at all, on EVERY rescue of that request.
+  // Unlike RESCUE_MAX this cannot hang the request (it is one slice, not an unbounded loop),
+  // so the ceiling is not an account-protection bound; it bounds how large a single upstream
+  // body one env typo can produce. 32000 is a JUDGEMENT (16x the default, far above any
+  // plausible tuning), NOT a measured upstream limit — the real upstream body limit has
+  // never been probed.
+  //
+  // Math.floor is load-bearing, not tidiness. The single consumer is `slice(-n)`, and for
+  // 0 < n < 1 slice truncates the argument toward zero: `slice(-0.5)` === `slice(0)` ===
+  // THE WHOLE STRING. So a fractional cap under 1 inverted into "no cap at all" — measured,
+  // MAX_CHARS=0.5 shipped all 50000 chars, the exact failure the ceiling was added to stop.
+  // Clamping alone did not cover it because Math.min(0.5, 32000) is correctly 0.5.
   const DIGEST_MAX_CEILING = 32000;
   const digestRaw = Number(env.DEVIN_CONNECT_RESCUE_REASONING_MAX_CHARS);
   const reasoningDigestMaxChars = Number.isFinite(digestRaw) && digestRaw >= 0
-    ? Math.min(digestRaw, DIGEST_MAX_CEILING)
+    ? Math.floor(Math.min(digestRaw, DIGEST_MAX_CEILING))
     : 2000;
   let attemptParams = params;
   // Two speculative arms, two budgets (#240). They used to share the loop counter: the
