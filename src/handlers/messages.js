@@ -1221,15 +1221,36 @@ class AnthropicStreamTranslator {
   finish() {
     if (this.messageStopped) return;
     // BUG1: An abnormally cut-off stream (network drop, upstream abort, hung-
-    // stream deadline) reaches finish() with content already started but NO
-    // terminal signal — no choice.finish_reason, no [DONE], no error frame.
+    // stream deadline) reaches finish() with NO terminal signal — no
+    // choice.finish_reason, no [DONE], no error frame.
     // Faking stop_reason:end_turn here tells Claude Code the answer is complete
     // when it was truncated mid-flight. Anthropic's stop_reason enum has no
     // "truncated" value, so a truncation must be surfaced as an `error` event
     // rather than a bogus stop_reason. 502 maps (via toAnthropicError) to a
     // retryable 529 overloaded_error so the SDK backs off and retries instead
     // of accepting the partial answer as final.
-    if (this.messageStarted && !this.sawTerminalSignal) {
+    //
+    // The condition was `this.messageStarted && !this.sawTerminalSignal`, so a
+    // stream that died before a single parseable chunk arrived skipped the guard
+    // and fell through to the block below, which starts the message just to close
+    // it. MEASURED on master c3ac2b2: message_start → ping →
+    // message_delta(stop_reason:'end_turn') → message_stop, ZERO error events —
+    // Claude Code is told an answer it never received is complete. /v1/responses
+    // already reported this same upstream event as incomplete /
+    // 'upstream_incomplete' (`aborted = !this.sawTerminalChunk`, no started gate),
+    // so the two frontends disagreed about one event; this aligns them.
+    //
+    // What still must NOT error: zero content WITH a terminal signal (a bare
+    // `data: [DONE]`, or a finish_reason chunk with an empty delta). A
+    // legitimately empty completion happens in production — DEVIN_CONNECT's
+    // retry-on-empty and reasoning-only rescue exist because of it, #238 is a
+    // strict client erroring on one — and it still closes through the normal
+    // message_start / message_delta / message_stop path below. Only the ABSENCE of
+    // the signal is the fault, and error() is reached before message_start, which
+    // is the sequence a pre-content upstream error chunk already produces today
+    // (processChunk returns on chunk.error before startMessage), so a lone `error`
+    // event is a shape Anthropic clients already handle.
+    if (!this.sawTerminalSignal) {
       this.error({
         status: 502,
         type: 'upstream_error',
@@ -1238,11 +1259,15 @@ class AnthropicStreamTranslator {
       return;
     }
     this.messageStopped = true;
-    // Ensure message_start is always sent — when the upstream stream
-    // fails before any content arrives (e.g. cascade immediate error,
-    // new-api timeout), Claude Code still expects a complete event
-    // sequence. Without this, the client sees message_delta + stop
-    // with no preceding start and reports "Content block not found".
+    // Ensure message_start is always sent: Claude Code needs a complete event
+    // sequence, and without this it sees message_delta + message_stop with no
+    // preceding start and reports "Content block not found".
+    //
+    // Reachable when the upstream terminated properly but emitted no parseable
+    // chunk — a bare `data: [DONE]`, i.e. a legitimately empty completion. The
+    // truncated case it was originally written for (upstream died before any
+    // content) no longer reaches here: the BUG1 guard above now catches a missing
+    // terminal signal regardless of whether content started.
     if (!this.messageStarted) this.startMessage();
     this.closeCurrentBlock();
     // B1: interleaved-fragment edge case. flushToolArgs only emits arg fragments

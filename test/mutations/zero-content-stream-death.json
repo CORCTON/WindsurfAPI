@@ -1,0 +1,44 @@
+{
+  "tests": [
+    "test/zero-content-stream-death.test.js"
+  ],
+  "expectBaselinePass": 23,
+  "mutations": [
+    {
+      "name": "gemini guard re-gated on having started emitting — a stream that died with zero content falls through to finishReason:STOP again. The replacement reconstructs the old `this.started` faithfully (it was set by emitTextDelta on non-empty text and by bufferToolCall) rather than referencing the deleted field, because an undefined field would disable the guard ENTIRELY and inject a different, larger defect than the one being re-introduced",
+      "file": "src/handlers/gemini.js",
+      "anchor": "(!this.sawTerminalSignal)",
+      "replacement": "((this.frameCount > 0 || this.toolCallBufs.size > 0) && !this.sawTerminalSignal)"
+    },
+    {
+      "name": "gemini guard over-reaches: ANY frameless stream errors, so a legitimately empty completion that terminated properly (bare [DONE]) becomes an UNAVAILABLE error — the half-wrong fix that turns working requests into failures",
+      "file": "src/handlers/gemini.js",
+      "anchor": "(!this.sawTerminalSignal)",
+      "replacement": "(!this.sawTerminalSignal || this.frameCount === 0)"
+    },
+    {
+      "name": "anthropic guard re-gated on messageStarted — a stream that died before any parseable chunk reports stop_reason:end_turn with zero error events again",
+      "file": "src/handlers/messages.js",
+      "anchor": "(!this.sawTerminalSignal)",
+      "replacement": "(this.messageStarted && !this.sawTerminalSignal)"
+    },
+    {
+      "name": "anthropic guard over-reaches: a properly terminated stream that never started a message (bare [DONE]) errors instead of closing cleanly — the same half-wrong fix on the other frontend",
+      "file": "src/handlers/messages.js",
+      "anchor": "(!this.sawTerminalSignal)",
+      "replacement": "(!this.sawTerminalSignal || !this.messageStarted)"
+    },
+    {
+      "name": "the lazy message_start on the clean-close path stops firing, so a legitimately empty completion emits message_delta + message_stop with no preceding message_start — the exact sequence Claude Code reports as \"Content block not found\"",
+      "file": "src/handlers/messages.js",
+      "anchor": "if (!this.messageStarted) this.startMessage();",
+      "replacement": "if (this.messageStarted) this.startMessage();"
+    },
+    {
+      "name": "the same started-gate defect injected into responses.js, the frontend that already got this right. It is the reference the other two were aligned to, so the three-way parity assertion must fail when the reference itself regresses — otherwise that assertion is only checking the two handlers this change touched",
+      "file": "src/handlers/responses.js",
+      "anchor": "const aborted = !this.sawTerminalChunk;",
+      "replacement": "const aborted = this.messageStarted && !this.sawTerminalChunk;"
+    }
+  ]
+}

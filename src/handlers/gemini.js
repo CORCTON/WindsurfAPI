@@ -360,7 +360,6 @@ class GeminiStreamTranslator {
     this.toolCallBufs = new Map(); // index → { id, name, argsBuffered }
     this.finalUsage = null;
     this.finishReason = 'STOP';
-    this.started = false;     // emitted real content (text/thought) or buffered a tool call
     this.finished = false;
     this.pendingSseBuf = '';
     this.frameCount = 0;
@@ -399,7 +398,6 @@ class GeminiStreamTranslator {
 
   emitTextDelta(text, { thought = false } = {}) {
     if (!text) return;
-    this.started = true;
     const part = { text };
     if (thought) part.thought = true;
     this.emitPart(part);
@@ -407,7 +405,6 @@ class GeminiStreamTranslator {
 
   bufferToolCall(tc) {
     const idx = tc.index ?? 0;
-    this.started = true;
     let existing = this.toolCallBufs.get(idx);
     if (!existing) {
       existing = { id: tc.id, name: tc.function?.name, argsBuffered: '' };
@@ -482,14 +479,30 @@ class GeminiStreamTranslator {
   finish() {
     if (this.finished) return;
     // An abnormally cut-off stream (network drop, upstream abort, hung-stream
-    // deadline) reaches finish() with content already started but NO terminal
-    // signal — no choice.finish_reason, no [DONE], no error frame. Emitting a
-    // terminal candidate with finishReason:'STOP' here tells the Gemini client
-    // the answer is complete when it was truncated mid-flight, so it accepts the
-    // partial answer as final instead of retrying. Gemini's finishReason enum
-    // has no "truncated" value, so a truncation must surface as an `error` frame
-    // (502 → UNAVAILABLE, retryable) — same fix as the Anthropic frontend's BUG1.
-    if (this.started && !this.sawTerminalSignal) {
+    // deadline) reaches finish() with NO terminal signal — no choice.finish_reason,
+    // no [DONE], no error frame. Emitting a terminal candidate with
+    // finishReason:'STOP' here tells the Gemini client the answer is complete when
+    // it was truncated mid-flight, so it accepts the partial answer as final
+    // instead of retrying. Gemini's finishReason enum has no "truncated" value, so
+    // a truncation must surface as an `error` frame (502 → UNAVAILABLE, retryable)
+    // — same fix as the Anthropic frontend's BUG1.
+    //
+    // The condition was `this.started && !this.sawTerminalSignal`, so a stream that
+    // died having produced ZERO content skipped the guard entirely and fell through
+    // to the normal terminal below. MEASURED on master c3ac2b2: exactly ONE SSE
+    // frame, candidates[0].finishReason === 'STOP', parts [{text:''}], no error
+    // frame — the client reads "the answer is complete, and it is empty". The
+    // `started` half was never load-bearing: an upstream that dies before its first
+    // delta is the SAME fault as one that dies after, and /v1/responses already
+    // treated both alike (`aborted = !this.sawTerminalChunk`, no started gate).
+    //
+    // What still must NOT error: zero content WITH a terminal signal. A
+    // legitimately empty completion happens in production (DEVIN_CONNECT
+    // retry-on-empty and the reasoning-only rescue both exist because of it, and
+    // #238 is about a strict client erroring on an empty answer), and it keeps a
+    // clean STOP terminal because sawTerminalSignal is set. Only the ABSENCE of the
+    // signal is the fault.
+    if (!this.sawTerminalSignal) {
       this.error({
         status: 502,
         type: 'upstream_error',
