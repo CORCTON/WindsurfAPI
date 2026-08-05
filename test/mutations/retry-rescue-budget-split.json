@@ -81,8 +81,8 @@
     {
       "name": "the digest cap loses its ceiling — `1e9` ships the entire reasoning in every nudge",
       "file": "src/devin-connect-openai.js",
-      "anchor": "    ? Math.min(digestRaw, DIGEST_MAX_CEILING)",
-      "replacement": "    ? digestRaw"
+      "anchor": "    ? Math.floor(Math.min(digestRaw, DIGEST_MAX_CEILING))",
+      "replacement": "    ? Math.floor(digestRaw)"
     },
     {
       "name": "the ceiling is raised past any plausible tuning — the clamp stops bounding the body",
@@ -93,8 +93,8 @@
     {
       "name": "Math.floor dropped from the digest cap — a sub-1 fraction inverts into no cap at all, since slice(-0.5) === slice(0)",
       "file": "src/devin-connect-openai.js",
-      "anchor": "    ? Math.floor(Math.min(digestRaw, DIGEST_MAX_CEILING))",
-      "replacement": "    ? Math.min(digestRaw, DIGEST_MAX_CEILING)"
+      "anchor": "Math.floor(Math.min(digestRaw, DIGEST_MAX_CEILING))",
+      "replacement": "Math.min(digestRaw, DIGEST_MAX_CEILING)"
     },
     {
       "name": "the digest default becomes 0 — the whole #241 feature silently turns off for unset deployments",
