@@ -4,7 +4,7 @@
 
 | # | File | Why |
 |---|---|---|
-| 1 | **[HANDOFF-2026-08-04-E.md](HANDOFF-2026-08-04-E.md)** | Current state, the still-unfixed list with `file:line` and measured numbers, and what is blocked on someone else. **Unreleased work, when there is any, is described here** — right now there is none: master == `v3.9.18`. That handoff is **closed** (its §7): v3.9.18 shipped, so the next round starts a new file rather than appending. Read its §3 first (two operational rules that will trip you within minutes), then §0.1, then §5–§6. |
+| 1 | **[HANDOFF-2026-08-06.md](HANDOFF-2026-08-06.md)** | Current state, the still-unfixed list, and what is blocked on someone else. **Unreleased work, when there is any, is described here** — right now there is none: master == `v3.9.20`. Read its §1 first (three operational rules that will trip you within minutes), then §4 (the judgement calls worth reusing). Deliberately short: it carries forward only what outlives a version, instead of restating history that already has a conclusion. |
 | 2 | **[AUDIT-LEDGER.md](AUDIT-LEDGER.md)** | Which subsystems were *actually probed*, the conclusion, and where the guard lives. Start with its "怎么读这份文件" section — it is 1400+ lines appended over thirteen rounds and is **not** organised by topic. That section states its own round count; trust the section, not this row (this row has already been one round stale once). |
 | 3 | **[DEVIN-CONNECT-CUTOVER.md](DEVIN-CONNECT-CUTOVER.md)** | Production cutover runbook. `DEVIN_CONNECT` is what production actually runs (the code default is OFF; the deployment sets it), so this is not optional. Paid wire-calibration procedure in §8. |
 
@@ -15,19 +15,21 @@ Two sections are worth reading even though they sit in superseded files:
   its own repairs.
 - **[HANDOFF-2026-08-04-E.md](HANDOFF-2026-08-04-E.md) §5.1** — a *correction* written into the
   audit ledger that was itself wrong. Worse than a wrong claim, because a correction makes the
-  next reader stop doubting that spot.
+  next reader stop doubting that spot. Its §7 is the companion piece: a later round put a
+  *second* wrong number into the very passage that was fixing the first two.
 
 ### The rest of the handoffs are archive
 
-Newest first. Every one carries a banner naming the then-current handoff, and seven of the eight
-also link back to this index — `HANDOFF-2026-08-05.md` links only onward, so from that one file
-you cannot get here in one hop. Opening the wrong file is otherwise recoverable, but **`ls docs/`
-does not sort chronologically**: `-B.md` sorts before `.md`, and `HANDOFF-2026-08-05.md` has a
-wrong filename date (the work was 08-04, it covers v3.9.12). Trust this list, not the directory
-listing.
+Newest first. All nine carry a banner naming the current handoff **and** a link back to this
+index, so whichever one you open by accident, you are two clicks from the right place. That is
+worth keeping: **`ls docs/` does not sort chronologically** — `-B.md` sorts before `.md` (so the
+original `08-04` sorts *after* B/C/D/E), and `HANDOFF-2026-08-05.md` has a wrong filename date
+(the work was 08-04, it covers v3.9.12, and it is the fifth-oldest despite sorting last).
+Trust this list, not the directory listing.
 
 | Handoff | Covers |
 |---|---|
+| [08-04-E](HANDOFF-2026-08-04-E.md) | v3.9.17–v3.9.19 — PR #241 merged, the digest ceiling and its missing half, the post-release fan-out review |
 | [08-04-D](HANDOFF-2026-08-04-D.md) | v3.9.15 — #234's last criterion, Cascade stream spend, CI node24 |
 | [08-04-C](HANDOFF-2026-08-04-C.md) | v3.9.14 — #240 budget split |
 | [08-04-B](HANDOFF-2026-08-04-B.md) | v3.9.13 — caller-shard fix, `npm run mutate`, git hooks |
