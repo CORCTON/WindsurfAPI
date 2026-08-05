@@ -6,6 +6,7 @@
     "test/reasoning-dedup.test.js",
     "test/devin-connect-openai.test.js"
   ],
+  "expectBaselinePass": 292,
   "mutations": [
     {
       "name": "T1 store: the overlap-target commit path stops saving the reasoning tail",
