@@ -1718,6 +1718,58 @@ describe('think-text reroute (DEVIN_CONNECT_THINKTEXT_REROUTE)', () => {
     assert.equal(textDeltas, 'The answer.');
   });
 
+  it('non-stream: leading think tag in content (no reasoning_content) becomes a thinking block', async () => {
+    const OPEN = '<' + 'think' + '>';
+    const CLOSE = '<' + '/' + 'think' + '>';
+    const result = await handleMessages({
+      model: 'claude-sonnet-4.6',
+      stream: false,
+      messages: [{ role: 'user', content: 'hi' }],
+    }, {
+      async handleChatCompletions() {
+        return {
+          status: 200,
+          body: {
+            choices: [{ index: 0, message: { role: 'assistant', content: OPEN + 'inner reasoning. ' + CLOSE + 'The answer.' }, finish_reason: 'stop' }],
+            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+          },
+        };
+      },
+    });
+    const blocks = result.body.content;
+    assert.equal(blocks[0].type, 'thinking', 'think span rerouted to a thinking block');
+    assert.equal(blocks[0].thinking, 'inner reasoning. ');
+    assert.equal(blocks[1].type, 'text');
+    assert.equal(blocks[1].text, 'The answer.');
+  });
+
+  it('non-stream: with reasoning_content present, content is left untouched (no second thinking block)', async () => {
+    const OPEN = '<' + 'think' + '>';
+    const CLOSE = '<' + '/' + 'think' + '>';
+    const result = await handleMessages({
+      model: 'claude-sonnet-4.6',
+      stream: false,
+      messages: [{ role: 'user', content: 'hi' }],
+    }, {
+      async handleChatCompletions() {
+        return {
+          status: 200,
+          body: {
+            choices: [{ index: 0, message: { role: 'assistant', content: OPEN + 'x' + CLOSE, reasoning_content: 'real reasoning' }, finish_reason: 'stop' }],
+            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+          },
+        };
+      },
+    });
+    const blocks = result.body.content;
+    // one thinking block (from reasoning_content), content untouched
+    const thinkingBlocks = blocks.filter(b => b.type === 'thinking');
+    assert.equal(thinkingBlocks.length, 1);
+    assert.equal(thinkingBlocks[0].thinking, 'real reasoning');
+    const textBlock = blocks.find(b => b.type === 'text');
+    assert.equal(textBlock.text, OPEN + 'x' + CLOSE);
+  });
+
   it('with the gate ON, plain content still flows as text (no false reroute)', async () => {
     const result = await handleMessages({
       model: 'claude-sonnet-4.6',

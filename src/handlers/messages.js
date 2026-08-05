@@ -846,7 +846,21 @@ export function openAIToAnthropic(result, model, msgId, cachePolicy = null, stop
       });
     }
   } else {
-    content.push({ type: 'text', text: choice?.message?.content || '' });
+    let text = choice?.message?.content || '';
+    // Item 1 (non-stream path): same leading think-tag reroute as the stream
+    // translator. Gated to the no-reasoning_content case — the classic leak is
+    // reasoning emitted AS content; when a real reasoning channel is present we
+    // leave content untouched to avoid a second thinking block.
+    if (thinkTextRerouteEnabled() && text && !choice?.message?.reasoning_content) {
+      const classifier = new ThinkTextClassifier();
+      const routed = classifier.feed(text);
+      const thinkSpan = routed.thinking;
+      const rest = routed.text + classifier.flush();
+      if (thinkSpan) content.push({ type: 'thinking', thinking: thinkSpan });
+      if (rest || !thinkSpan) content.push({ type: 'text', text: rest });
+    } else {
+      content.push({ type: 'text', text });
+    }
   }
   // B5: resolve stop_reason (incl. content_filter→refusal) and back-fill
   // stop_sequence when generation halted on a caller-supplied stop sequence.
