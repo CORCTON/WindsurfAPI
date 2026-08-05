@@ -479,6 +479,8 @@ function findExistingState(scopeId, analysis, env) {
   const now = Date.now();
 
   if (!canResolve || hashes.length === 0) {
+    // Root-anchor path: first turn (no completed pair yet) or a barrier — see the
+    // STABLE-FROM-TURN-1 note in resolveSessionId's creation branch below.
     const rootKey = rootAnchorKey(scopeId, analysis) || `${scopeId}:__no_pair__`;
     const existing = pairIndex.get(rootKey);
     if (existing) {
