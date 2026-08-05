@@ -1,4 +1,4 @@
-import { afterEach, describe, it } from 'node:test';
+import { afterEach, beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { annotateRiskyReadToolResult, extractCallerSubKey, handleMessages, handleCountTokens, toAnthropicError } from '../src/handlers/messages.js';
 import { applyJsonResponseHint, extractRequestedJsonKeys, isExplicitJsonRequested, stabilizeJsonPayload } from '../src/handlers/chat.js';
@@ -1674,5 +1674,75 @@ describe('Anthropic count_tokens', () => {
     const b = handleCountTokens({ messages: [{ role: 'user', content: mixed }] });
     assert.equal(a.body.input_tokens, b.body.input_tokens, 'deterministic for the same input');
     assert.ok(a.body.input_tokens >= 1);
+  });
+});
+
+// Item 1 (loop break): with DEVIN_CONNECT_THINKTEXT_REROUTE on, a LEADING think-tagged
+// span emitted on the CONTENT channel is rerouted to the thinking channel so clients do
+// not store it as visible assistant text and resend it into a self-reinforcing loop.
+describe('think-text reroute (DEVIN_CONNECT_THINKTEXT_REROUTE)', () => {
+  const OPEN = '<' + 'think' + '>';
+  const CLOSE = '<' + '/' + 'think' + '>';
+  let prev;
+  beforeEach(() => { prev = process.env.DEVIN_CONNECT_THINKTEXT_REROUTE; process.env.DEVIN_CONNECT_THINKTEXT_REROUTE = '1'; });
+  afterEach(() => { if (prev === undefined) delete process.env.DEVIN_CONNECT_THINKTEXT_REROUTE; else process.env.DEVIN_CONNECT_THINKTEXT_REROUTE = prev; });
+
+  it('reroutes a leading think block from content to the thinking channel', async () => {
+    const result = await handleMessages({
+      model: 'claude-sonnet-4.6',
+      stream: true,
+      messages: [{ role: 'user', content: 'hi' }],
+    }, {
+      async handleChatCompletions() {
+        return {
+          status: 200,
+          stream: true,
+          async handler(res) {
+            res.write(chatChunk({ choices: [{ index: 0, delta: { role: 'assistant', content: OPEN + 'inner reasoning. ' + CLOSE }, finish_reason: null }] }));
+            res.write(chatChunk({ choices: [{ index: 0, delta: { content: 'The answer.' }, finish_reason: null }] }));
+            res.write(chatChunk({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }));
+            res.write(chatChunk({ choices: [], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }));
+            res.end('data: [DONE]\n\n');
+          },
+        };
+      },
+    });
+    const res = fakeRes();
+    await result.handler(res);
+    const events = parseAnthropicEvents(res.body);
+    const blocks = events.filter(e => e.event === 'content_block_start').map(e => e.data.content_block.type);
+    assert.deepEqual(blocks, ['thinking', 'text'], 'think span becomes a thinking block, answer stays text');
+    const thinkDeltas = events.filter(e => e.event === 'content_block_delta' && e.data.delta?.type === 'thinking_delta').map(e => e.data.delta.thinking).join('');
+    assert.equal(thinkDeltas, 'inner reasoning. ');
+    const textDeltas = events.filter(e => e.event === 'content_block_delta' && e.data.delta?.type === 'text_delta').map(e => e.data.delta.text).join('');
+    assert.equal(textDeltas, 'The answer.');
+  });
+
+  it('with the gate ON, plain content still flows as text (no false reroute)', async () => {
+    const result = await handleMessages({
+      model: 'claude-sonnet-4.6',
+      stream: true,
+      messages: [{ role: 'user', content: 'hi' }],
+    }, {
+      async handleChatCompletions() {
+        return {
+          status: 200,
+          stream: true,
+          async handler(res) {
+            res.write(chatChunk({ choices: [{ index: 0, delta: { role: 'assistant', content: 'Just a normal reply.' }, finish_reason: null }] }));
+            res.write(chatChunk({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }));
+            res.write(chatChunk({ choices: [], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }));
+            res.end('data: [DONE]\n\n');
+          },
+        };
+      },
+    });
+    const res = fakeRes();
+    await result.handler(res);
+    const events = parseAnthropicEvents(res.body);
+    const blocks = events.filter(e => e.event === 'content_block_start').map(e => e.data.content_block.type);
+    assert.deepEqual(blocks, ['text']);
+    const textDeltas = events.filter(e => e.event === 'content_block_delta' && e.data.delta?.type === 'text_delta').map(e => e.data.delta.text).join('');
+    assert.equal(textDeltas, 'Just a normal reply.');
   });
 });

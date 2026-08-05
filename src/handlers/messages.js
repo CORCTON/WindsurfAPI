@@ -14,6 +14,7 @@
 import { createHash, randomUUID } from 'crypto';
 import { handleChatCompletions, connectErrorToHttp } from './chat.js';
 import { log } from '../config.js';
+import { ThinkTextClassifier } from '../response-classifier.js';
 
 function genMsgId() {
   return 'msg_' + randomUUID().replace(/-/g, '').slice(0, 24);
@@ -33,6 +34,14 @@ const STOP_REASON_MAP = {
 };
 function mapStopReason(finishReason) {
   return STOP_REASON_MAP[finishReason] || 'end_turn';
+}
+
+// Item 1 (loop break): when the model emits a LEADING think-tagged span on the
+// CONTENT channel, reroute it to the thinking channel so clients do not store it as
+// visible assistant text and resend it into a self-reinforcing loop. Off by default.
+function thinkTextRerouteEnabled() {
+  const v = String(process.env.DEVIN_CONNECT_THINKTEXT_REROUTE ?? '').trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes' || v === 'on';
 }
 
 // B5: Anthropic sets stop_reason:'stop_sequence' AND echoes the matched string
@@ -1030,6 +1039,8 @@ class AnthropicStreamTranslator {
     // because strict clients (e.g. Grok Build's messages backend) reject
     // `signature: ""` as an invalid value.
     this.pendingThinkingSignature = '';
+    // Item 1: reroute leading think-tagged content to the thinking channel (loop break).
+    this.thinkClassifier = thinkTextRerouteEnabled() ? new ThinkTextClassifier() : null;
   }
 
   send(event, data) {
@@ -1248,7 +1259,15 @@ class AnthropicStreamTranslator {
       // to the reasoning stream, capture it so closeCurrentBlock round-trips the
       // genuine value instead of the empty-string placeholder.
       if (delta.reasoning_signature) this.pendingThinkingSignature = delta.reasoning_signature;
-      if (delta.content) this.emitTextDelta(delta.content);
+      if (delta.content) {
+        if (this.thinkClassifier) {
+          const routed = this.thinkClassifier.feed(delta.content);
+          if (routed.thinking) this.emitThinkingDelta(routed.thinking);
+          if (routed.text) this.emitTextDelta(routed.text);
+        } else {
+          this.emitTextDelta(delta.content);
+        }
+      }
       if (Array.isArray(delta.tool_calls)) {
         for (const tc of delta.tool_calls) this.emitToolCallDelta(tc);
       }
@@ -1321,6 +1340,12 @@ class AnthropicStreamTranslator {
     // content) no longer reaches here: the BUG1 guard above now catches a missing
     // terminal signal regardless of whether content started.
     if (!this.messageStarted) this.startMessage();
+    // Item 1: flush any content the classifier still holds. An unterminated span is
+    // delivered as text (visible beats dropped); see response-classifier flush().
+    if (this.thinkClassifier) {
+      const rest = this.thinkClassifier.flush();
+      if (rest) this.emitTextDelta(rest);
+    }
     this.closeCurrentBlock();
     // B1: interleaved-fragment edge case. flushToolArgs only emits arg fragments
     // while a tool's block is the currently-open one; a tool_use block that got
