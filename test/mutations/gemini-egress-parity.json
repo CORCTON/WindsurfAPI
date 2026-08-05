@@ -1,0 +1,52 @@
+{
+  "tests": [
+    "test/gemini-tool-args-parity.test.js",
+    "test/gemini.test.js"
+  ],
+  "expectBaselinePass": 77,
+  "mutations": [
+    {
+      "name": "B4 parity reverted: malformed arguments collapse to {} again — every tool parameter lost with no trace",
+      "file": "src/handlers/gemini.js",
+      "anchor": "    return { __raw_arguments: rawArgs ?? '' };",
+      "replacement": "    return {};"
+    },
+    {
+      "name": "the log line is dropped — the loss becomes unobservable even though the data survives",
+      "file": "src/handlers/gemini.js",
+      "anchor": "    log.warn(`gemini: functionCall arguments JSON parse failed for tool \"${toolName || 'unknown'}\" — ${e.message}; raw=${JSON.stringify(rawArgs)}`);",
+      "replacement": "    void e;",
+      "expectCaught": false
+    },
+    {
+      "name": "non-stream site stops using the shared helper — the two parse sites can diverge again",
+      "file": "src/handlers/gemini.js",
+      "anchor": "      const args = parseToolArgs(tc.function?.arguments, tc.function?.name);",
+      "replacement": "      let args = {}; try { args = JSON.parse(tc.function?.arguments || '{}'); } catch {}"
+    },
+    {
+      "name": "stream site stops using the shared helper — flushToolCalls regresses independently",
+      "file": "src/handlers/gemini.js",
+      "anchor": "      const args = parseToolArgs(buf.argsBuffered, buf.name);",
+      "replacement": "      let args = {}; try { args = JSON.parse(buf.argsBuffered || '{}'); } catch {}"
+    },
+    {
+      "name": "well-formed arguments also get wrapped — the fix over-reaches and breaks every valid tool call",
+      "file": "src/handlers/gemini.js",
+      "anchor": "    return JSON.parse(rawArgs || '{}');",
+      "replacement": "    JSON.parse(rawArgs || '{}'); return { __raw_arguments: rawArgs ?? '' };"
+    },
+    {
+      "name": "content_filter loses its distinct mapping and falls through to the STOP default — a refusal reads as a clean finish",
+      "file": "src/handlers/gemini.js",
+      "anchor": "  content_filter: 'SAFETY',",
+      "replacement": ""
+    },
+    {
+      "name": "the error frame no longer latches `finished` — the premise the FINISH_MAP default rests on",
+      "file": "src/handlers/gemini.js",
+      "anchor": "  error(err) {\n    if (this.finished) return;",
+      "replacement": "  error(err) {\n    if (false) return;"
+    }
+  ]
+}

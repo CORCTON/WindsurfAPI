@@ -29,6 +29,19 @@ import { log } from '../config.js';
 // ─── finish_reason mapping (OpenAI → Gemini) ────────────────────
 // Gemini has no dedicated finishReason for function calls — a turn that
 // ends in functionCall parts still reports STOP. content_filter → SAFETY.
+//
+// The `|| 'STOP'` default below is safe only because of a premise that lives in
+// another file, so it is stated here and pinned by a test rather than assumed:
+// every finish_reason this proxy can emit is a key above. Measured — the
+// internal producers are special-agent.js's own mapFinishReason (range: stop /
+// length / tool_calls / content_filter) and devin-connect's resolveFinishReason
+// ('length'). The one exception, `finish_reason:'error'` from a special-agent
+// stream that failed after headers were sent, never reaches this map: that path
+// emits its error frame FIRST, and `error()` sets `this.finished`, so the finish
+// chunk is dropped before translation. Were that ordering to change, a failed
+// run would arrive here and default to STOP — i.e. report as a clean completion,
+// exactly what special-agent.js's "H2" comment set out to prevent. Gemini's enum
+// carries OTHER for that case if it ever becomes reachable.
 const FINISH_MAP = {
   stop: 'STOP',
   length: 'MAX_TOKENS',
@@ -38,6 +51,29 @@ const FINISH_MAP = {
 function mapFinishReason(openaiReason) {
   if (!openaiReason) return 'STOP';
   return FINISH_MAP[openaiReason] || 'STOP';
+}
+
+// Parse a tool call's `arguments` string into Gemini's functionCall.args struct.
+//
+// Mirrors messages.js "B4": a malformed arguments string used to be silently
+// swallowed into `{}` here, dropping every tool parameter with no trace on
+// either channel — no log line and no counter, so a truncated upstream reply
+// was indistinguishable from a tool call that genuinely took no arguments.
+// Log the tool name plus the raw string, and keep the raw string under a
+// private key so a downstream consumer can still recover it (Gemini clients
+// ignore unknown keys inside args, same as Anthropic on tool_use.input).
+//
+// Deliberately NOT mapped to Gemini's MALFORMED_FUNCTION_CALL finishReason:
+// that would change the turn's terminal state, which is a bigger behaviour
+// change than restoring observability, and the upstream — not the caller —
+// is what malformed here.
+function parseToolArgs(rawArgs, toolName) {
+  try {
+    return JSON.parse(rawArgs || '{}');
+  } catch (e) {
+    log.warn(`gemini: functionCall arguments JSON parse failed for tool "${toolName || 'unknown'}" — ${e.message}; raw=${JSON.stringify(rawArgs)}`);
+    return { __raw_arguments: rawArgs ?? '' };
+  }
 }
 
 // Gemini tool_choice (toolConfig.functionCallingConfig.mode) → OpenAI tool_choice.
@@ -287,8 +323,7 @@ export function openAIToGemini(result, model) {
   if (Array.isArray(msg.tool_calls) && msg.tool_calls.length) {
     if (msg.content) parts.push({ text: msg.content });
     for (const tc of msg.tool_calls) {
-      let args = {};
-      try { args = JSON.parse(tc.function?.arguments || '{}'); } catch {}
+      const args = parseToolArgs(tc.function?.arguments, tc.function?.name);
       parts.push({ functionCall: { name: tc.function?.name || 'unknown', args } });
     }
   } else {
@@ -391,8 +426,7 @@ class GeminiStreamTranslator {
     const bufs = [...this.toolCallBufs.values()];
     if (!bufs.length) return false;
     bufs.forEach((buf, i) => {
-      let args = {};
-      try { args = JSON.parse(buf.argsBuffered || '{}'); } catch {}
+      const args = parseToolArgs(buf.argsBuffered, buf.name);
       const isLast = i === bufs.length - 1;
       this.emitPart(
         { functionCall: { name: buf.name || 'unknown', args } },

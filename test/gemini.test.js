@@ -730,7 +730,14 @@ describe('openAIToGemini supplemental response coverage', () => {
     assert.ok(parts.find(p => p.functionCall?.name === 'run'));
   });
 
-  it('survives malformed tool-call argument JSON (args -> {})', () => {
+  // This assertion used to read `deepEqual(args, {})`, and its name said
+  // "args -> {}". What it was really testing is that a malformed argument string
+  // does not throw — but writing the empty object into the expectation pinned the
+  // DATA LOSS as intended behaviour, so the missing B4 parity (messages.js logs
+  // and keeps the raw string; this path silently dropped every parameter) looked
+  // deliberate to every later reader. The crash-resistance intent is kept below;
+  // the recovery property is covered in test/gemini-tool-args-parity.test.js.
+  it('survives malformed tool-call argument JSON without losing it', () => {
     const g = openAIToGemini({
       choices: [{
         message: { role: 'assistant', tool_calls: [{ id: 'c1', function: { name: 'run', arguments: '{not json' } }] },
@@ -738,7 +745,10 @@ describe('openAIToGemini supplemental response coverage', () => {
       }],
     });
     const fc = g.candidates[0].content.parts.find(p => p.functionCall);
-    assert.deepEqual(fc.functionCall.args, {});
+    assert.ok(fc, 'a functionCall part is still emitted — the original "survives" claim');
+    assert.equal(fc.functionCall.name, 'run');
+    assert.equal(fc.functionCall.args.__raw_arguments, '{not json',
+      'the unparseable string is preserved rather than silently dropped');
   });
 });
 
