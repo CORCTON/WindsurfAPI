@@ -246,51 +246,59 @@ describe('docs: mutation specs and the gate agree', () => {
 });
 
 describe('docs: version claims match the repository', () => {
-  // The index's first row said "master == `v3.9.20`" while no such tag existed and master
-  // was five commits past v3.9.19 — wrong in both directions at once, and directly opposed
-  // to the current handoff, which devotes a section to those unreleased commits. It survived
-  // because every other assertion in this file checks *links and structure*: a version claim
-  // is prose that happens to be mechanically checkable, and nothing was checking it.
+  // The index's first row named a `vX.Y.Z` as the state of `master` that was not a tag at all,
+  // while master sat five commits past the newest one — wrong in both directions at once, and
+  // directly opposed to the current handoff, which devotes a section to those unreleased
+  // commits. It survived because every other assertion in this file checks *links and
+  // structure*: a version claim is prose that happens to be mechanically checkable, and
+  // nothing was checking it.
   //
-  // Deliberately narrow. It asserts only that a `vX.Y.Z` named as the state of `master`
-  // resolves to a real tag; it does NOT try to decide whether master should equal that tag,
-  // because "unreleased commits ride along until the next behaviour change" is a legitimate
-  // and documented state (releases/README.md, "Should this even be a release?").
-  const tags = new Set(
-    readdirSync(join(ROOT, '.git', 'refs', 'tags'), { withFileTypes: true })
-      .filter((d) => d.isFile())
-      .map((d) => d.name),
-  );
-
+  // TWO EARLIER VERSIONS OF THIS GUARD WERE WRONG, both in the same way — they could not tell
+  // a claim from something that merely looks like one:
+  //
+  //   1. It scanned every markdown file, and the ledger's own erratum *quoted* the bad claim
+  //      while correcting it. Same shape as the runbook assertion above, which had to strip
+  //      `>` blockquotes for the same reason. Fixed on the prose side: describe a corrected
+  //      claim, do not re-paste it.
+  //   2. It resolved names against `.git/refs/tags` + `packed-refs`, and passed locally while
+  //      failing the release build: GitHub's checkout is shallow and carries only the tag being
+  //      built, so every older tag looked non-existent. It flagged the ledger's
+  //      "master == v3.9.17" — a statement that was TRUE when written, in an append-only file.
+  //      The probe guard (`known.size > 0`) did not help: the tag under construction was
+  //      present, so it never tripped.
+  //
+  // So the invariant is restated without git and without history:
+  //   - only files that describe the CURRENT state are checked (the index and the live
+  //     handoff). Archived handoffs and the ledger are append-only records whose past claims
+  //     are SUPPOSED to be stale.
+  //   - the comparison is against `package.json`, which is present in every checkout and is
+  //     what `src/version.js` actually serves. A live doc naming a version other than the
+  //     packaged one is wrong regardless of what tags exist.
   it('the packaged version is a plain semver string', () => {
     const pkg = JSON.parse(read(join(ROOT, 'package.json')));
     assert.match(pkg.version, /^\d+\.\d+\.\d+$/, 'package.json version must be bare semver');
   });
 
-  it('no doc claims master equals a tag that does not exist', () => {
-    // Packed refs are the normal state for older tags, so a tag missing from refs/tags is not
-    // evidence of anything. Read packed-refs too, and skip the check entirely if neither
-    // source is readable rather than reporting a false failure (a broken probe that reports
-    // "clean" is this repo's most expensive recurring mistake — so this one says why it skipped).
-    let known = tags;
-    const packed = join(ROOT, '.git', 'packed-refs');
-    if (existsSync(packed)) {
-      known = new Set([...tags]);
-      for (const line of read(packed).split('\n')) {
-        const m = line.match(/refs\/tags\/(\S+)$/);
-        if (m) known.add(m[1]);
-      }
-    }
-    assert.ok(known.size > 0, 'probe check: no tags readable at all, so this assertion would be vacuous');
+  it('a doc describing the current state names the packaged version, not another one', () => {
+    const pkgVersion = JSON.parse(read(join(ROOT, 'package.json'))).version;
+    // The live handoff is whichever one the index's first row points at — reuse the same
+    // resolution the chain assertions above rely on, so this cannot drift from them.
+    const index = read(join(DOCS, 'README.md'));
+    const firstRow = index.split('\n').find((l) => l.startsWith('| 1 |')) || '';
+    const liveHead = (firstRow.match(/\((HANDOFF-[^)]+\.md)\)/) || [])[1];
+    assert.ok(liveHead, 'the index first row must link the live handoff (see the chain assertions)');
 
+    const live = [join(DOCS, 'README.md'), join(DOCS, liveHead)];
     const problems = [];
-    for (const f of mdFiles()) {
-      const body = read(f);
-      // "master == `v3.9.20`", "master is v3.9.20", "master == v3.9.20"
-      for (const m of body.matchAll(/master\s*(?:==|=|is|:)\s*`?(v\d+\.\d+\.\d+)`?/gi)) {
-        if (!known.has(m[1])) problems.push(`${rel(f)} claims master == ${m[1]}, which is not a tag`);
+    for (const f of live) {
+      // Strip blockquotes: an erratum quoting an old claim is a citation, not a claim.
+      const body = read(f).split('\n').filter((l) => !l.trimStart().startsWith('>')).join('\n');
+      for (const m of body.matchAll(/master\s*(?:==|=|is)\s*`?v(\d+\.\d+\.\d+)`?/gi)) {
+        if (m[1] !== pkgVersion) {
+          problems.push(`${rel(f)} says master == v${m[1]} but package.json is ${pkgVersion}`);
+        }
       }
     }
-    assert.deepEqual(problems, [], `version claims naming a non-existent tag:\n  ${problems.join('\n  ')}`);
+    assert.deepEqual(problems, [], `stale version claims in live docs:\n  ${problems.join('\n  ')}`);
   });
 });
