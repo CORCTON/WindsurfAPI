@@ -1,5 +1,6 @@
 // Thinking-core T2: incoming reasoning captured as continuity source.
-// (T4 dedup moved to the root — src/reasoning-dedup.js + chat.js.)
+// Single __-prefixed body carrier (__incomingThinking, same convention as
+// __route); chat.js reads it as fallback continuity-store source.
 import { afterEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { handleMessages, openAIToAnthropic } from '../src/handlers/messages.js';
@@ -76,8 +77,8 @@ describe('T2: incoming thinking captured as continuity source', () => {
       },
     });
 
-    assert.equal(capturedBody._incomingThinking, 'last turn reasoning', 'only the last assistant thinking is captured');
-    assert.equal(capturedContext.incomingReasoning, 'last turn reasoning', 'threaded to the handler context');
+    assert.equal(capturedBody.__incomingThinking, 'last turn reasoning', 'only the last assistant thinking is captured');
+    assert.equal(capturedContext.incomingReasoning, undefined, 'single __-prefixed body path, no context duplicate');
     for (const m of capturedBody.messages) {
       if (m.role === 'assistant' && Array.isArray(m.content)) {
         assert.equal(m.content.some(b => b.type === 'thinking'), false, 'thinking stays dropped on the wire');
@@ -104,7 +105,7 @@ describe('T2: incoming thinking captured as continuity source', () => {
         return { status: 200, body: { model: body.model, choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } } };
       },
     });
-    assert.equal(capturedBody._incomingThinking, undefined, 'redacted_thinking never feeds the store');
+    assert.equal(capturedBody.__incomingThinking, undefined, 'redacted_thinking never feeds the store');
     assert.equal(capturedContext?.incomingReasoning, undefined);
   });
 });

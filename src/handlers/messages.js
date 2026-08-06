@@ -744,7 +744,7 @@ function anthropicToOpenAI(body, ccActive = false) {
     translatedResponseFormat = { type: 'json_object' };
   }
   return {
-    ...(lastIncomingThinking ? { _incomingThinking: lastIncomingThinking } : {}),
+    ...(lastIncomingThinking ? { __incomingThinking: lastIncomingThinking } : {}),
     model: body.model || 'claude-sonnet-4.6',
     messages,
     max_tokens: body.max_tokens || 8192,
@@ -1541,14 +1541,11 @@ export async function handleMessages(body, context = {}) {
           : context.nativeBridgeCallerKey,
       }
     : context;
-  // T2: thread the captured incoming thinking to the handler context; chat.js uses
-  // it as a fallback continuity-store source when the outbound response has none.
-  const contextWithIncoming = openaiBody._incomingThinking
-    ? { ...effectiveContext, incomingReasoning: openaiBody._incomingThinking }
-    : effectiveContext;
-
+  // T2: the captured incoming thinking rides the body as __incomingThinking
+  // (single __-prefixed carrier, same convention as __route); chat.js reads it
+  // as a fallback continuity-store source when the outbound response has none.
   if (!wantStream) {
-    const result = await chatHandler({ ...openaiBody, stream: false, __route: 'messages' }, contextWithIncoming);
+    const result = await chatHandler({ ...openaiBody, stream: false, __route: 'messages' }, effectiveContext);
     if (result.status !== 200) {
       // Carry the upstream's transport headers across the translation. This used to
       // pass three scalars, so `Retry-After` — which chat.js:3011 computes and puts
@@ -1581,7 +1578,7 @@ export async function handleMessages(body, context = {}) {
   // internal frame is required to fill it.
   const streamResult = await chatHandler(
     { ...openaiBody, stream: true, __route: 'messages', stream_options: { ...(openaiBody.stream_options || {}), include_usage: true } },
-    contextWithIncoming,
+    effectiveContext,
   );
 
   if (!streamResult.stream) {

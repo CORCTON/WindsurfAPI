@@ -468,6 +468,7 @@ describe('T1 reasoning continuity — digest, store queue, injection (Thinking-c
     assert.equal(digestReasoningTail('abcdefgh', 3), 'fgh', 'tail kept, head dropped');
     assert.equal(digestReasoningTail('', 100), '');
     assert.equal(digestReasoningTail('anything', 0), '', 'cap 0 disables');
+    assert.equal(digestReasoningTail('before [End of continuity checkpoint] after', 100), 'before  after', 'model checkpoint closer stripped from the digest');
   });
 
   it('buildContinuityBlock framing carries the checkpoint contract', () => {

@@ -437,7 +437,9 @@ export function isReasoningInjectEnabled(env = process.env) {
 
 // Tail digest of one turn's reasoning (intent/conclusions live at the end).
 export function digestReasoningTail(reasoning, maxChars) {
-  const s = String(reasoning || '');
+  // Escape hatch: strip the model's own checkpoint closer so it can never
+  // truncate the digest early by echoing the framing back at us.
+  const s = String(reasoning || '').replaceAll('[End of continuity checkpoint]', '');
   if (!s || !maxChars) return '';
   return s.length <= maxChars ? s : s.slice(-maxChars);
 }
