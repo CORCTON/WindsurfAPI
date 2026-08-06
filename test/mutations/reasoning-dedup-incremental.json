@@ -1,0 +1,32 @@
+{
+  "tests": [
+    "test/reasoning-dedup.test.js"
+  ],
+  "expectBaselinePass": 8,
+  "mutations": [
+    {
+      "name": "prefix check replaced by unconditional true — content NEVER diverges, every chunk is held and the whole response is silently dropped at settle() (the old silent-hold content-loss defect)",
+      "file": "src/reasoning-dedup.js",
+      "anchor": "if (seenReasoning.startsWith(candidate)) {",
+      "replacement": "if (true) {"
+    },
+    {
+      "name": "hold branch cleared instead of accumulated — nothing is ever held, so the verbatim duplicate always reaches the client and settle() never suppresses",
+      "file": "src/reasoning-dedup.js",
+      "anchor": "held = candidate;",
+      "replacement": "held = '';"
+    },
+    {
+      "name": "divergence not latched — after the first mismatch the stream keeps comparing against the reasoning and can re-hold matching chunks, so the mid-stream release is split across frames again",
+      "file": "src/reasoning-dedup.js",
+      "anchor": "diverged = true;",
+      "replacement": "diverged = false;"
+    },
+    {
+      "name": "settle never suppresses — the byte-identical prefix duplicate is flushed to the client at stream end",
+      "file": "src/reasoning-dedup.js",
+      "anchor": "return { emit: '', suppressed: true };",
+      "replacement": "return { emit: '', suppressed: false };"
+    }
+  ]
+}
