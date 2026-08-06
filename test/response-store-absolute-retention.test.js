@@ -103,16 +103,26 @@ describe('the absolute retention bound cannot be extended by reading', () => {
   });
 
   it('a same-id refresh does not restart the absolute clock', async () => {
-    // createdAt survives an overwrite (a later turn re-storing the same id keeps the
-    // original creation time), so re-writing an id cannot be used to reset its age.
+    // createdAt survives an overwrite, so re-writing an id cannot reset its age.
+    // This is the property that makes the bound ABSOLUTE: if client action could
+    // restart it, it would be a second idle timeout rather than a ceiling.
+    //
+    // THE TIMING IS THE TEST. An earlier version slept MAX_AGE/2, rewrote, then
+    // slept a further MAX_AGE — and could not fail: the second sleep alone exceeds
+    // the bound, so the entry expired whether the clock had been reset or not. A
+    // mutation that reset createdAt on rewrite survived it. The two sleeps must
+    // therefore EACH be under MAX_AGE while summing to more than it, so "expired"
+    // is only reachable when the original creation time was kept.
+    const LEG = Math.ceil(MAX_AGE * 0.7); // each leg < MAX_AGE, 2 legs = 1.4x > MAX_AGE
     store.putResponse('rewritten', CONV, A);
-    await sleep(MAX_AGE / 2);
+    await sleep(LEG);
     store.putResponse('rewritten', [...CONV, { role: 'user', content: 'turn 2' }], A);
     assert.equal(store.getResponse('rewritten', A).ok, true,
-      'precondition: still inside the bound after the rewrite');
-    await sleep(MAX_AGE);
+      'precondition: one leg is inside the bound, so the rewrite lands on a live entry');
+    await sleep(LEG);
     assert.equal(store.getResponse('rewritten', A).ok, false,
-      'the absolute age is measured from first creation, so a rewrite must not extend it');
+      'age is measured from FIRST creation: 1.4x the bound has elapsed since then, '
+      + 'even though only 0.7x has elapsed since the rewrite');
   });
 
   it('a NEW id starts its own retention window — a real chain is unaffected', async () => {
