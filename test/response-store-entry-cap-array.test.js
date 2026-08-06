@@ -141,29 +141,43 @@ describe('per-entry ceiling: array content is capped like string content', () =>
     assert.ok(store.getResponseStoreStats().bytes <= MAX_ENTRY_BYTES);
   });
 
-  it('a tool_call_id is spared even when it IS the largest field', () => {
-    // The test above pairs a 300-char id with a much larger payload, so the shrink
-    // loop always had a bigger candidate to pick and never had to consult the
-    // unshrinkable list at all. Dropping `tool_call_id` from that list therefore
-    // changed nothing observable — a mutation proved it by surviving.
-    //
-    // Making the id the LARGEST string is what actually exercises the list: here
-    // the payload is small and the id is what pushes the entry over the ceiling, so
-    // a loop that is willing to cut identity keys will cut this one. An id that has
-    // been halved still looks like an id, which is what makes the corruption
-    // expensive — the upstream rejects the conversation with an opaque error rather
-    // than pointing at the field.
-    const hugeId = `call_${'e'.repeat(MAX_ENTRY_BYTES)}`;
-    store.putResponse('idbiggest', [
-      { role: 'system', content: 'INSTRUCTIONS' },
-      { role: 'tool', tool_call_id: hugeId, content: 'small payload' },
-    ], A);
-    const msgs = store.getResponse('idbiggest', A).messages;
-    assert.equal(msgs[msgs.length - 1].tool_call_id, hugeId,
-      'the id is the biggest string here, and must STILL be byte-identical');
-    assert.equal(msgs[msgs.length - 1].content, 'small payload',
-      'and the small payload it is paired with is not collateral');
-  });
+  // EVERY key on the unshrinkable list, each made the LARGEST string in turn.
+  //
+  // Three mutations in a row survived here — `tool_call_id`, then `type` — and the
+  // cause was the same each time and was NOT a missing assertion about that key:
+  // there WAS one. The fixtures simply always paired the key with a much larger
+  // payload, so the shrink loop had a bigger candidate and never had to consult the
+  // list. Every such assertion was really testing "the loop picked the payload".
+  //
+  // Fixing them one at a time is whack-a-mole, because the gap belongs to the list
+  // as a whole: any entry that is never the biggest string in any fixture is
+  // unguarded, and the list will grow. So drive the whole list from one table, with
+  // that key inflated past everything else. `role` is excluded deliberately — it is
+  // a protocol enum ('user'/'assistant'/'tool'), an oversized one is not a shape
+  // this store can receive, and inventing one would test the harness rather than
+  // the store.
+  for (const key of ['tool_call_id', 'type', 'id', 'name']) {
+    it(`${key} is spared even when it IS the largest field`, () => {
+      // The key carries the bulk, the payload is tiny: whatever pushes this entry
+      // over the ceiling, the only string worth cutting is the identity key itself.
+      const huge = 'e'.repeat(MAX_ENTRY_BYTES);
+      // A tool result is the shape that carries all four of these keys at once
+      // (tool_call_id on the message, type/id/name inside a content block), so one
+      // fixture shape covers the whole table without inventing per-key messages.
+      const block = { type: 'input_text', id: 'blk_1', name: 'attachment', text: 'small payload' };
+      block[key] = key === 'tool_call_id' ? block[key] : huge;
+      const msg = { role: 'tool', tool_call_id: key === 'tool_call_id' ? huge : 'call_1', content: [block] };
+      store.putResponse(`biggest_${key}`, [{ role: 'system', content: 'INSTRUCTIONS' }, msg], A);
+
+      const got = store.getResponse(`biggest_${key}`, A).messages;
+      const last = got[got.length - 1];
+      const actual = key === 'tool_call_id' ? last.tool_call_id : last.content[0][key];
+      const expected = key === 'tool_call_id' ? huge : huge;
+      assert.equal(actual, expected,
+        `${key} is the largest string in this entry and must still be byte-identical — `
+        + 'truncating it changes what the field MEANS, not merely how much of it is kept');
+    });
+  }
 
   it('the biggest field is chosen across DIFFERENT messages and shapes', () => {
     // Mixed shapes in one conversation: the loop must compare a plain string against

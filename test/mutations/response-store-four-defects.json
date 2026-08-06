@@ -9,7 +9,7 @@
     "test/response-store-dedup.test.js",
     "test/response-store-e2e.test.js"
   ],
-  "expectBaselinePass": 125,
+  "expectBaselinePass": 128,
   "mutations": [
     {
       "name": "D1 original defect: store honoured only when STRICTLY false — \"false\"/0/\"no\"/null all get retained",
