@@ -31,9 +31,21 @@ describe('reasoning-dedup (incremental)', () => {
     assert.deepEqual(d.feed('c'), { emit: '', hold: true });
     assert.deepEqual(d.feed('X'), { emit: 'abcX', hold: false });
     // Already diverged → passthrough forever, even if a chunk would match a
-    // prefix again ('b' is a prefix of 'abcde' but must NOT be held).
-    assert.deepEqual(d.feed('b'), { emit: 'b', hold: false });
+    // prefix again ('ab' IS a prefix of 'abcde' but must NOT be re-held).
+    assert.deepEqual(d.feed('ab'), { emit: 'ab', hold: false });
     assert.deepEqual(d.feed('zz'), { emit: 'zz', hold: false });
+    assert.deepEqual(d.settle(), { emit: '', suppressed: false });
+  });
+
+  it('divergence latches — after the first mismatch, chunks that match the reasoning prefix still pass through immediately (no re-hold, no stream delay)', () => {
+    const d = createStreamReasoningDedup();
+    d.noteReasoning('abcde');
+    assert.deepEqual(d.feed('ab'), { emit: '', hold: true });
+    assert.deepEqual(d.feed('X'), { emit: 'abX', hold: false });
+    // 'abc' is a prefix of 'abcde' — with a latched divergence it must be
+    // emitted in this same frame, never held for a later release.
+    assert.deepEqual(d.feed('abc'), { emit: 'abc', hold: false });
+    assert.deepEqual(d.feed('yz'), { emit: 'yz', hold: false });
     assert.deepEqual(d.settle(), { emit: '', suppressed: false });
   });
 

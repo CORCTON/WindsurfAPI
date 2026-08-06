@@ -2,7 +2,7 @@
   "tests": [
     "test/reasoning-dedup.test.js"
   ],
-  "expectBaselinePass": 8,
+  "expectBaselinePass": 9,
   "mutations": [
     {
       "name": "prefix check replaced by unconditional true — content NEVER diverges, every chunk is held and the whole response is silently dropped at settle() (the old silent-hold content-loss defect)",
