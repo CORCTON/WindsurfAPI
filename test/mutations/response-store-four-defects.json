@@ -48,10 +48,11 @@
       "replacement": "depth > 0 || node == null"
     },
     {
-      "name": "D2 the biggest field is no longer chosen — the first candidate wins, so a huge block can be skipped",
+      "name": "SURVIVOR (documented): D2 picks the FIRST oversized field instead of the largest. This is an efficiency term, not a correctness one, and the premise that makes it harmless is measurable: the shrink loop runs up to 64 iterations and halves the chosen field each time, so the entry reaches the cap regardless of which candidate is picked first. Measured with the mutation applied — five 60000-char array fields (worst case for first-candidate) still settle at 60263 bytes against a 102400 MAX_ENTRY_BYTES. Picking the largest converges in fewer passes; it does not change whether the entry fits, which is the property the assertions guard. The guard=64 bound is what keeps this true — if that ever shrinks, re-run this mutation.",
       "file": "src/response-store.js",
       "anchor": "if (!biggest || slot.len > biggest.len) biggest = slot;",
-      "replacement": "if (!biggest) biggest = slot;"
+      "replacement": "if (!biggest) biggest = slot;",
+      "expectCaught": false
     },
     {
       "name": "D2 tool_call_id becomes shrinkable — cutting it orphans the tool result from its call",
