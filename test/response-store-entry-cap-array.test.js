@@ -141,6 +141,30 @@ describe('per-entry ceiling: array content is capped like string content', () =>
     assert.ok(store.getResponseStoreStats().bytes <= MAX_ENTRY_BYTES);
   });
 
+  it('a tool_call_id is spared even when it IS the largest field', () => {
+    // The test above pairs a 300-char id with a much larger payload, so the shrink
+    // loop always had a bigger candidate to pick and never had to consult the
+    // unshrinkable list at all. Dropping `tool_call_id` from that list therefore
+    // changed nothing observable — a mutation proved it by surviving.
+    //
+    // Making the id the LARGEST string is what actually exercises the list: here
+    // the payload is small and the id is what pushes the entry over the ceiling, so
+    // a loop that is willing to cut identity keys will cut this one. An id that has
+    // been halved still looks like an id, which is what makes the corruption
+    // expensive — the upstream rejects the conversation with an opaque error rather
+    // than pointing at the field.
+    const hugeId = `call_${'e'.repeat(MAX_ENTRY_BYTES)}`;
+    store.putResponse('idbiggest', [
+      { role: 'system', content: 'INSTRUCTIONS' },
+      { role: 'tool', tool_call_id: hugeId, content: 'small payload' },
+    ], A);
+    const msgs = store.getResponse('idbiggest', A).messages;
+    assert.equal(msgs[msgs.length - 1].tool_call_id, hugeId,
+      'the id is the biggest string here, and must STILL be byte-identical');
+    assert.equal(msgs[msgs.length - 1].content, 'small payload',
+      'and the small payload it is paired with is not collateral');
+  });
+
   it('the biggest field is chosen across DIFFERENT messages and shapes', () => {
     // Mixed shapes in one conversation: the loop must compare a plain string against
     // a block's text, not just look at one message or one shape.
