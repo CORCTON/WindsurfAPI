@@ -1677,17 +1677,16 @@ describe('Anthropic count_tokens', () => {
   });
 });
 
-// Item 1 (loop break): with DEVIN_CONNECT_THINKTEXT_REROUTE on, a LEADING think-tagged
-// span emitted on the CONTENT channel is rerouted to the thinking channel so clients do
-// not store it as visible assistant text and resend it into a self-reinforcing loop.
-describe('think-text reroute (DEVIN_CONNECT_THINKTEXT_REROUTE)', () => {
+// Item 1 (loop break) reroute MOVED to the connect layer: leading think-tagged
+// content is reclassified at the stream-event level in devin-connect-openai.js
+// (streamChatWithEmptyRetry), BEFORE the #238 rescue decision. The egress
+// translators here are passive — they render whatever channel the events arrive
+// on — and the one invariant they must keep is: the text block is always present.
+describe('think-text reroute (egress is passive; text block always present)', () => {
   const OPEN = '<' + 'think' + '>';
   const CLOSE = '<' + '/' + 'think' + '>';
-  let prev;
-  beforeEach(() => { prev = process.env.DEVIN_CONNECT_THINKTEXT_REROUTE; process.env.DEVIN_CONNECT_THINKTEXT_REROUTE = '1'; });
-  afterEach(() => { if (prev === undefined) delete process.env.DEVIN_CONNECT_THINKTEXT_REROUTE; else process.env.DEVIN_CONNECT_THINKTEXT_REROUTE = prev; });
 
-  it('reroutes a leading think block from content to the thinking channel', async () => {
+  it('stream: think-tagged content arrives on the content channel and renders as text (reroute lives below)', async () => {
     const result = await handleMessages({
       model: 'claude-sonnet-4.6',
       stream: true,
@@ -1711,16 +1710,12 @@ describe('think-text reroute (DEVIN_CONNECT_THINKTEXT_REROUTE)', () => {
     await result.handler(res);
     const events = parseAnthropicEvents(res.body);
     const blocks = events.filter(e => e.event === 'content_block_start').map(e => e.data.content_block.type);
-    assert.deepEqual(blocks, ['thinking', 'text'], 'think span becomes a thinking block, answer stays text');
-    const thinkDeltas = events.filter(e => e.event === 'content_block_delta' && e.data.delta?.type === 'thinking_delta').map(e => e.data.delta.thinking).join('');
-    assert.equal(thinkDeltas, 'inner reasoning. ');
+    assert.deepEqual(blocks, ['text'], 'egress translator is passive: no thinking block at this layer');
     const textDeltas = events.filter(e => e.event === 'content_block_delta' && e.data.delta?.type === 'text_delta').map(e => e.data.delta.text).join('');
-    assert.equal(textDeltas, 'The answer.');
+    assert.equal(textDeltas, OPEN + 'inner reasoning. ' + CLOSE + 'The answer.');
   });
 
-  it('non-stream: leading think tag in content (no reasoning_content) becomes a thinking block', async () => {
-    const OPEN = '<' + 'think' + '>';
-    const CLOSE = '<' + '/' + 'think' + '>';
+  it('non-stream: think-tagged content stays in the text block (invariant: text block always present)', async () => {
     const result = await handleMessages({
       model: 'claude-sonnet-4.6',
       stream: false,
@@ -1737,15 +1732,35 @@ describe('think-text reroute (DEVIN_CONNECT_THINKTEXT_REROUTE)', () => {
       },
     });
     const blocks = result.body.content;
-    assert.equal(blocks[0].type, 'thinking', 'think span rerouted to a thinking block');
-    assert.equal(blocks[0].thinking, 'inner reasoning. ');
-    assert.equal(blocks[1].type, 'text');
-    assert.equal(blocks[1].text, 'The answer.');
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0].type, 'text');
+    assert.equal(blocks[0].text, OPEN + 'inner reasoning. ' + CLOSE + 'The answer.');
+  });
+
+  it('invariant: a reasoning-only completion (reasoning_content, empty content) still yields a text block', async () => {
+    const result = await handleMessages({
+      model: 'claude-sonnet-4.6',
+      stream: false,
+      messages: [{ role: 'user', content: 'hi' }],
+    }, {
+      async handleChatCompletions() {
+        return {
+          status: 200,
+          body: {
+            choices: [{ index: 0, message: { role: 'assistant', content: '', reasoning_content: 'deep thoughts' }, finish_reason: 'stop' }],
+            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+          },
+        };
+      },
+    });
+    const blocks = result.body.content;
+    assert.equal(blocks[0].type, 'thinking');
+    assert.equal(blocks[0].thinking, 'deep thoughts');
+    assert.equal(blocks[1].type, 'text', 'the text block is ALWAYS present, even when empty');
+    assert.equal(blocks[1].text, '');
   });
 
   it('non-stream: with reasoning_content present, content is left untouched (no second thinking block)', async () => {
-    const OPEN = '<' + 'think' + '>';
-    const CLOSE = '<' + '/' + 'think' + '>';
     const result = await handleMessages({
       model: 'claude-sonnet-4.6',
       stream: false,
@@ -1770,7 +1785,7 @@ describe('think-text reroute (DEVIN_CONNECT_THINKTEXT_REROUTE)', () => {
     assert.equal(textBlock.text, OPEN + 'x' + CLOSE);
   });
 
-  it('with the gate ON, plain content still flows as text (no false reroute)', async () => {
+  it('with plain content, everything still flows as text on the stream path', async () => {
     const result = await handleMessages({
       model: 'claude-sonnet-4.6',
       stream: true,

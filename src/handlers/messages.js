@@ -14,7 +14,6 @@
 import { createHash, randomUUID } from 'crypto';
 import { handleChatCompletions, connectErrorToHttp } from './chat.js';
 import { log } from '../config.js';
-import { ThinkTextClassifier } from '../response-classifier.js';
 
 function genMsgId() {
   return 'msg_' + randomUUID().replace(/-/g, '').slice(0, 24);
@@ -36,13 +35,11 @@ function mapStopReason(finishReason) {
   return STOP_REASON_MAP[finishReason] || 'end_turn';
 }
 
-// Item 1 (loop break): when the model emits a LEADING think-tagged span on the
-// CONTENT channel, reroute it to the thinking channel so clients do not store it as
-// visible assistant text and resend it into a self-reinforcing loop. Off by default.
-function thinkTextRerouteEnabled() {
-  const v = String(process.env.DEVIN_CONNECT_THINKTEXT_REROUTE ?? '').trim().toLowerCase();
-  return v === '1' || v === 'true' || v === 'yes' || v === 'on';
-}
+// Item 1 (loop break) classifier moved to the connect layer: leading think-tagged
+// CONTENT is now reclassified into the reasoning channel at the stream-event level
+// in devin-connect-openai.js (streamChatWithEmptyRetry), BEFORE the #238 rescue
+// decision — see docs/GOAL-2026-08-06-PR-REWORK.md. The egress translators here stay
+// passive: they render whatever channel the events arrive on.
 
 // B5: Anthropic sets stop_reason:'stop_sequence' AND echoes the matched string
 // in stop_sequence when generation halts on a caller-supplied stop sequence.
@@ -846,21 +843,11 @@ export function openAIToAnthropic(result, model, msgId, cachePolicy = null, stop
       });
     }
   } else {
-    let text = choice?.message?.content || '';
-    // Item 1 (non-stream path): same leading think-tag reroute as the stream
-    // translator. Gated to the no-reasoning_content case — the classic leak is
-    // reasoning emitted AS content; when a real reasoning channel is present we
-    // leave content untouched to avoid a second thinking block.
-    if (thinkTextRerouteEnabled() && text && !choice?.message?.reasoning_content) {
-      const classifier = new ThinkTextClassifier();
-      const routed = classifier.feed(text);
-      const thinkSpan = routed.thinking;
-      const rest = routed.text + classifier.flush();
-      if (thinkSpan) content.push({ type: 'thinking', thinking: thinkSpan });
-      if (rest || !thinkSpan) content.push({ type: 'text', text: rest });
-    } else {
-      content.push({ type: 'text', text });
-    }
+    // Invariant: the text block is ALWAYS present, even when empty. The think-tag
+    // reroute lives in the connect layer now (devin-connect-openai.js), so by the
+    // time a completion reaches this translator the content channel carries no
+    // think markers — a reasoning-only turn arrives as reasoning_content only.
+    content.push({ type: 'text', text: choice?.message?.content || '' });
   }
   // B5: resolve stop_reason (incl. content_filter→refusal) and back-fill
   // stop_sequence when generation halted on a caller-supplied stop sequence.
@@ -1053,8 +1040,6 @@ class AnthropicStreamTranslator {
     // because strict clients (e.g. Grok Build's messages backend) reject
     // `signature: ""` as an invalid value.
     this.pendingThinkingSignature = '';
-    // Item 1: reroute leading think-tagged content to the thinking channel (loop break).
-    this.thinkClassifier = thinkTextRerouteEnabled() ? new ThinkTextClassifier() : null;
   }
 
   send(event, data) {
@@ -1274,13 +1259,7 @@ class AnthropicStreamTranslator {
       // genuine value instead of the empty-string placeholder.
       if (delta.reasoning_signature) this.pendingThinkingSignature = delta.reasoning_signature;
       if (delta.content) {
-        if (this.thinkClassifier) {
-          const routed = this.thinkClassifier.feed(delta.content);
-          if (routed.thinking) this.emitThinkingDelta(routed.thinking);
-          if (routed.text) this.emitTextDelta(routed.text);
-        } else {
-          this.emitTextDelta(delta.content);
-        }
+        this.emitTextDelta(delta.content);
       }
       if (Array.isArray(delta.tool_calls)) {
         for (const tc of delta.tool_calls) this.emitToolCallDelta(tc);
@@ -1354,12 +1333,6 @@ class AnthropicStreamTranslator {
     // content) no longer reaches here: the BUG1 guard above now catches a missing
     // terminal signal regardless of whether content started.
     if (!this.messageStarted) this.startMessage();
-    // Item 1: flush any content the classifier still holds. An unterminated span is
-    // delivered as text (visible beats dropped); see response-classifier flush().
-    if (this.thinkClassifier) {
-      const rest = this.thinkClassifier.flush();
-      if (rest) this.emitTextDelta(rest);
-    }
     this.closeCurrentBlock();
     // B1: interleaved-fragment edge case. flushToolArgs only emits arg fragments
     // while a tool's block is the currently-open one; a tool_use block that got
