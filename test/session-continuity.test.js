@@ -438,6 +438,28 @@ describe('session-continuity: compaction survival (root fallback)', () => {
     assert.notEqual(resolved, d1t2, 'ambiguous root must not be assigned to dialog 1');
     assert.notEqual(resolved, d2t2, 'ambiguous root must not be assigned to dialog 2');
   });
+
+  it('an EXPIRED state is evicted by the root fallback — a stale dialog does not resurrect through compaction', () => {
+    const h = [];
+    const id1 = turn('c1', h, 'stale opener', 'old reply');
+    const id2 = turn('c1', h, 'stale followup', 'old more');
+    assert.equal(id1, id2);
+
+    // Busy-wait past a 1ms TTL so the stored state is stale on the next resolve.
+    const env = { ...ENV, DEVIN_CONNECT_SESSION_TTL_MS: '1' };
+    const spinUntil = Date.now() + 5;
+    while (Date.now() < spinUntil) { /* let the TTL lapse */ }
+
+    // Pair evidence wiped by compaction; the root anchor survives — but the only
+    // candidate is expired, so the fallback must evict it and form a NEW id.
+    const compacted = [
+      { role: 'user', content: 'stale opener' },
+      { role: 'assistant', content: 'old reply (compressed summary)' },
+      { role: 'user', content: 'next turn after the lapse' },
+    ];
+    const resolved = resolveSessionId('c1', compacted, env);
+    assert.notEqual(resolved, id2, 'a TTL-expired session must not resurrect through the root fallback');
+  });
 });
 
 describe('session-continuity: tail-anchored overlap', () => {
