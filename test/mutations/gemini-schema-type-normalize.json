@@ -1,0 +1,47 @@
+{
+  "tests": [
+    "test/gemini-schema-type-normalize.test.js",
+    "test/gemini.test.js",
+    "test/intent-extractor.test.js"
+  ],
+  "expectBaselinePass": 98,
+  "mutations": [
+    {
+      "name": "the original defect: fd.parameters is passed through verbatim again, so an UPPERCASE Gemini schema reaches consumers that compare lowercase",
+      "file": "src/handlers/gemini.js",
+      "anchor": "            parameters: normalizeSchemaTypes(fd.parameters || fd.parametersJsonSchema || {}),",
+      "replacement": "            parameters: fd.parameters || fd.parametersJsonSchema || {},"
+    },
+    {
+      "name": "normalization stops recursing — only the top-level type is rewritten, nested properties/items stay uppercase",
+      "file": "src/handlers/gemini.js",
+      "anchor": "      out[k] = normalizeSchemaTypes(v, depth + 1);",
+      "replacement": "      out[k] = v;"
+    },
+    {
+      "name": "the vocabulary allowlist is dropped — every string-valued `type` is lowercased, including TYPE_UNSPECIFIED and non-schema uses",
+      "file": "src/handlers/gemini.js",
+      "anchor": "      out[k] = GEMINI_SCHEMA_TYPES.has(lower) ? lower : v;",
+      "replacement": "      out[k] = lower;"
+    },
+    {
+      "name": "the union form loses normalization — ['STRING','NULL'] stays uppercase",
+      "file": "src/handlers/gemini.js",
+      "anchor": "      out[k] = v.map((t) => (typeof t === 'string' && GEMINI_SCHEMA_TYPES.has(t.toLowerCase()) ? t.toLowerCase() : t));",
+      "replacement": "      out[k] = v;"
+    },
+    {
+      "name": "OVER-REACH CONTROL: the walker lowercases EVERY string value, not just recognized `type` spellings — the shape a careless 'just normalize the schema' refactor produces. Note the narrower version of this mutation (widening the key test to include `description`) injects NOTHING, because the allowlist still rejects a prose sentence: the key test and the allowlist are two independent gates and only bypassing both is observable.",
+      "file": "src/handlers/gemini.js",
+      "anchor": "    if (k === 'type' && typeof v === 'string') {\n      const lower = v.toLowerCase();",
+      "replacement": "    if (typeof v === 'string') {\n      const lower = v.toLowerCase();\n      out[k] = lower;\n      continue;\n    }\n    if (false) {\n      const lower = v.toLowerCase();"
+    },
+    {
+      "name": "SURVIVOR (documented): the depth bound is removed. Harmless in the CURRENT call graph and not guardable without a fixture that is itself the test: reaching it needs a schema nested deeper than 12, and a JSON body that deep has already been parsed by JSON.parse, which enforces its own nesting limit long before this walker runs — so the recursion is bounded by the parser, not by this line. The bound is kept as a local, readable guarantee (the reader should not have to reason about the parser to see the walk terminates), and it mirrors the depth cap in response-store's field walk. Re-run this mutation if the walker is ever fed a schema built in-process rather than parsed from a request body — then the parser's limit no longer applies and this becomes the only bound.",
+      "file": "src/handlers/gemini.js",
+      "anchor": "  if (depth > 12 || node == null || typeof node !== 'object') return node;",
+      "replacement": "  if (node == null || typeof node !== 'object') return node;",
+      "expectCaught": false
+    }
+  ]
+}

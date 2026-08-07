@@ -12,7 +12,7 @@ import { getLsFor, ensureLs } from '../langserver.js';
 import { config, log } from '../config.js';
 import { safeAccountRef, safeKeyRef, safeLogValue } from '../log-safety.js';
 import { recordRequest, recordTokenUsage, recordPolicyBlocked, recordRateLimited } from '../dashboard/stats.js';
-import { extractIntentFromNarrative, detectToolIntentInNarrative } from './intent-extractor.js';
+import { extractIntentFromNarrative, detectToolIntentInNarrative, maskNonActionableRegions } from './intent-extractor.js';
 import { isModelAllowed } from '../dashboard/model-access.js';
 import { cacheKey, cacheGet, cacheSet } from '../cache.js';
 import { isExperimentalEnabled, getBreakerTunable, strictUsageTotal } from '../runtime-config.js';
@@ -1036,20 +1036,39 @@ function trimCommandSentence(text) {
   return s.replace(/[.。]\s*$/, '').trim();
 }
 
+/**
+ * Commands the user's own text asked for, each tagged with HOW its end was found.
+ *
+ * `bounded` is the distinction that matters for rewriting a tool call. A backticked
+ * span carries a boundary the USER declared, so everything inside it is the command.
+ * The backtick-free fallback captures to end-of-line and the boundary is GUESSED, so
+ * ordinary prose after the command becomes argv. MEASURED: "The crash: run rm -rf
+ * varlog happened in the report" yielded `rm -rf varlog happened in the report`,
+ * which a shell runs — deleting `varlog` — with no metacharacter anywhere, so the
+ * chaining check cannot see it.
+ *
+ * An unbacked capture is only `bounded` when sentence punctuation actually ended it,
+ * i.e. the user wrote a terminator rather than trailing off into prose.
+ */
 function extractRequestedBashCommands(text) {
   const src = String(text || '');
-  const out = [];
+  const out = new Map();
   const patterns = [
-    /(?:command|run|execute)\s+(?:exactly\s+)?(?::\s*)?`([^`]+)`/gi,
-    /(?:command|run|execute)\s+(?:exactly\s+)?(?::\s*)?([^\n]+)/gi,
+    { re: /(?:command|run|execute)\s+(?:exactly\s+)?(?::\s*)?`([^`]+)`/gi, backticked: true },
+    { re: /(?:command|run|execute)\s+(?:exactly\s+)?(?::\s*)?([^\n]+)/gi, backticked: false },
   ];
-  for (const re of patterns) {
+  for (const { re, backticked } of patterns) {
     for (const m of src.matchAll(re)) {
-      const candidate = shellUnquote(trimCommandSentence(m[1])).trim();
-      if (candidate && /\s/.test(candidate)) out.push(candidate);
+      const raw = m[1];
+      const trimmed = trimCommandSentence(raw);
+      const candidate = shellUnquote(trimmed).trim();
+      if (!candidate || !/\s/.test(candidate)) continue;
+      const bounded = backticked || trimmed.length < raw.trim().length;
+      // A backticked capture wins over a bare one for the same command text.
+      if (!out.has(candidate) || bounded) out.set(candidate, { command: candidate, bounded });
     }
   }
-  return [...new Set(out)];
+  return [...out.values()];
 }
 
 function readPathKey(args) {
@@ -1136,6 +1155,53 @@ function repairReadToolCallArguments(tc, messages) {
   return { ...tc, argumentsJson: JSON.stringify(next) };
 }
 
+// Shell metacharacters that start a NEW command rather than continue the
+// current one. Prefix repair exists to complete one command's arguments, so an
+// "expansion" that introduces any of these is changing what runs, not
+// finishing it: `npm install` -> `npm install && curl … | sh` is a different
+// act from `node -p` -> `node -p "1+1"`.
+const COMMAND_CHAINING_RE = /[;&|><`$\n]|\$\(/;
+
+/**
+ * Is `requested` a safe completion of the prefix `current`?
+ *
+ * Two conditions, both load-bearing, both found by probing rather than review:
+ *
+ * 1. TOKEN BOUNDARY. `startsWith` alone expands mid-token, which can invert the
+ *    very flag that made the model's choice conservative — measured: `rm -i`
+ *    (interactive) -> `rm -if /data` (force), and `deploy --dry` ->
+ *    `deploy --dry-run=false --prod`. A completion must therefore continue at
+ *    whitespace, so the model's last token stays the token that runs.
+ * 2. NO NEW COMMAND. See COMMAND_CHAINING_RE. The tail may add arguments; it may
+ *    not add a pipeline, a redirect, a separator, or a substitution.
+ */
+function isSafeCommandCompletion(current, requested) {
+  if (requested.length <= current.length || !requested.startsWith(current)) return false;
+  const tail = requested.slice(current.length);
+  if (!/^\s/.test(tail)) return false;
+  return !COMMAND_CHAINING_RE.test(tail);
+}
+
+// A decoded Anthropic `document` block, as messages.js marks it on translation.
+// Unterminated is matched too: a truncated attachment loses its closing marker, and
+// an unclosed attachment must not become readable as instruction text.
+const DOCUMENT_SPAN_RE = /\[document:[^\]\n]*\]\n?([\s\S]*?)(?:\n?\[\/document\]|$)/g;
+
+/**
+ * Blank out attachment regions in a user turn.
+ *
+ * `latestRealUserText` skips a whole message when it is a synthetic `<tool_result>`
+ * carrier, but that shape cannot work for attachments: messages.js joins a document
+ * block and the caller's OWN words into one message, so skipping the message would
+ * discard the genuine instruction along with the attachment. Blanking keeps the
+ * instruction readable and removes only the attachment — and preserves length, so
+ * every later regex offset stays valid, the same reason maskNonActionableRegions
+ * blanks instead of deleting.
+ */
+function maskDocumentSpans(text) {
+  return String(text).replace(DOCUMENT_SPAN_RE, m => m.replace(/[^\n]/g, ' '));
+}
+
 export function repairToolCallArguments(tc, messages) {
   tc = repairReadToolCallArguments(tc, messages);
   if (!tc || String(tc.name || '').toLowerCase() !== 'bash' || typeof tc.argumentsJson !== 'string') return tc;
@@ -1144,8 +1210,34 @@ export function repairToolCallArguments(tc, messages) {
   if (!args || typeof args.command !== 'string') return tc;
   const current = args.command.trim();
   if (!current) return tc;
-  for (const requested of extractRequestedBashCommands(recentUserText(messages))) {
-    if (requested.length > current.length && requested.startsWith(current)) {
+  // `latestRealUserText`, NOT `recentUserText`: the latter returns ANY trailing
+  // role:'user' message, and clients that carry tool results as synthetic
+  // `<tool_result>` user turns therefore made TOOL OUTPUT the command source —
+  // a fetched page or a read file deciding what the client executes. MEASURED:
+  // a `<tool_result>` turn containing "run `ls -la /etc/shadow`" expanded the
+  // model's `ls -la` to that path. latestRealUserText skips those turns (see its
+  // `/^\s*<tool_result\b/` test), which is the same reader the sibling recovery
+  // paths in this file already use.
+  //
+  // Then mask fenced and negated regions. "Never execute `rm -rf /`" is a command
+  // the user named in order to FORBID it; reading it as the intended command turns
+  // a prohibition into an instruction. Same masking the NLU layer uses, so the two
+  // cannot drift apart on what counts as actionable.
+  const source = maskNonActionableRegions(maskDocumentSpans(latestRealUserText(messages)));
+  for (const { command: requested, bounded } of extractRequestedBashCommands(source)) {
+    if (bounded && isSafeCommandCompletion(current, requested)) {
+      // Every surviving expansion is logged, because one shape CANNOT be
+      // decided here and must stay visible instead of looking handled.
+      //
+      // `ls -la` -> `ls -la /etc/shadow` is byte-for-byte isomorphic to the
+      // legitimate `node -p` -> `node -p "1+1"`: same token boundary, same
+      // absence of chaining. They differ only in whether the user's message was
+      // an INSTRUCTION or PASTED CONTENT, which is not a property of the string.
+      // A heuristic guessing between them would be indefensible and — worse —
+      // would read as if the case were covered. So the residual is reported
+      // rather than guessed, and this line is the only thing that makes a
+      // command the model did not choose auditable after the fact.
+      log.warn(`Chat: bash prefix repair rewrote the model's command — model=${JSON.stringify(current)} served=${JSON.stringify(requested)}`);
       return { ...tc, argumentsJson: JSON.stringify({ ...args, command: requested }) };
     }
   }

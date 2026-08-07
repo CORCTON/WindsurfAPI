@@ -1,0 +1,94 @@
+{
+  "tests": [
+    "test/bash-prefix-repair-boundary.test.js",
+    "test/tool-emulation.test.js",
+    "test/native-read-wrapper.test.js"
+  ],
+  "expectBaselinePass": 94,
+  "mutations": [
+    {
+      "name": "the original defect — startsWith alone, no token boundary and no chaining check, so `rm -i` expands to `rm -if /data`",
+      "file": "src/handlers/chat.js",
+      "anchor": "  if (requested.length <= current.length || !requested.startsWith(current)) return false;\n  const tail = requested.slice(current.length);\n  if (!/^\\s/.test(tail)) return false;\n  return !COMMAND_CHAINING_RE.test(tail);",
+      "replacement": "  return requested.length > current.length && requested.startsWith(current);"
+    },
+    {
+      "name": "token-boundary check alone — chaining allowed again, so a pasted README expands `npm install` into `npm install && curl … | sh`",
+      "file": "src/handlers/chat.js",
+      "anchor": "  if (!/^\\s/.test(tail)) return false;\n  return !COMMAND_CHAINING_RE.test(tail);",
+      "replacement": "  if (!/^\\s/.test(tail)) return false;\n  return true;"
+    },
+    {
+      "name": "chaining check alone — mid-token expansion allowed again, so a truncated safety flag can be inverted",
+      "file": "src/handlers/chat.js",
+      "anchor": "  if (!/^\\s/.test(tail)) return false;\n  return !COMMAND_CHAINING_RE.test(tail);",
+      "replacement": "  return !COMMAND_CHAINING_RE.test(tail);"
+    },
+    {
+      "name": "negation/fence masking dropped — a command the user forbade becomes the command the client runs",
+      "file": "src/handlers/chat.js",
+      "anchor": "  const source = maskNonActionableRegions(maskDocumentSpans(latestRealUserText(messages)));",
+      "replacement": "  const source = maskDocumentSpans(latestRealUserText(messages));"
+    },
+    {
+      "name": "chaining set loses the redirect and separator characters, keeping only pipe and ampersand",
+      "file": "src/handlers/chat.js",
+      "anchor": "const COMMAND_CHAINING_RE = /[;&|><`$\\n]|\\$\\(/;",
+      "replacement": "const COMMAND_CHAINING_RE = /[&|]/;"
+    },
+    {
+      "name": "the command source reverts to recentUserText, so a <tool_result> user turn makes TOOL OUTPUT decide what the client runs",
+      "file": "src/handlers/chat.js",
+      "anchor": "  const source = maskNonActionableRegions(maskDocumentSpans(latestRealUserText(messages)));",
+      "replacement": "  const source = maskNonActionableRegions(maskDocumentSpans(recentUserText(messages)));"
+    },
+    {
+      "name": "the guessed-boundary gate drops, so trailing English prose is swallowed into argv with no metacharacter for the chaining check to see",
+      "file": "src/handlers/chat.js",
+      "anchor": "    if (bounded && isSafeCommandCompletion(current, requested)) {",
+      "replacement": "    if (isSafeCommandCompletion(current, requested)) {"
+    },
+    {
+      "name": "every capture is treated as bounded, which is the same hole reached from the extractor side",
+      "file": "src/handlers/chat.js",
+      "anchor": "      const bounded = backticked || trimmed.length < raw.trim().length;",
+      "replacement": "      const bounded = true;"
+    },
+    {
+      "name": "the rewrite stops being reported — the undecidable residual becomes silent, which is what makes it read as covered",
+      "file": "src/handlers/chat.js",
+      "anchor": "      log.warn(`Chat: bash prefix repair rewrote the model's command — model=${JSON.stringify(current)} served=${JSON.stringify(requested)}`);",
+      "replacement": ""
+    },
+    {
+      "name": "OVER-REACH CONTROL: no completion is ever safe, so the repair silently stops fixing the truncation it exists for",
+      "file": "src/handlers/chat.js",
+      "anchor": "  if (requested.length <= current.length || !requested.startsWith(current)) return false;",
+      "replacement": "  if (true) return false;\n  if (requested.length <= current.length || !requested.startsWith(current)) return false;"
+    },
+    {
+      "name": "the document marker is not written, so attachment text is indistinguishable from the caller's own words after the join",
+      "file": "src/handlers/messages.js",
+      "anchor": "            textParts.push(wrapDocumentText(docLabel, src.data));",
+      "replacement": "            textParts.push(src.data);"
+    },
+    {
+      "name": "the attachment span is not masked, so a decoded document decides what the client runs",
+      "file": "src/handlers/chat.js",
+      "anchor": "  const source = maskNonActionableRegions(maskDocumentSpans(latestRealUserText(messages)));",
+      "replacement": "  const source = maskNonActionableRegions(latestRealUserText(messages));"
+    },
+    {
+      "name": "the span regex requires a closing marker, so a TRUNCATED attachment stays readable as instruction text",
+      "file": "src/handlers/chat.js",
+      "anchor": "const DOCUMENT_SPAN_RE = /\\[document:[^\\]\\n]*\\]\\n?([\\s\\S]*?)(?:\\n?\\[\\/document\\]|$)/g;",
+      "replacement": "const DOCUMENT_SPAN_RE = /\\[document:[^\\]\\n]*\\]\\n?([\\s\\S]*?)\\n?\\[\\/document\\]/g;"
+    },
+    {
+      "name": "OVER-REACH CONTROL: masking swallows the whole turn, so a genuine instruction beside an attachment is lost too",
+      "file": "src/handlers/chat.js",
+      "anchor": "  return String(text).replace(DOCUMENT_SPAN_RE, m => m.replace(/[^\\n]/g, ' '));",
+      "replacement": "  return String(text).replace(/[^\\n]/g, ' ');"
+    }
+  ]
+}

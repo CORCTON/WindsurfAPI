@@ -1,0 +1,46 @@
+{
+  "tests": [
+    "test/retry-after-route-parity.test.js"
+  ],
+  "expectBaselinePass": 5,
+  "mutations": [
+    {
+      "name": "the PRIMARY loss returns: messages.js drops result.headers in the error translation, one step before the router",
+      "file": "src/handlers/messages.js",
+      "anchor": "      return withUpstreamHeaders(toAnthropicError(\n        result.status,\n        result.body?.error?.type,\n        result.body?.error?.message,\n      ), result.headers);",
+      "replacement": "      return toAnthropicError(\n        result.status,\n        result.body?.error?.type,\n        result.body?.error?.message,\n      );"
+    },
+    {
+      "name": "the PRIMARY loss returns on the Gemini side",
+      "file": "src/handlers/gemini.js",
+      "anchor": "      return withUpstreamHeaders(geminiError(result.status, result.body?.error?.type, result.body?.error?.message), result.headers);",
+      "replacement": "      return geminiError(result.status, result.body?.error?.type, result.body?.error?.message);"
+    },
+    {
+      "name": "the SECONDARY loss returns: the messages non-stream branch of the router stops forwarding result.headers",
+      "file": "src/server.js",
+      "anchor": "      if (result.headers) {\n        for (const [k, v] of Object.entries(result.headers)) {\n          if (!(k in anthropicHeaders)) res.setHeader(k, v);\n        }\n      }",
+      "replacement": ""
+    },
+    {
+      "name": "the SECONDARY loss returns on the Gemini route",
+      "file": "src/server.js",
+      "anchor": "      if (result.headers) {\n        for (const [k, v] of Object.entries(result.headers)) {\n          if (!(k in geminiHeaders)) res.setHeader(k, v);\n        }\n      }",
+      "replacement": ""
+    },
+    {
+      "name": "SURVIVOR (documented): precedence inside withUpstreamHeaders is flipped so upstream headers would win over the translated response's own. Unobservable HERE because the two sides are disjoint in practice — toAnthropicError/geminiError set no `headers` key at all, so `response.headers` is undefined and either merge order yields the same object. Measured: suite stays 5/5 with the mutation applied. The ROUTE vocabulary (anthropic-version, request-id) is protected one layer up, in server.js, by the `!(k in anthropicHeaders)` test — and THAT is guarded, by the collision case in this file. Re-run this mutation if either error builder ever starts returning headers of its own; the order would then become observable and this would be the only guard.",
+      "file": "src/handlers/messages.js",
+      "anchor": "  return { ...response, headers: { ...headers, ...response.headers } };",
+      "replacement": "  return { ...response, headers: { ...response.headers, ...headers } };",
+      "expectCaught": false
+    },
+    {
+      "name": "SURVIVOR (documented): the empty/absent short-circuit is removed, so a translated error gains a `headers: {}` key it previously lacked. Harmless because every consumer reads it conditionally — server.js guards with `if (result.headers)` and an empty object is falsy-equivalent for its purposes (the for-loop body never runs), while the stream branch spreads it (spreading {} is a no-op). Measured: suite stays 5/5. The short-circuit is kept for identity, not behaviour: it lets a caller distinguish \"not wrapped\" from \"wrapped, nothing to add\", which matters when diffing responses in a test. Guarding it would mean asserting on the ABSENCE of a key, pinning an implementation detail rather than a behaviour.",
+      "file": "src/handlers/messages.js",
+      "anchor": "  if (!headers || typeof headers !== 'object' || !Object.keys(headers).length) return response;",
+      "replacement": "  headers = headers || {};",
+      "expectCaught": false
+    }
+  ]
+}

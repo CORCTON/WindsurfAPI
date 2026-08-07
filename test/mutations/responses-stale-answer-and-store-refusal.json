@@ -1,0 +1,46 @@
+{
+  "tests": [
+    "test/responses-stale-answer-and-store-refusal.test.js",
+    "test/response-store-e2e.test.js",
+    "test/responses-chain-scope.test.js"
+  ],
+  "expectBaselinePass": 39,
+  "mutations": [
+    {
+      "name": "item 10, the original defect — unbounded reverse().find walks past the last user turn and serves an ancestor's answer",
+      "file": "src/handlers/responses.js",
+      "anchor": "  const assistant = assistantAnsweringLastUserTurn(entry.messages) || null;",
+      "replacement": "  const assistant = [...entry.messages].reverse().find(m => m?.role === 'assistant') || null;"
+    },
+    {
+      "name": "item 10, the bound is computed but never applied — lastUser stays -1, so the search is unbounded again",
+      "file": "src/handlers/responses.js",
+      "anchor": "    if (messages[i]?.role === 'user') { lastUser = i; break; }",
+      "replacement": "    if (false) { lastUser = i; break; }"
+    },
+    {
+      "name": "item 10, the bound searches forward from the start — returns the FIRST assistant of the whole chain",
+      "file": "src/handlers/responses.js",
+      "anchor": "  for (let i = messages.length - 1; i > lastUser; i--) {\n    if (messages[i]?.role === 'assistant') return messages[i];",
+      "replacement": "  for (let i = 0; i < messages.length; i++) {\n    if (messages[i]?.role === 'assistant') return messages[i];"
+    },
+    {
+      "name": "item 9, the refusal log gate inverts — fires on contract-compliant store:false and stays silent on the real anomaly",
+      "file": "src/handlers/responses.js",
+      "anchor": "      if (!stored && wantsPersistence(body.store)) {",
+      "replacement": "      if (!stored && !wantsPersistence(body.store)) {"
+    },
+    {
+      "name": "item 9, putResponse stops refusing an empty conversation, so a zero-message entry is stored and retrieval reports 200",
+      "file": "src/response-store.js",
+      "anchor": "  if (!ENABLED || !responseId || !Array.isArray(messages) || !messages.length) return false;",
+      "replacement": "  if (!ENABLED || !responseId || !Array.isArray(messages)) return false;"
+    },
+    {
+      "name": "item 9, wantsPersistence reverts to the strict === false check that let store:\"false\" through",
+      "file": "src/response-store.js",
+      "anchor": "  if (!wantsPersistence(opts.store)) return false;",
+      "replacement": "  if (opts.store === false) return false;"
+    }
+  ]
+}

@@ -77,6 +77,50 @@ function parseToolArgs(rawArgs, toolName) {
 }
 
 // Gemini tool_choice (toolConfig.functionCallingConfig.mode) → OpenAI tool_choice.
+// Gemini declares Schema.type as an UPPERCASE enum (STRING / OBJECT / ARRAY /
+// NUMBER / INTEGER / BOOLEAN, plus TYPE_UNSPECIFIED), while everything downstream of
+// this frontend is JSON-Schema shaped and compares the lowercase spelling. Nothing in
+// the repo normalized it, so a spec-conforming Gemini client's tool schema was opaque
+// to every consumer that inspects `type`.
+//
+// Measured before this: a tool sent as {type:'OBJECT', properties:{command:{type:
+// 'STRING'}}, required:['command']} reached intent-extractor's indexTools, whose
+// `params?.type === 'object'` test failed, so no primary parameter resolved and NLU
+// recovery produced NOTHING for the same narrative that yields {"command":"ls -la"}
+// from an equivalent lowercase schema. (The original report described a wrongly-NAMED
+// argument instead; that symptom changed when layer 1 started dropping unresolvable
+// slots rather than inventing `_value`. Same root cause, quieter failure — Gemini
+// clients silently lost the recovery path altogether.)
+//
+// Normalizing here rather than at each consumer is deliberate: this function is the
+// single boundary where Gemini's wire vocabulary becomes the internal one, and a
+// consumer-side fix would have to be repeated for every reader of `type`.
+const GEMINI_SCHEMA_TYPES = new Set(['string', 'number', 'integer', 'boolean', 'array', 'object', 'null']);
+
+function normalizeSchemaTypes(node, depth = 0) {
+  // Depth bound mirrors the one in response-store's field walk: a hostile or merely
+  // silly schema must not turn this into unbounded recursion.
+  if (depth > 12 || node == null || typeof node !== 'object') return node;
+  if (Array.isArray(node)) return node.map((v) => normalizeSchemaTypes(v, depth + 1));
+  const out = {};
+  for (const [k, v] of Object.entries(node)) {
+    if (k === 'type' && typeof v === 'string') {
+      const lower = v.toLowerCase();
+      // Only rewrite spellings that ARE the JSON-Schema vocabulary. TYPE_UNSPECIFIED
+      // and anything unrecognized pass through untouched — inventing a type for them
+      // would be worse than leaving a consumer to ignore it, and `type` also appears
+      // in non-schema positions (a tool_result block's discriminator, for instance).
+      out[k] = GEMINI_SCHEMA_TYPES.has(lower) ? lower : v;
+    } else if (k === 'type' && Array.isArray(v)) {
+      // JSON-Schema union form, e.g. ['STRING','NULL'].
+      out[k] = v.map((t) => (typeof t === 'string' && GEMINI_SCHEMA_TYPES.has(t.toLowerCase()) ? t.toLowerCase() : t));
+    } else {
+      out[k] = normalizeSchemaTypes(v, depth + 1);
+    }
+  }
+  return out;
+}
+
 function mapGeminiToolChoice(toolConfig) {
   const mode = toolConfig?.functionCallingConfig?.mode;
   if (!mode) return undefined;
@@ -217,7 +261,11 @@ export function geminiToOpenAI(body, modelFromPath) {
           function: {
             name: fd.name,
             description: fd.description || '',
-            parameters: fd.parameters || fd.parametersJsonSchema || {},
+            // `parametersJsonSchema` is already JSON-Schema (lowercase by
+            // definition); `parameters` is Gemini's Schema with UPPERCASE type
+            // enums. normalizeSchemaTypes only rewrites the recognized vocabulary,
+            // so running it over both is safe and keeps one code path.
+            parameters: normalizeSchemaTypes(fd.parameters || fd.parametersJsonSchema || {}),
           },
         });
       }
@@ -434,6 +482,18 @@ class GeminiStreamTranslator {
   }
 
   processChunk(chunk) {
+    // The check below only handles an error carried by THIS chunk. Once error() or
+    // finish() has run, `finished` is set and nothing further may be written — but
+    // processChunk did not consult it, so a stream that kept sending after an
+    // in-band error went on emitting candidate frames.
+    //
+    // In array mode that is not merely a stray frame: error() closes the JSON array
+    // with `]`, and writeFrame (which checks only `writableEnded`) then appends
+    // `,{...}` AFTER the closing bracket. Measured before this guard, the response
+    // body was `[{...},{"error":...}],{"candidates":...}` and JSON.parse threw
+    // "Unexpected non-whitespace character after JSON at position 180" — the whole
+    // body unparseable, not just the trailing frame lost.
+    if (this.finished) return;
     if (chunk.error) {
       this.sawTerminalSignal = true;
       this.error(chunk.error);
@@ -639,6 +699,16 @@ function createCaptureRes(translator, realRes) {
 // NOT PERMISSION_DENIED — leaking a transient blip as PERMISSION_DENIED would
 // make a Gemini SDK give up instead of backing off, and (on our side) a
 // retryable upstream error must never be confused with a dead token.
+// Attach the upstream handler's transport headers to a translated error response.
+// Mirrors the helper of the same name in messages.js — the error BODY is route
+// vocabulary and geminiError owns it, but Retry-After is plain HTTP and belongs to
+// whoever computed it. Measured before this: a non-stream 429 reached a Gemini client
+// with no retry-after, while /v1/responses forwarded the same handler's header.
+function withUpstreamHeaders(response, headers) {
+  if (!headers || typeof headers !== 'object' || !Object.keys(headers).length) return response;
+  return { ...response, headers: { ...headers, ...response.headers } };
+}
+
 export function geminiError(status, internalType, message) {
   let outStatus = status;
   let statusEnum;
@@ -700,7 +770,7 @@ export async function handleGemini(model, body, context = {}, { stream = false, 
   if (!stream) {
     const result = await chatHandler({ ...openaiBody, stream: false, __route: 'gemini' }, context);
     if (result.status !== 200) {
-      return geminiError(result.status, result.body?.error?.type, result.body?.error?.message);
+      return withUpstreamHeaders(geminiError(result.status, result.body?.error?.type, result.body?.error?.message), result.headers);
     }
     return { status: 200, body: openAIToGemini(result.body, requestedModel) };
   }
@@ -722,11 +792,11 @@ export async function handleGemini(model, body, context = {}, { stream = false, 
 
   if (!streamResult.stream) {
     // Non-stream error before any byte streamed — map to the Gemini error enum.
-    return geminiError(
+    return withUpstreamHeaders(geminiError(
       streamResult.status || 502,
       streamResult.body?.error?.type,
       streamResult.body?.error?.message,
-    );
+    ), streamResult.headers);
   }
 
   const mode = alt === 'sse' ? 'sse' : 'array';

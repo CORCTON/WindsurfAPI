@@ -835,6 +835,21 @@ async function route(req, res) {
       await result.handler(res);
     } else {
       for (const [k, v] of Object.entries(anthropicHeaders)) res.setHeader(k, v);
+      // Forward the handler's own headers. The STREAM branch above already spreads
+      // `result.headers` into writeHead; this branch did not, so a non-stream 429
+      // reached the client with no `Retry-After` at all — the header the Anthropic
+      // SDK reads to decide how long to back off. /v1/responses has always
+      // forwarded them here (see the same spot on that route), so this was a
+      // per-route divergence rather than a deliberate policy.
+      //
+      // Set BEFORE the body so a handler header cannot silently lose to the
+      // Anthropic-vocabulary ones above — those are the route's contract and win
+      // on collision, which is why this loop does not overwrite them.
+      if (result.headers) {
+        for (const [k, v] of Object.entries(result.headers)) {
+          if (!(k in anthropicHeaders)) res.setHeader(k, v);
+        }
+      }
       // F4: inject request_id into Anthropic error bodies (status >= 400),
       // matching {type:'error', error:{...}, request_id}. O10 does NOT touch
       // Anthropic — toAnthropicError owns its own status vocabulary.
@@ -880,6 +895,15 @@ async function route(req, res) {
       await result.handler(res);
     } else {
       for (const [k, v] of Object.entries(geminiHeaders)) res.setHeader(k, v);
+      // Same divergence as the Anthropic route above: the stream branch spreads
+      // `result.headers`, this one dropped them, so a non-stream 429 carried no
+      // `Retry-After` for the Gemini SDK to honour. Route-vocabulary headers win on
+      // collision.
+      if (result.headers) {
+        for (const [k, v] of Object.entries(result.headers)) {
+          if (!(k in geminiHeaders)) res.setHeader(k, v);
+        }
+      }
       json(res, result.status, result.body);
     }
     return;

@@ -7,7 +7,7 @@
 
 import { randomUUID } from 'crypto';
 import { handleChatCompletions, normalizeOpenAIErrorType, connectErrorToHttp, hasPerUserScope } from './chat.js';
-import { getResponse, putResponse, deleteResponse, isResponseStoreEnabled } from '../response-store.js';
+import { getResponse, putResponse, deleteResponse, isResponseStoreEnabled, wantsPersistence } from '../response-store.js';
 import { safeLogValue } from '../log-safety.js';
 import { log } from '../config.js';
 
@@ -465,6 +465,19 @@ export function responsesToChat(body) {
   };
 }
 
+/**
+ * Did the upstream report ANY token count?
+ *
+ * An upstream that says nothing and an upstream that reports zero are different
+ * facts, and mapUsage cannot tell them apart once it has defaulted everything to 0.
+ * Asked here, on the raw object, before any defaulting.
+ */
+function hasReportedUsage(usage) {
+  if (!usage || typeof usage !== 'object') return false;
+  return ['prompt_tokens', 'input_tokens', 'completion_tokens', 'output_tokens', 'total_tokens']
+    .some(k => typeof usage[k] === 'number');
+}
+
 function mapUsage(usage = {}) {
   const inputTokens = usage.prompt_tokens || usage.input_tokens || 0;
   const outputTokens = usage.completion_tokens || usage.output_tokens || 0;
@@ -594,7 +607,15 @@ export function chatToResponse(chatBody, requestedModel, responseId = genRespons
     ...(truncated ? { incomplete_details: { reason: finishReason === 'length' ? 'max_output_tokens' : 'content_filter' } } : {}),
     model: requestedModel || chatBody.model,
     output,
-    usage: mapUsage(chatBody.usage || {}),
+    // Omitted, not zeroed, when the upstream reported nothing. `input_tokens: 0` is
+    // an ASSERTION that the turn consumed no prompt tokens, which is false for any
+    // request that reached a model — and a billing relay reading it silently
+    // under-bills. Absence says "unknown", which is the truth and is what the Gemini
+    // exit already does (buildUsageMetadata returns undefined for a silent upstream).
+    // Only this exit asserted the zero: the OpenAI chat route emits no usage frame
+    // unless stream_options.include_usage opts in, and Anthropic reports a documented
+    // local estimate that message_delta later corrects.
+    ...(hasReportedUsage(chatBody.usage) ? { usage: mapUsage(chatBody.usage) } : {}),
   };
 }
 
@@ -609,7 +630,19 @@ class ResponsesStreamTranslator {
     this.pendingSseBuf = '';
     this.createdSent = false;
     this.finished = false;
+    // TWO accumulators, deliberately:
+    //   `text`        — every text delta of the whole turn. Read by the response
+    //                   store commit in handleResponses, which persists ONE
+    //                   OpenAI-shaped assistant message whose `content` is a single
+    //                   string. That shape cannot express text-tool-text ordering,
+    //                   so storing only the final segment would silently drop the
+    //                   pre-tool text from the next chained turn's history. Losing
+    //                   text is worse than losing order, so the store gets all of it.
+    //   `segmentText` — text of the CURRENT message item only, i.e. what this item's
+    //                   output_text.done and its completed item must carry. Reset by
+    //                   sealMessageSegment when a tool call closes the item.
     this.text = '';
+    this.segmentText = '';
     this.messageOutputIndex = null;
     this.messageStarted = false;
     this.textPartStarted = false;
@@ -662,6 +695,18 @@ class ResponsesStreamTranslator {
   }
 
   processChunk(chunk) {
+    // A terminal event has already gone out — `response.failed` from error(), or
+    // `response.completed` from finish(). Both set `finished`, and finish() has
+    // always consulted it; processChunk did not, so an upstream that kept sending
+    // after an in-band error produced `response.failed` followed by
+    // `response.output_text.delta`. Measured before this guard: the failed event
+    // landed at index 5 of the event sequence and a text delta at index 6.
+    //
+    // That is not a cosmetic ordering problem. `response.failed` is a terminal
+    // state in the Responses event contract, so an SDK has already settled the
+    // request and torn down its accumulator; a later delta either throws inside
+    // the client or silently reopens a finished turn.
+    if (this.finished) return;
     if (chunk.created) this.createdAt = chunk.created;
     if (chunk.model) this.model = chunk.model;
     this.start();
@@ -736,6 +781,30 @@ class ResponsesStreamTranslator {
     this.send('response.output_item.added', { output_index: this.messageOutputIndex, item: addedItem });
   }
 
+  /**
+   * Close the open message item so text arriving AFTER a tool call opens a new one.
+   *
+   * Without this the message item is a SINGLETON: `msgId` was minted once in the
+   * constructor and `messageStarted` latched true forever, so post-tool text was
+   * appended to item 0. MEASURED on frames text -> tool_call -> text: one message
+   * item at oi=0 carrying "BEFORE AFTER" with the tool at oi=1, i.e. a client
+   * reassembling the turn places ALL text before the call it actually followed.
+   * Anthropic on identical frames opens content_block index=2 for the second text,
+   * which is the shape this brings the Responses exit in line with.
+   */
+  sealMessageSegment() {
+    if (!this.messageStarted || this.messageDone) return;
+    this.finishMessage();
+    // Reset only the per-ITEM state. `this.text` deliberately keeps accumulating —
+    // see the comment on `segmentText`.
+    this.msgId = genMessageId();
+    this.messageStarted = false;
+    this.textPartStarted = false;
+    this.messageDone = false;
+    this.messageOutputIndex = null;
+    this.segmentText = '';
+  }
+
   ensureTextPart() {
     if (this.textPartStarted) return;
     this.ensureMessage();
@@ -752,6 +821,7 @@ class ResponsesStreamTranslator {
     if (!text) return;
     this.ensureTextPart();
     this.text += text;
+    this.segmentText += text;
     this.send('response.output_text.delta', {
       item_id: this.msgId,
       output_index: this.messageOutputIndex,
@@ -781,6 +851,11 @@ class ResponsesStreamTranslator {
 
     const ensureItem = (name, responseTool) => {
       if (existing.item) return;
+      // A tool item is about to open, so any text already streamed belongs to a
+      // message item that ENDED before it. Sealing here — at the point the tool
+      // item is created, not in finish() — is what gives the post-tool text its own
+      // item and keeps output_index ascending in emission order.
+      this.sealMessageSegment();
       const item = responseTool?.type === 'custom'
         ? {
             type: 'custom_tool_call',
@@ -912,12 +987,15 @@ class ResponsesStreamTranslator {
     if (this.messageDone) return;
     this.messageDone = true;
     this.ensureTextPart();
-    const donePart = { type: 'output_text', text: this.text, annotations: [] };
+    // `segmentText`, not `text`: this event closes ONE item, and its text must be
+    // what that item streamed. Using the whole-turn accumulator here republished
+    // the pre-tool text inside the post-tool item.
+    const donePart = { type: 'output_text', text: this.segmentText, annotations: [] };
     this.send('response.output_text.done', {
       item_id: this.msgId,
       output_index: this.messageOutputIndex,
       content_index: 0,
-      text: this.text,
+      text: this.segmentText,
     });
     this.send('response.content_part.done', {
       item_id: this.msgId,
@@ -925,7 +1003,7 @@ class ResponsesStreamTranslator {
       content_index: 0,
       part: donePart,
     });
-    const complete = textMessageItem(this.msgId, this.text);
+    const complete = textMessageItem(this.msgId, this.segmentText);
     this.send('response.output_item.done', { output_index: this.messageOutputIndex, item: complete });
     this.outputItems[this.messageOutputIndex] = complete;
   }
@@ -987,7 +1065,10 @@ class ResponsesStreamTranslator {
             },
           }
           : {}),
-        usage: mapUsage(this.finalUsage),
+        // Same rule as the non-streaming path — see the comment on the other
+        // mapUsage call site. Both paths must agree, or one exit reports unknown
+        // usage as 0 while its sibling omits it for the identical upstream.
+        ...(hasReportedUsage(this.finalUsage) ? { usage: mapUsage(this.finalUsage) } : {}),
       },
     });
   }
@@ -1171,8 +1252,37 @@ function messageHasText(m) {
  * calls) round-trips; per-request usage does not, because the store never held it —
  * so usage is reported as zeroed rather than invented.
  */
+/**
+ * The assistant turn that ANSWERS the stored conversation's last user message.
+ *
+ * The search stops at the last user message instead of scanning the whole array.
+ * An unbounded `reverse().find(role === 'assistant')` walks straight past it and
+ * returns an ANCESTOR turn's answer, because the store holds the accumulated
+ * conversation — every earlier assistant reply is still in the array. Measured on
+ * a two-turn chain whose second turn produced no output: GET returned
+ * `"It is 4."` while the last user message asked `"And 3+3?"`, reported as
+ * `status: 'completed'`.
+ *
+ * Bounding the search is the fix rather than gating the one call site that can
+ * produce the state, because that call site is not the property worth relying on:
+ * `commit(null)` is unreachable today (every non-stream 200 in chat.js builds a
+ * `message` object), so the defect is latent — the day any new path omits it, an
+ * unbounded search silently serves a stale answer. A bounded one reports no
+ * output, which is the truth.
+ */
+function assistantAnsweringLastUserTurn(messages) {
+  let lastUser = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]?.role === 'user') { lastUser = i; break; }
+  }
+  for (let i = messages.length - 1; i > lastUser; i--) {
+    if (messages[i]?.role === 'assistant') return messages[i];
+  }
+  return null;
+}
+
 function storedResponseBody(responseId, entry) {
-  const assistant = [...entry.messages].reverse().find(m => m?.role === 'assistant') || null;
+  const assistant = assistantAnsweringLastUserTurn(entry.messages) || null;
   // The store holds Chat-shaped messages, whose content may be a PARTS ARRAY (the
   // Responses `input` items are normalized that way). Passing an array straight into
   // output_text produced a structurally invalid body — `text` held an array instead
@@ -1393,7 +1503,7 @@ export async function handleResponses(body, deps = {}) {
   const commit = (assistantMessage, terminal = {}) => {
     if (!isResponseStoreEnabled() || !chainable) return;
     try {
-      putResponse(
+      const stored = putResponse(
         responseId,
         (() => {
           const base = instructionsMsg
@@ -1409,6 +1519,21 @@ export async function handleResponses(body, deps = {}) {
           incompleteReason: terminal.incompleteReason || null,
         },
       );
+      // putResponse's return value used to be dropped, so a refusal to store was
+      // invisible from here: the client got 200 plus an id, and the id first
+      // showed itself as a 404 on the NEXT turn — one round trip away from the
+      // request that actually failed, with no server-side line to correlate.
+      //
+      // Only the surprising refusals are logged. `store:false` is not one: the
+      // caller asked for no retention and got it, which is the OpenAI contract.
+      // Nor is a missing callerKey reachable — `chainable` already returned above
+      // for that, which is why `_stats.rejected`, whose only bump sits on that
+      // branch, can never move from this call site. What IS reachable is an empty
+      // conversation (`input: []` or omitted `input` both normalize to zero
+      // messages, and neither is rejected upstream with a 400).
+      if (!stored && wantsPersistence(body.store)) {
+        log.warn(`Responses: store refused ${responseId} — client holds an id that will 404 (messages=${priorMessages.length}, assistant=${assistantMessage ? 'yes' : 'no'})`);
+      }
     } catch { /* best-effort — never fail a served request over bookkeeping */ }
   };
 

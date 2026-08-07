@@ -1,0 +1,58 @@
+{
+  "tests": [
+    "test/responses-post-tool-text-item.test.js",
+    "test/responses.test.js",
+    "test/terminal-event-guard.test.js"
+  ],
+  "expectBaselinePass": 57,
+  "mutations": [
+    {
+      "name": "the original defect — no seal at tool-item creation, so post-tool text is appended to the first message item and done comes out [1,0]",
+      "file": "src/handlers/responses.js",
+      "anchor": "      this.sealMessageSegment();",
+      "replacement": ""
+    },
+    {
+      "name": "the seal fires but does not re-arm the item — messageStarted stays latched, so no second item ever opens",
+      "file": "src/handlers/responses.js",
+      "anchor": "    this.msgId = genMessageId();\n    this.messageStarted = false;",
+      "replacement": "    this.msgId = genMessageId();"
+    },
+    {
+      "name": "the second item reuses the first item's id, so a client keying by item_id sees one item updated rather than two items",
+      "file": "src/handlers/responses.js",
+      "anchor": "    this.msgId = genMessageId();\n    this.messageStarted = false;",
+      "replacement": "    this.messageStarted = false;"
+    },
+    {
+      "name": "segmentText is never reset, so the post-tool item republishes the pre-tool text",
+      "file": "src/handlers/responses.js",
+      "anchor": "    this.messageOutputIndex = null;\n    this.segmentText = '';\n  }",
+      "replacement": "    this.messageOutputIndex = null;\n  }"
+    },
+    {
+      "name": "output_item.done reverts to the whole-turn accumulator, so each item claims all the turn's text",
+      "file": "src/handlers/responses.js",
+      "anchor": "    const complete = textMessageItem(this.msgId, this.segmentText);",
+      "replacement": "    const complete = textMessageItem(this.msgId, this.text);"
+    },
+    {
+      "name": "output_text.done reverts to the whole-turn accumulator",
+      "file": "src/handlers/responses.js",
+      "anchor": "      text: this.segmentText,\n    });",
+      "replacement": "      text: this.text,\n    });"
+    },
+    {
+      "name": "the store commit takes only the last segment, so a chained next turn loses the pre-tool text",
+      "file": "src/handlers/responses.js",
+      "anchor": "            content: translator.text || '',",
+      "replacement": "            content: translator.segmentText || '',"
+    },
+    {
+      "name": "OVER-REACH CONTROL: the seal runs on every text delta rather than at a tool call, fragmenting every ordinary multi-delta answer",
+      "file": "src/handlers/responses.js",
+      "anchor": "    this.ensureTextPart();\n    this.text += text;",
+      "replacement": "    this.sealMessageSegment();\n    this.ensureTextPart();\n    this.text += text;"
+    }
+  ]
+}

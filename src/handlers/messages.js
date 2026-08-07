@@ -116,6 +116,20 @@ function clientFacingMessage(type, rawMessage) {
   return rawMessage;
 }
 
+// Attach the upstream handler's transport headers to a translated error response.
+//
+// The error BODY is route-specific vocabulary and the translators own it; the headers
+// are plain HTTP and belong to whoever computed them. Keeping this as a wrapper rather
+// than a fourth parameter on toAnthropicError leaves that function's signature — and
+// its two in-stream callers, which have no HTTP headers to carry — untouched.
+//
+// Returns the response unchanged when there is nothing to attach, so a caller cannot
+// tell the difference between "no upstream headers" and "not wrapped".
+function withUpstreamHeaders(response, headers) {
+  if (!headers || typeof headers !== 'object' || !Object.keys(headers).length) return response;
+  return { ...response, headers: { ...headers, ...response.headers } };
+}
+
 function toAnthropicError(status, internalType, message) {
   let outStatus = status;
   let type;
@@ -472,6 +486,29 @@ function normalizeImageBlock(block) {
 // image sub-blocks to empty; here they become an explicit placeholder so the
 // model still knows an image was returned. Real forwarding of tool_result
 // images needs the gated vision path — TODO(PAID-1).
+/**
+ * Wrap a DECODED document block's text so its provenance survives translation.
+ *
+ * Anthropic separates an attachment from the caller's own words at the block level.
+ * This translation layer flattens both into ONE OpenAI-shaped user message
+ * (`textParts.join('\n')`), and after that join nothing downstream can tell them
+ * apart — the attachment IS the caller's message as far as any later reader is
+ * concerned. MEASURED consequence: a document reading "To install, run `npm install
+ * --force --unsafe-perm`" made the Bash prefix repair serve `--force --unsafe-perm`
+ * on top of the model's chosen `npm install`, because the repair reads the trailing
+ * user turn as a human instruction. Untrusted attachment text was deciding what the
+ * client executes.
+ *
+ * The markers restore the distinction the block structure already carried, rather
+ * than inventing a new protocol: the undecodable branch below has always injected
+ * `[document: …]` at this same exit, so a client can already receive that shape
+ * here. Telling the model "this is an attachment" is also the more accurate prompt —
+ * what it replaces is "this is indistinguishable from what the user typed".
+ */
+function wrapDocumentText(label, text) {
+  return `[document: ${label}]\n${text}\n[/document]`;
+}
+
 function flattenContentBlocks(blocks) {
   const parts = [];
   for (const b of (Array.isArray(blocks) ? blocks : [])) {
@@ -571,10 +608,13 @@ function anthropicToOpenAI(body, ccActive = false) {
           // Real PDF text extraction / attachment forwarding needs the gated
           // upstream path — TODO(PAID-1).
           const src = block.source || {};
+          const docLabel = block.title
+            ? `${block.title} (${src.media_type || 'text'})`
+            : (src.media_type || 'text');
           if (src.type === 'text' && typeof src.data === 'string') {
-            textParts.push(src.data);
+            textParts.push(wrapDocumentText(docLabel, src.data));
           } else if (src.type === 'content' && Array.isArray(src.content)) {
-            textParts.push(flattenContentBlocks(src.content));
+            textParts.push(wrapDocumentText(docLabel, flattenContentBlocks(src.content)));
           } else {
             const mt = src.media_type || (src.type === 'base64' ? 'application/pdf' : 'unknown');
             const label = block.title ? `${block.title} (${mt})` : mt;
@@ -1165,6 +1205,18 @@ class AnthropicStreamTranslator {
   }
 
   processChunk(chunk) {
+    // As in the other two translators: the check below only covers an error on THIS
+    // chunk. `messageStopped` is set by error() and by finish(), and finish() has
+    // always consulted it — processChunk did not, so an upstream that kept sending
+    // after an in-band error opened a SECOND content block on a stream Claude Code
+    // had already been told was over.
+    //
+    // Measured before this guard, the event sequence ended:
+    //   … content_block_stop | error | content_block_start | content_block_delta
+    // with 2 starts against 1 stop and no message_stop at all — a permanently
+    // unclosed block on the client side, which is worse than a dropped delta
+    // because the SDK waits on a stop that will never arrive.
+    if (this.messageStopped) return;
     if (chunk.error) {
       this.sawTerminalSignal = true;
       this.error(chunk.error);
@@ -1483,11 +1535,21 @@ export async function handleMessages(body, context = {}) {
   if (!wantStream) {
     const result = await chatHandler({ ...openaiBody, stream: false, __route: 'messages' }, effectiveContext);
     if (result.status !== 200) {
-      return toAnthropicError(
+      // Carry the upstream's transport headers across the translation. This used to
+      // pass three scalars, so `Retry-After` — which chat.js:3011 computes and puts
+      // in BOTH the header and the body when the pool is rate-limited — was dropped
+      // here, one step before the router. Measured: a non-stream 429 on /v1/messages
+      // logged "advertised 600s" and arrived at the client with no retry-after at
+      // all, while /v1/responses (which does not re-wrap) forwarded it.
+      //
+      // Only the error VOCABULARY is Anthropic-specific; Retry-After is HTTP, and the
+      // comment on the streaming twin of this branch already says the mapping exists
+      // "so the SDK applies correct retry/backoff" — which is precisely the header.
+      return withUpstreamHeaders(toAnthropicError(
         result.status,
         result.body?.error?.type,
         result.body?.error?.message,
-      );
+      ), result.headers);
     }
     return { status: 200, body: openAIToAnthropic(result.body, requestedModel, msgId, cachePolicy, body.stop_sequences) };
   }
@@ -1511,11 +1573,11 @@ export async function handleMessages(body, context = {}) {
     // The OpenAI path returned a non-stream error (e.g. 403 model_not_entitled,
     // 503 capacity_error) before any byte streamed — map it to the Anthropic
     // error enum so the SDK applies correct retry/backoff.
-    return toAnthropicError(
+    return withUpstreamHeaders(toAnthropicError(
       streamResult.status || 502,
       streamResult.body?.error?.type,
       streamResult.body?.error?.message,
-    );
+    ), streamResult.headers);
   }
 
   return {

@@ -1,0 +1,39 @@
+{
+  "tests": [
+    "test/response-id-entropy-guard.test.js",
+    "test/responses.test.js"
+  ],
+  "expectBaselinePass": 42,
+  "mutations": [
+    {
+      "name": "the id is shortened to 12 hex chars — half the width the README's 90-bit claim rests on, and every other test stays green",
+      "file": "src/handlers/responses.js",
+      "anchor": "  return 'resp_' + randomUUID().replace(/-/g, '').slice(0, 24);",
+      "replacement": "  return 'resp_' + randomUUID().replace(/-/g, '').slice(0, 12).padEnd(24, '0');"
+    },
+    {
+      "name": "the id becomes a counter — same shape, same length, zero entropy",
+      "file": "src/handlers/responses.js",
+      "anchor": "function genResponseId() {\n  return 'resp_' + randomUUID().replace(/-/g, '').slice(0, 24);",
+      "replacement": "let __ctr = 0;\nfunction genResponseId() {\n  return 'resp_' + String(++__ctr).padStart(24, '0');"
+    },
+    {
+      "name": "half the id becomes a constant shard tag — full length, half the search space",
+      "file": "src/handlers/responses.js",
+      "anchor": "  return 'resp_' + randomUUID().replace(/-/g, '').slice(0, 24);",
+      "replacement": "  return 'resp_' + 'aaaaaaaaaaaa' + randomUUID().replace(/-/g, '').slice(0, 12);"
+    },
+    {
+      "name": "the id is derived from the clock — monotonic and guessable from a known request time",
+      "file": "src/handlers/responses.js",
+      "anchor": "  return 'resp_' + randomUUID().replace(/-/g, '').slice(0, 24);",
+      "replacement": "  return 'resp_' + Date.now().toString(16).padStart(24, '0');"
+    },
+    {
+      "name": "OVER-REACH CONTROL: the id gains a dash, so a caller that round-trips it verbatim still works but the asserted shape is wrong",
+      "file": "src/handlers/responses.js",
+      "anchor": "  return 'resp_' + randomUUID().replace(/-/g, '').slice(0, 24);",
+      "replacement": "  return 'resp_' + randomUUID().slice(0, 24);"
+    }
+  ]
+}
