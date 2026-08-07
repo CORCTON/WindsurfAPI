@@ -93,8 +93,8 @@
     {
       "name": "the delta is counted in characters — a CJK prompt under-reports 3x and slips under the threshold",
       "file": "src/handlers/identity-neutralize.js",
-      "anchor": "    const removed = Buffer.byteLength(out, 'utf8') - Buffer.byteLength(next, 'utf8');",
-      "replacement": "    const removed = out.length - next.length;"
+      "anchor": "    const beforeBytes = Buffer.byteLength(out, 'utf8');\n    const afterBytes = Buffer.byteLength(next, 'utf8');",
+      "replacement": "    const beforeBytes = out.length;\n    const afterBytes = next.length;"
     },
     {
       "name": "rule() stops writing back — every rewrite silently does nothing (the whole 529 defence off)",

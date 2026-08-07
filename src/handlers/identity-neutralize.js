@@ -25,6 +25,13 @@ const WITHIN_PARAGRAPH = '(?:[^\\n]|\\n(?!\\s*\\n))*?';
  * nothing — a line per request would be noise.
  */
 const OVER_DELETION_WARN_BYTES = 512;
+// A self-identification phrase ("You are Claude Code, Anthropic's official CLI…")
+// appears once or twice in a system prompt — a client repeating its own identity line
+// three times is already unusual. A bare-token rule firing more than that is far more
+// likely to be matching the CALLER's content, which is the case a7-freeform hit in
+// SQL DDL and in source code. Set above the plausible-identity count rather than at 1
+// so an ordinary two-mention prompt stays quiet.
+const MULTI_HIT_REWRITE_WARN_COUNT = 1;
 
 /**
  * Client-identity neutralization for upstream requests.
@@ -75,17 +82,54 @@ const OVER_DELETION_WARN_BYTES = 512;
 export function neutralizeClientIdentity(text, env = process.env, opts = {}) {
   if (!text || String(env.WINDSURFAPI_NEUTRALIZE_CLIENT_ID || '1') === '0') return text;
   let out = String(text);
-  /** Apply one rule, and WARN if that single substitution removed too much. */
+  /**
+   * Apply one rule, and WARN when the substitution is worth an operator's attention.
+   *
+   * TWO directions, because the deletion-only check was blind to the shape that
+   * actually corrupted caller content. `removed > OVER_DELETION_WARN_BYTES` can only
+   * fire when the text SHRINKS, and the one rule that rewrites a bare token —
+   * a7-freeform, FREEFORM(8B) -> free-form(9B) — GROWS by one byte per hit, so
+   * `removed` is -1 and no threshold in the world catches it. MEASURED damage while
+   * it was silent:
+   *     CHECK (kind IN ('FREEFORM','STRUCTURED'))  ->  ('free-form','STRUCTURED')
+   *     if (mode === FREEFORM)                     ->  mode === free-form
+   * The first rewrites a string literal inside a data contract; the second is not
+   * valid code. Neither shrinks the prompt, so the guard added for the unbounded-regex
+   * over-deletion defect could not see either.
+   *
+   * The growth direction is counted in OCCURRENCES, not bytes. A byte threshold in
+   * this direction is the wrong instrument twice over: a single-byte-per-hit rewrite
+   * never reaches any useful byte figure, while an ordinary identity rewrite
+   * (a4-cli-line replaces a clause with a longer sentence) trivially exceeds one and
+   * would warn on every well-behaved request — training operators to ignore the line,
+   * which is the failure mode this is supposed to prevent. What distinguishes
+   * a7-freeform is that it is a GLOBAL BARE-TOKEN rule: it can hit an unbounded number
+   * of times in text it was never aimed at. So the signal is "this rule fired more
+   * times than a self-identification phrase plausibly appears".
+   *
+   * The deletion branch is byte-for-byte unchanged, so the W2 guard it was written for
+   * still holds exactly as before.
+   */
   const rule = (id, re, replacement) => {
     const next = out.replace(re, replacement);
     if (next === out) return;
     // Byte delta, not char delta: the operator-visible number must match what the
     // prompt actually loses on the wire (the model catalogue carries an em dash).
-    const removed = Buffer.byteLength(out, 'utf8') - Buffer.byteLength(next, 'utf8');
+    const beforeBytes = Buffer.byteLength(out, 'utf8');
+    const afterBytes = Buffer.byteLength(next, 'utf8');
+    const removed = beforeBytes - afterBytes;
     if (removed > OVER_DELETION_WARN_BYTES) {
       log.warn(`neutralizeClientIdentity: rule ${id} removed ${removed} bytes in one `
-        + `substitution (threshold ${OVER_DELETION_WARN_BYTES}) — prompt ${Buffer.byteLength(out, 'utf8')}`
-        + ` → ${Buffer.byteLength(next, 'utf8')} bytes. Check that no caller instruction was swallowed.`);
+        + `substitution (threshold ${OVER_DELETION_WARN_BYTES}) — prompt ${beforeBytes}`
+        + ` → ${afterBytes} bytes. Check that no caller instruction was swallowed.`);
+    } else if (re.global) {
+      const hits = (out.match(re) || []).length;
+      if (hits > MULTI_HIT_REWRITE_WARN_COUNT) {
+        log.warn(`neutralizeClientIdentity: rule ${id} rewrote ${hits} occurrences in one `
+          + `substitution (threshold ${MULTI_HIT_REWRITE_WARN_COUNT}) — prompt ${beforeBytes}`
+          + ` → ${afterBytes} bytes. A bare-token rule matching this often is probably `
+          + 'hitting caller content (SQL enums, identifiers, docs), not a client identity string.');
+      }
     }
     out = next;
   };

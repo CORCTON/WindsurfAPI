@@ -1,0 +1,48 @@
+{
+  "tests": [
+    "test/neutralize-rewrite-visibility.test.js",
+    "test/identity-neutralize-paragraph-bound.test.js",
+    "test/identity-neutralize-shapes.test.js",
+    "test/client-identity-neutralize.test.js"
+  ],
+  "expectBaselinePass": 72,
+  "mutations": [
+    {
+      "name": "the original defect — deletion-only accounting, so a length-increasing rewrite of caller content stays silent",
+      "file": "src/handlers/identity-neutralize.js",
+      "anchor": "    } else if (re.global) {\n      const hits = (out.match(re) || []).length;\n      if (hits > MULTI_HIT_REWRITE_WARN_COUNT) {",
+      "replacement": "    } else if (false) {\n      const hits = (out.match(re) || []).length;\n      if (hits > MULTI_HIT_REWRITE_WARN_COUNT) {"
+    },
+    {
+      "name": "the count threshold rises past the reported two-occurrence case, so the SQL-DDL rewrite goes back to being silent",
+      "file": "src/handlers/identity-neutralize.js",
+      "anchor": "const MULTI_HIT_REWRITE_WARN_COUNT = 1;",
+      "replacement": "const MULTI_HIT_REWRITE_WARN_COUNT = 5;"
+    },
+    {
+      "name": "SURVIVOR (documented): the growth branch drops its `re.global` condition. Harmless TODAY, and the premise is asserted by the 'no non-global rule carries a capture group' test rather than left implicit. String.match(nonGlobalRe) returns [fullMatch, ...captureGroups], so the count can only exceed 1 for a non-global rule that HAS a group — and none does, so with MULTI_HIT_REWRITE_WARN_COUNT=1 every non-global rule yields hits=1 and `1 > 1` is false either way. NOT dead code: it is what stops a spurious warning the moment someone adds a capture group to a non-global rule, which is a normal thing to do when a replacement needs $1. If that premise test ever fails, this mutation must be re-run — it becomes load-bearing and should then be CAUGHT.",
+      "file": "src/handlers/identity-neutralize.js",
+      "anchor": "    } else if (re.global) {",
+      "replacement": "    } else if (true) {",
+      "expectCaught": false
+    },
+    {
+      "name": "the two branches stop being exclusive, so a large deletion is ALSO reported as a rewrite",
+      "file": "src/handlers/identity-neutralize.js",
+      "anchor": "    } else if (re.global) {\n      const hits = (out.match(re) || []).length;",
+      "replacement": "    }\n    if (re.global) {\n      const hits = (out.match(re) || []).length;"
+    },
+    {
+      "name": "the over-deletion branch loses its threshold, so the W2 guard it was built for reports every deletion",
+      "file": "src/handlers/identity-neutralize.js",
+      "anchor": "    if (removed > OVER_DELETION_WARN_BYTES) {",
+      "replacement": "    if (removed > 0) {"
+    },
+    {
+      "name": "OVER-REACH CONTROL: the count threshold drops to zero, so every global rule warns on every single hit including the trigger the rule exists for",
+      "file": "src/handlers/identity-neutralize.js",
+      "anchor": "const MULTI_HIT_REWRITE_WARN_COUNT = 1;",
+      "replacement": "const MULTI_HIT_REWRITE_WARN_COUNT = 0;"
+    }
+  ]
+}
