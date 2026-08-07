@@ -9,6 +9,12 @@ model-access.json
 sshpass.sh
 sshpass2.sh
 deploy-us.py
+# scripts/ is IGNORE-BY-DEFAULT with a per-file allowlist below. A new script is
+# therefore invisible to git until it gets its own `!scripts/<name>` line — `ls`
+# shows it, `git status` does not, and it is silently absent from the commit.
+# Measured: scripts/mutate-verify-dirty.mjs was written, tested and referenced in
+# a handoff before anyone noticed git had never seen it; it surfaced only because
+# `git status` still reported the same file count as before.
 scripts/*
 !scripts/native-bridge-smoke.mjs
 !scripts/special-agent-smoke.mjs
@@ -28,6 +34,7 @@ scripts/*
 !scripts/dashboard-cdp-check.mjs
 !scripts/exe-boot-smoke.mjs
 !scripts/mutate-verify.mjs
+!scripts/mutate-verify-dirty.mjs
 src/get-token.js
 src/test-cascade.js
 src/runtime-config.json
