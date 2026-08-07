@@ -499,14 +499,8 @@ export function resolveSessionId(callerKey, messages, env = process.env) {
         const state = live[0];
         state.lastSeen = now;
         const newWindow = hashes.slice(-PAIR_WINDOW_SIZE);
-        if (state.stateId) {
-          for (const ph of newWindow) {
-            const k = `${scopeId}:${ph}`;
-            if (!pairIndex.has(k)) pairIndex.set(k, new Set());
-            pairIndex.get(k).add(state.stateId);
-          }
-        }
         state.pairWindow = newWindow;
+        indexState(state.stateId, state);
         state.pairRecords = postBarrierRecords.slice(-PAIR_WINDOW_SIZE);
         return state.sessionId;
       }
