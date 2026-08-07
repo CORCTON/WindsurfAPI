@@ -416,6 +416,7 @@ export function isModelConfigStableEnabled(env = process.env) {
 // passes isFinite, and an uncapped digest here would let one 30KB reasoning turn
 // ride the system prompt whole — exactly the unbounded-body failure mode.
 const SESSION_REASONING_MAX_CHARS_CEILING = 32000;
+const SESSION_REASONING_COUNT_CEILING = 32;
 export function getSessionReasoningMaxChars(env = process.env) {
   const n = Number(env.DEVIN_CONNECT_SESSION_REASONING_MAX_CHARS);
   if (!Number.isFinite(n) || n < 0) return 4000;
@@ -427,7 +428,7 @@ export function getSessionReasoningMaxChars(env = process.env) {
 export function getSessionReasoningCount(env = process.env) {
   const n = Number(env.DEVIN_CONNECT_SESSION_REASONING_COUNT);
   if (!Number.isFinite(n) || n <= 0) return 5;
-  return Math.min(Math.floor(n), 32);
+  return Math.min(Math.floor(n), SESSION_REASONING_COUNT_CEILING);
 }
 
 export function isReasoningInjectEnabled(env = process.env) {

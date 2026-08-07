@@ -5360,9 +5360,7 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
       };
       const emitThinking = (clean, { accumulate = true } = {}) => {
         if (!clean) return;
-        if (accumulate) {
-          accThinking += clean;
-        }
+        if (accumulate) accThinking += clean;
         emittedClientPayload = true;
         send({ id, object: 'chat.completion.chunk', created, model,
           choices: [{ index: 0, delta: { reasoning_content: clean }, finish_reason: null }] });
