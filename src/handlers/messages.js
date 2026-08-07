@@ -1258,9 +1258,7 @@ class AnthropicStreamTranslator {
       // to the reasoning stream, capture it so closeCurrentBlock round-trips the
       // genuine value instead of the empty-string placeholder.
       if (delta.reasoning_signature) this.pendingThinkingSignature = delta.reasoning_signature;
-      if (delta.content) {
-        this.emitTextDelta(delta.content);
-      }
+      if (delta.content) this.emitTextDelta(delta.content);
       if (Array.isArray(delta.tool_calls)) {
         for (const tc of delta.tool_calls) this.emitToolCallDelta(tc);
       }

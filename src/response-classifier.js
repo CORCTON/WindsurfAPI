@@ -20,14 +20,6 @@ const THINK_CLOSE = '<' + '/' + 'think' + '>';
 const MAX_PENDING = 32000; // hold ceiling for an unterminated think span
 const MAX_LEAD = 8192;     // undecided-hold ceiling before committing to text
 
-// Longest suffix of `buf` that is a prefix of `marker` ('' if none).
-function suffixPrefixLen(buf, marker) {
-  const max = Math.min(buf.length, marker.length);
-  for (let n = max; n > 0; n--) {
-    if (buf.endsWith(marker.slice(0, n))) return n;
-  }
-  return 0;
-}
 
 export class ThinkTextClassifier {
   constructor() {
