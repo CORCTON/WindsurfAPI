@@ -418,8 +418,13 @@ export function isModelConfigStableEnabled(env = process.env) {
 const SESSION_REASONING_MAX_CHARS_CEILING = 32000;
 const SESSION_REASONING_COUNT_CEILING = 32;
 export function getSessionReasoningMaxChars(env = process.env) {
-  const n = Number(env.DEVIN_CONNECT_SESSION_REASONING_MAX_CHARS);
-  if (!Number.isFinite(n) || n < 0) return 4000;
+  // '' and 0 < n < 1 fall back to the default: Number('') === 0 would read an
+  // empty assignment as opt-out, and Math.floor(0.5) === 0 would silently turn
+  // the feature off — count's rule applied to chars: only a literal 0 opts out.
+  const raw = String(env.DEVIN_CONNECT_SESSION_REASONING_MAX_CHARS ?? '').trim();
+  if (raw === '') return 4000;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0 || (n > 0 && n < 1)) return 4000;
   if (n === 0) return 0;
   return Math.min(Math.floor(n), SESSION_REASONING_MAX_CHARS_CEILING);
 }
