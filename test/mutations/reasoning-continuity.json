@@ -3,9 +3,10 @@
     "test/session-continuity.test.js",
     "test/devin-connect.test.js",
     "test/messages-incoming-thinking.test.js",
-    "test/devin-connect-openai.test.js"
+    "test/devin-connect-openai.test.js",
+    "test/session-continuity-commit-fallback.test.js"
   ],
-  "expectBaselinePass": 286,
+  "expectBaselinePass": 289,
   "mutations": [
     {
       "name": "T1 store: the overlap-target commit path stops saving the reasoning tail",
@@ -50,11 +51,22 @@
       "replacement": "        } else if (block.type === 'thinking') {"
     },
     {
-      "name": "SURVIVOR (documented): T2 chat.js commit fallback dropped — only a handler-level integration run can see the outbound-empty path; unit layer covers capture and store",
+      "name": "T2 stream commit fallback dropped — outbound-empty reasoning no longer falls back to the inbound captured thinking (caught by test/session-continuity-commit-fallback.test.js stream fixture)",
       "file": "src/handlers/chat.js",
       "anchor": "commitConnectSession(callerKey || '', commitMsgs, undefined, { reasoning: r.sr?.reasoning || incomingConnectReasoning });",
-      "replacement": "commitConnectSession(callerKey || '', commitMsgs, undefined, { reasoning: r.sr?.reasoning });",
-      "expectCaught": false
+      "replacement": "commitConnectSession(callerKey || '', commitMsgs, undefined, { reasoning: r.sr?.reasoning });"
+    },
+    {
+      "name": "T2 non-stream commit fallback dropped — same conjunction on the second call site (caught by the non-stream fixture)",
+      "file": "src/handlers/chat.js",
+      "anchor": "commitConnectSession(callerKey || '', commitMsgs, undefined, { reasoning: msg?.reasoning_content || incomingConnectReasoning });",
+      "replacement": "commitConnectSession(callerKey || '', commitMsgs, undefined, { reasoning: msg?.reasoning_content });"
+    },
+    {
+      "name": "count clamp fractional hole — n=0.5 must fall back to the default 5, not Math.floor to a silent 0 (queue empty, digests gone)",
+      "file": "src/session-continuity.js",
+      "anchor": "if (!Number.isFinite(n) || n < 1) return 5;",
+      "replacement": "if (!Number.isFinite(n) || n <= 0) return 5;"
     }
   ]
 }

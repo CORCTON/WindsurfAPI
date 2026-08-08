@@ -912,6 +912,12 @@ export function buildGetChatMessageRequest({ token, messages, model, sessionId, 
   // block to the system prompt — the only wire position where context rides without
   // becoming an assistant turn (self-reflection-loop anti-pattern). Byte-compatible:
   // tag #2 just gets longer; absent when the gate is off or the queue is empty.
+  //
+  // ORDERING vs identity-neutralize (cf. #219 preamble ordering): the neutralize
+  // pass rewrites system-role message content in chat.js BEFORE this wire builder
+  // runs; this trail is appended here, AFTER it — so the a4-a7 rules never see the
+  // trail and the digest reaches the upstream verbatim. That is intentional: the
+  // trail's whole purpose is letting the next turn see the prior reasoning as-is.
   if (continuityTrail) systemPrompt += continuityTrail;
 
   // ModelConfig #15. RE-CALIBRATED FROM THE FULL CAPTURE SET (not just req022):

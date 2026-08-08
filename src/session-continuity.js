@@ -425,9 +425,12 @@ export function getSessionReasoningMaxChars(env = process.env) {
 }
 
 // Queue length in turns (how many per-turn digests the state keeps). Default 5.
+// n < 1 — including a fractional value like 0.5, which Math.floor would turn
+// into a silent 0 — falls back to the default: count=0 is not a meaningful
+// setting ("keep how many turns"), so unlike chars=0 it is not an opt-out.
 export function getSessionReasoningCount(env = process.env) {
   const n = Number(env.DEVIN_CONNECT_SESSION_REASONING_COUNT);
-  if (!Number.isFinite(n) || n <= 0) return 5;
+  if (!Number.isFinite(n) || n < 1) return 5;
   return Math.min(Math.floor(n), SESSION_REASONING_COUNT_CEILING);
 }
 
