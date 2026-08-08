@@ -17,16 +17,17 @@
 //     far plus the current chunk is emitted immediately, and the stream then
 //     passes through with no further delay.
 //   - Suppression happens ONLY when, at stream end, the accumulated content
-//     is byte-identical to the FULL reasoning — same length, same bytes. A
-//     strict prefix (content shorter than the reasoning, stream ends there)
-//     is RELEASED at settle(), because a client that collapses the thinking
-//     blocks would otherwise see an empty reply.
+//     is byte-identical to the FULL reasoning AND the caller explicitly requested
+//     thinking (wantThinking: true). If wantThinking is false (default), standard
+//     OpenAI SDK clients only read delta.content — reasoning_content is invisible
+//     to them, so the held tail is emitted at settle() to prevent an empty answer.
 //
-// Net effect: exact full-length duplicates are suppressed; a normal answer
-// never waits for a single extra chunk beyond the divergence point.
+// Net effect: exact full-length duplicates are suppressed when thinking is enabled;
+// a normal answer never waits for a single extra chunk beyond the divergence point.
 //
 // INVARIANTS
-//   - content == reasoning (full length, byte-identical) → suppressed at settle()
+//   - content == reasoning AND wantThinking: true        → suppressed at settle()
+//   - content == reasoning AND wantThinking: false       → released at settle()
 //   - content is a strict prefix of the reasoning        → released at settle()
 //   - content diverges from the reasoning              → everything emitted at
 //     the moment of divergence; the stream passes through afterwards
@@ -76,7 +77,7 @@
 
 const HELD_CAP = 1024 * 1024;
 
-export function createStreamReasoningDedup() {
+export function createStreamReasoningDedup({ wantThinking = false } = {}) {
   let seenReasoning = '';
   let held = '';
   let diverged = false;
@@ -112,10 +113,11 @@ export function createStreamReasoningDedup() {
 
   function settle() {
     if (held) {
-      // Suppress only a FULL verbatim duplicate — same length, same bytes.
-      // A strict prefix is released: suppressing it would hand clients that
-      // collapse thinking blocks an empty answer.
-      const suppress = held === seenReasoning;
+      // Verbatim full duplicate is suppressed ONLY when the caller explicitly
+      // requested thinking (wantThinking === true). Standard OpenAI SDK clients
+      // only read delta.content — reasoning_content is invisible to them, so
+      // suppressing identical content would yield an empty client answer.
+      const suppress = held === seenReasoning && wantThinking;
       const out = suppress ? '' : held;
       held = '';
       return { emit: out, suppressed: suppress };

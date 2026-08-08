@@ -51,8 +51,17 @@ describe('reasoning-dedup (incremental)', () => {
     assert.deepEqual(d.settle(), { emit: '', suppressed: false });
   });
 
-  it('full identity — content chunks together == reasoning, all held, settle suppresses', () => {
+  it('full identity when wantThinking: false (default) — content chunks together == reasoning, all held, settle emits held', () => {
     const d = createStreamReasoningDedup();
+    d.noteReasoning('Let me think carefully');
+    assert.deepEqual(d.feed('Let me '), { emit: '', hold: true });
+    assert.deepEqual(d.feed('think'), { emit: '', hold: true });
+    assert.deepEqual(d.feed(' carefully'), { emit: '', hold: true });
+    assert.deepEqual(d.settle(), { emit: 'Let me think carefully', suppressed: false });
+  });
+
+  it('full identity when wantThinking: true — content chunks together == reasoning, all held, settle suppresses', () => {
+    const d = createStreamReasoningDedup({ wantThinking: true });
     d.noteReasoning('Let me think carefully');
     assert.deepEqual(d.feed('Let me '), { emit: '', hold: true });
     assert.deepEqual(d.feed('think'), { emit: '', hold: true });
@@ -79,7 +88,7 @@ describe('reasoning-dedup (incremental)', () => {
   });
 
   it('multi-chunk prefix — a long prefix split across many chunks stays held, then release works', () => {
-    const d = createStreamReasoningDedup();
+    const d = createStreamReasoningDedup({ wantThinking: true });
     const reasoning = 'The quick brown fox jumps over the lazy dog — a long reasoning string.';
     d.noteReasoning(reasoning);
     for (const ch of reasoning) {
@@ -115,7 +124,7 @@ describe('reasoning-dedup (incremental)', () => {
   });
 
   it('empty-string chunk handling — feed("") returns { emit: "", hold: false } and does not disturb holding', () => {
-    const d = createStreamReasoningDedup();
+    const d = createStreamReasoningDedup({ wantThinking: true });
     d.noteReasoning('ab');
     assert.deepEqual(d.feed(''), { emit: '', hold: false });
     d.noteReasoning(''); // ignored

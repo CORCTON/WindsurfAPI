@@ -5331,7 +5331,7 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
       // T4 dedup: incremental reasoning/content prefix comparison. Holds only
       // while content byte-matches a prefix of the streamed reasoning; the
       // moment it diverges everything is released. See src/reasoning-dedup.js.
-      const reasoningDedup = createStreamReasoningDedup();
+      const reasoningDedup = createStreamReasoningDedup({ wantThinking: !!deps.wantThinking });
 
       const emitContent = (clean) => {
         if (!clean) return;

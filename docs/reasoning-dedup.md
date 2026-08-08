@@ -32,17 +32,21 @@ A normal answer never waits for a single extra chunk:
 
 - divergence → immediate release (no buffered delay beyond the divergence
   frame);
-- only a full-length byte-identical duplicate is suppressed at the end, so the
-  client never sees the reasoning twice;
+- only a full-length byte-identical duplicate is suppressed at the end when
+  the caller requested thinking (`wantThinking: true`), so the client never sees
+  the reasoning twice;
+- when `wantThinking` is false (default), standard OpenAI SDK clients only read
+  `delta.content` (reasoning is invisible), so the full duplicate is released at
+  `settle()` — the dedup cannot produce an empty answer;
 - the strict-prefix shape (the answer restates the opening of the reasoning
-  and the stream ends) is released, never suppressed — the dedup cannot
-  produce an empty answer.
+  and the stream ends) is released, never suppressed.
 
 ## Invariants
 
 | Stream shape | Held | Emitted | Suppressed at settle() |
 | --- | --- | --- | --- |
-| content == reasoning (full length, byte-identical) | all chunks | nothing | yes |
+| content == reasoning AND wantThinking: true | all chunks | nothing | yes |
+| content == reasoning AND wantThinking: false | all chunks | everything, at settle() | no |
 | content is a strict prefix of the reasoning | all chunks | everything, at settle() | no |
 | content diverges (anywhere) | only until divergence | everything, at the divergence frame | no |
 | reasoning shorter than content | only until content outruns the reasoning | everything | no |
