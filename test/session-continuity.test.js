@@ -459,6 +459,12 @@ describe('T1 reasoning continuity — digest, store queue, injection (Thinking-c
     assert.equal(getSessionReasoningMaxChars({ DEVIN_CONNECT_SESSION_REASONING_MAX_CHARS: '1e9' }), 32000, 'ceiling clamp — 1e9 must not pass through uncapped');
     assert.equal(getSessionReasoningCount({}), 5);
     assert.equal(getSessionReasoningCount({ DEVIN_CONNECT_SESSION_REASONING_COUNT: '99' }), 32, 'queue length capped');
+    // fractional hole: Math.floor(0.5) would silently turn the queue to 0 —
+    // count=0 is not a meaningful setting (unlike chars=0), so n < 1 → default
+    assert.equal(getSessionReasoningCount({ DEVIN_CONNECT_SESSION_REASONING_COUNT: '0.5' }), 5, 'fractional count must fall back to the default, not floor to 0');
+    assert.equal(getSessionReasoningCount({ DEVIN_CONNECT_SESSION_REASONING_COUNT: '0' }), 5, 'count=0 is not an opt-out — falls back to the default');
+    assert.equal(getSessionReasoningCount({ DEVIN_CONNECT_SESSION_REASONING_COUNT: '1.9' }), 1, 'fractional >= 1 floors normally');
+    assert.equal(getSessionReasoningCount({ DEVIN_CONNECT_SESSION_REASONING_COUNT: '1e9' }), 32, 'queue length ceiling');
     assert.equal(isReasoningInjectEnabled({ DEVIN_CONNECT_SESSION_REASONING_INJECT: 'on' }), true);
     assert.equal(isReasoningInjectEnabled({}), false);
   });
