@@ -241,6 +241,16 @@ async function* streamChatWithEmptyRetry(params, { env = process.env } = {}, opt
     // is left for a future PR.)
     const thinkClassifier = thinkTextRerouteEnabled() ? new ThinkTextClassifier() : null;
     for await (const ev of streamChatImpl(attemptParams)) {
+      if ((ev.type === 'content' || ev.type === 'reasoning') && leakTraceEnabled(env)) {
+        log.info('LEAK_TRACE stream-event', {
+          channel: ev.type,
+          think: thinkMarkersIn(ev.text),
+          sample: leakSample(ev.text),
+          len: ev.text ? ev.text.length : 0,
+          reqId: opts?.reqId ?? null,
+          account: opts?.account ?? null,
+        });
+      }
       if (ev.type === 'content' && thinkClassifier) {
         const routed = thinkClassifier.feed(ev.text);
         if (routed.thinking) {
@@ -262,16 +272,6 @@ async function* streamChatWithEmptyRetry(params, { env = process.env } = {}, opt
             sawReasoning = true;
             sawReasoningText += ev.text;
           }
-        }
-        if (leakTraceEnabled(env)) {
-          log.info('LEAK_TRACE stream-event', {
-            channel: ev.type,
-            think: thinkMarkersIn(ev.text),
-            sample: leakSample(ev.text),
-            len: ev.text ? ev.text.length : 0,
-            reqId: opts?.reqId ?? null,
-            account: opts?.account ?? null,
-          });
         }
         yield ev;
       } else if (ev.type === 'finish') {

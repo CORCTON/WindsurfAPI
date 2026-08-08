@@ -11,7 +11,8 @@ import { addAccountByKey, removeAccount } from '../src/auth.js';
 import { log } from '../src/config.js';
 import { handleChatCompletions, __resetConnectDeps, __setConnectDeps } from '../src/handlers/chat.js';
 import { handleMessages } from '../src/handlers/messages.js';
-import { toChatCompletion, __setStreamChatForTest } from '../src/devin-connect-openai.js';
+import { toChatCompletion, __setStreamChatForTest, __testing } from '../src/devin-connect-openai.js';
+const { streamChatWithEmptyRetry } = __testing;
 import { thinkMarkersIn } from '../src/leak-trace.js';
 
 let captured = [];
@@ -191,5 +192,29 @@ it('gate ON: settle log on an UPSTREAM-ERROR exit records the outcome, not an al
     assert.ok(settle.includes('"contentChars":0'), 'empty fields are expected here — and now explained');
   } finally {
     removeAccount(acct.id);
+  }
+});
+
+it('gate ON: LEAK_TRACE stream-event logs raw content event even when think-classifier reroute is active', async () => {
+  process.env.WINDSURFAPI_LEAK_TRACE = '1';
+  process.env.DEVIN_CONNECT = '1';
+  process.env.DEVIN_CONNECT_THINKTEXT_REROUTE = '1';
+  try {
+    __setStreamChatForTest(async function* () {
+      yield { type: 'content', text: '<think>thinking hard</think>answer' };
+      yield { type: 'finish', finish_reason: 'stop' };
+    });
+    const gen = streamChatWithEmptyRetry({ model: 'swe-1-6-slow' }, { env: process.env }, { reqId: 'req-test', account: { id: 'acct-test' } });
+    const events = [];
+    for await (const ev of gen) {
+      events.push(ev);
+    }
+    const streamEvent = leakLines().find((l) => l.includes('LEAK_TRACE stream-event') && l.includes('"channel":"content"'));
+    assert.ok(streamEvent, 'LEAK_TRACE stream-event logged for content channel on reroute path');
+    assert.ok(streamEvent.includes('"len":34'), `raw content length recorded, got: ${streamEvent}`);
+    assert.deepStrictEqual(events.map((e) => e.type), ['reasoning', 'content', 'finish'], 'think-classifier rerouted events as expected');
+  } finally {
+    delete process.env.DEVIN_CONNECT_THINKTEXT_REROUTE;
+    __setStreamChatForTest(null);
   }
 });
