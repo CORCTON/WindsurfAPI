@@ -16,18 +16,25 @@
 //   - As soon as content diverges from the reasoning prefix, EVERYTHING held so
 //     far plus the current chunk is emitted immediately, and the stream then
 //     passes through with no further delay.
-//   - Suppression happens ONLY when, at stream end, the content is still
-//     byte-identical to a prefix of the reasoning — that is the true duplicate.
+//   - Suppression happens ONLY when, at stream end, the accumulated content
+//     is byte-identical to the FULL reasoning — same length, same bytes. A
+//     strict prefix (content shorter than the reasoning, stream ends there)
+//     is RELEASED at settle(), because a client that collapses the thinking
+//     blocks would otherwise see an empty reply.
 //
-// Net effect: identical duplicates are suppressed; a normal answer never waits
-// for a single extra chunk beyond the divergence point.
+// Net effect: exact full-length duplicates are suppressed; a normal answer
+// never waits for a single extra chunk beyond the divergence point.
 //
 // INVARIANTS
-//   - content == reasoning (byte-identical)            → suppressed at settle()
+//   - content == reasoning (full length, byte-identical) → suppressed at settle()
+//   - content is a strict prefix of the reasoning        → released at settle()
 //   - content diverges from the reasoning              → everything emitted at
 //     the moment of divergence; the stream passes through afterwards
 //   - no reasoning seen yet                            → pure passthrough
 //   - settle() with an empty held buffer               → no-op
+//   - stream error/abort path                          → caller uses release():
+//     nothing is suppressed on the failure path, a held duplicate tail beats
+//     a silently missing tail
 //
 // The module is protocol-agnostic and dependency-free: it only ever compares
 // strings. It never sees SSE frames, model names or client state, and it has
@@ -48,15 +55,26 @@
 //           prefix                              → { emit: '',  hold: true  }
 //         - otherwise (DIVERGE)                 → { emit: held + text, hold: false }
 //   settle() → { emit: string, suppressed: boolean }
-//       Stream end. If the held buffer is non-empty (content never diverged and
-//       is a byte-identical prefix of the reasoning) → suppressed=true, emit=''
-//       (the held duplicate is silently dropped). Otherwise (nothing held — no
-//       content, or everything already emitted) → { emit: '', suppressed: false }.
+//       Stream end, success path. If the held buffer is byte-identical to the
+//       FULL reasoning → suppressed=true, emit=''. If it is a strict prefix
+//       (shorter) → suppressed=false, emit=held (released in one frame).
+//       Otherwise (nothing held) → { emit: '', suppressed: false }.
+//   release() → string
+//       Failure path (stream error / abort / client disconnect). Returns the
+//       held buffer unconditionally — never suppresses — and clears it. The
+//       caller emits the returned tail if non-empty.
+//
+// held is bounded by HELD_CAP: crossing it latches divergence (the buffer is
+// released) instead of growing without limit on a default-on path. In
+// practice held is already bounded by the reasoning length — the cap is
+// defense in depth, not the mechanism.
 //
 // Prefix checks run against the FULL accumulated reasoning string
 // (seenReasoning.startsWith(candidate)), which makes the comparison incremental:
 // O(candidate) per chunk, never a full-string rescan beyond the candidate
 // length.
+
+const HELD_CAP = 1024 * 1024;
 
 export function createStreamReasoningDedup() {
   let seenReasoning = '';
@@ -74,6 +92,13 @@ export function createStreamReasoningDedup() {
     if (diverged) return { emit: text, hold: false };
     const candidate = held + text;
     if (seenReasoning.startsWith(candidate)) {
+      if (candidate.length > HELD_CAP) {
+        // Cap crossed: latch divergence and flush rather than hold an
+        // unbounded buffer.
+        diverged = true;
+        held = '';
+        return { emit: candidate, hold: false };
+      }
       held = candidate;
       return { emit: '', hold: true };
     }
@@ -87,11 +112,24 @@ export function createStreamReasoningDedup() {
 
   function settle() {
     if (held) {
+      // Suppress only a FULL verbatim duplicate — same length, same bytes.
+      // A strict prefix is released: suppressing it would hand clients that
+      // collapse thinking blocks an empty answer.
+      const suppress = held === seenReasoning;
+      const out = suppress ? '' : held;
       held = '';
-      return { emit: '', suppressed: true };
+      return { emit: out, suppressed: suppress };
     }
     return { emit: '', suppressed: false };
   }
 
-  return { noteReasoning, feed, settle };
+  // Failure path (stream error / abort / client disconnect): returns the held
+  // tail unconditionally — nothing is suppressed here — and clears it.
+  function release() {
+    const out = held;
+    held = '';
+    return out;
+  }
+
+  return { noteReasoning, feed, settle, release };
 }

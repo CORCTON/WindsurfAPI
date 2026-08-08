@@ -6191,6 +6191,16 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             // output). Close cleanly with a plain stop — the caller saw
             // whatever partial content we produced. Error details only
             // go to the server log.
+            //
+            // Dedup failure path: emit the held tail unconditionally
+            // (release(), not settle() — nothing is suppressed here), so a
+            // client that does not render the reasoning channel still gets
+            // the duplicate tail instead of silence.
+            const heldTail = reasoningDedup.release();
+            if (heldTail) {
+              send(chunk({ id, created, model,
+                choices: [{ index: 0, delta: { content: heldTail }, finish_reason: null }] }));
+            }
             finishPartialStreamAfterError({ id, created, model, send, res, internalRoute: !isOpenAIClient });
             log.warn(`Stream: partial response delivered then failed (${errMsg})`);
           } else {

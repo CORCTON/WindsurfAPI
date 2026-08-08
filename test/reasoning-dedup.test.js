@@ -8,8 +8,10 @@
 //   - the moment content diverges from the reasoning prefix, everything held
 //     so far plus the current chunk is emitted and the stream passes through
 //     with no further delay;
-//   - suppression fires ONLY at settle() when the content is STILL a
-//     byte-identical prefix of the reasoning — the true duplicate.
+//   - suppression fires ONLY at settle() when the accumulated content equals
+//     the FULL reasoning byte-for-byte — the true duplicate. A strict prefix
+//     (content shorter, stream ends there) is released, never suppressed;
+//   - release() is the failure path: it returns the held tail unconditionally.
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
@@ -119,5 +121,38 @@ describe('reasoning-dedup (incremental)', () => {
     d.noteReasoning(''); // ignored
     assert.deepEqual(d.feed('ab'), { emit: '', hold: true });
     assert.deepEqual(d.settle(), { emit: '', suppressed: true });
+  });
+
+  it('strict prefix — content ends where the reasoning continues: settle() RELEASES the held tail (never an empty answer)', () => {
+    // The one shape that used to produce an empty client reply: the answer
+    // restates the first sentence of the reasoning and the stream ends there.
+    const d = createStreamReasoningDedup();
+    d.noteReasoning('The answer is 42 because of X.');
+    assert.deepEqual(d.feed('The answer '), { emit: '', hold: true });
+    assert.deepEqual(d.feed('is 42'), { emit: '', hold: true });
+    // Content is a byte-identical STRICT prefix of the reasoning, stream ends.
+    assert.deepEqual(d.settle(), { emit: 'The answer is 42', suppressed: false });
+  });
+
+  it('release() — failure path returns the held tail unconditionally, even a full duplicate', () => {
+    const d = createStreamReasoningDedup();
+    d.noteReasoning('exact duplicate');
+    assert.deepEqual(d.feed('exact duplicate'), { emit: '', hold: true });
+    // settle() would suppress this; the failure path must not.
+    assert.equal(d.release(), 'exact duplicate');
+    // Cleared: a later settle() is a no-op.
+    assert.deepEqual(d.settle(), { emit: '', suppressed: false });
+    assert.equal(d.release(), '');
+  });
+
+  it('held cap — crossing HELD_CAP latches divergence and flushes instead of holding an unbounded buffer', () => {
+    const d = createStreamReasoningDedup();
+    const big = 'a'.repeat(1024 * 1024 + 1);
+    d.noteReasoning(big + 'tail');
+    // Candidate exceeds the 1 MiB cap while still a prefix of the reasoning.
+    assert.deepEqual(d.feed(big), { emit: big, hold: false });
+    // Divergence latched: even a matching chunk passes through now.
+    assert.deepEqual(d.feed('a'), { emit: 'a', hold: false });
+    assert.deepEqual(d.settle(), { emit: '', suppressed: false });
   });
 });

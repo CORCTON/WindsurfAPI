@@ -2,7 +2,7 @@
   "tests": [
     "test/reasoning-dedup.test.js"
   ],
-  "expectBaselinePass": 9,
+  "expectBaselinePass": 12,
   "mutations": [
     {
       "name": "prefix check replaced by unconditional true — content NEVER diverges, every chunk is held and the whole response is silently dropped at settle() (the old silent-hold content-loss defect)",
@@ -19,14 +19,26 @@
     {
       "name": "divergence not latched — after the first mismatch the stream keeps comparing against the reasoning and can re-hold matching chunks, so the mid-stream release is split across frames again",
       "file": "src/reasoning-dedup.js",
-      "anchor": "diverged = true;",
-      "replacement": "diverged = false;"
+      "anchor": "diverged = true;\n    const release = held + text;",
+      "replacement": "diverged = false;\n    const release = held + text;"
     },
     {
-      "name": "settle never suppresses — the byte-identical prefix duplicate is flushed to the client at stream end",
+      "name": "strict equality relaxed back to a prefix check — a STRICT-PREFIX answer (content shorter than the reasoning, stream ends) is suppressed at settle() and the client gets an EMPTY reply",
       "file": "src/reasoning-dedup.js",
-      "anchor": "return { emit: '', suppressed: true };",
-      "replacement": "return { emit: '', suppressed: false };"
+      "anchor": "const suppress = held === seenReasoning;",
+      "replacement": "const suppress = seenReasoning.startsWith(held);"
+    },
+    {
+      "name": "held cap doubled — a >1 MiB verbatim duplicate is held instead of flushed, re-opening the unbounded-buffer shape on the default-on path",
+      "file": "src/reasoning-dedup.js",
+      "anchor": "if (candidate.length > HELD_CAP) {",
+      "replacement": "if (candidate.length > 2 * HELD_CAP) {"
+    },
+    {
+      "name": "release() emptied — the failure path (stream error/abort) silently drops the held tail, the exact loss settle() is forbidden from causing",
+      "file": "src/reasoning-dedup.js",
+      "anchor": "function release() {\n    const out = held;",
+      "replacement": "function release() {\n    const out = '';"
     }
   ]
 }

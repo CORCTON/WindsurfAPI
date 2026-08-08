@@ -14,9 +14,17 @@ thinking models.
 - The moment content diverges from the reasoning prefix, everything held so far
   plus the current chunk is emitted immediately — one SSE frame — and the rest
   of the stream passes through untouched.
-- At stream end, suppression fires **only** if the content is *still* a
-  byte-identical prefix of the reasoning: that is the true duplicate, and it is
-  silently dropped.
+- At stream end, suppression fires **only** if the accumulated content equals
+  the *full* reasoning byte-for-byte: that is the true duplicate, and it is
+  silently dropped. A strict prefix (content shorter than the reasoning, the
+  stream ends there) is **released** — suppressing it would hand clients that
+  collapse the thinking blocks an empty reply.
+- On a stream error/abort the held tail is emitted unconditionally
+  (`release()`): nothing is suppressed on the failure path — a duplicate tail
+  beats a silently missing one.
+- The held buffer is capped at 1 MiB (`HELD_CAP`); crossing the cap latches
+  divergence and flushes. In practice the buffer is already bounded by the
+  reasoning length — the cap is defense in depth on a default-on path.
 
 ## Why default-ON is safe
 
@@ -24,16 +32,21 @@ A normal answer never waits for a single extra chunk:
 
 - divergence → immediate release (no buffered delay beyond the divergence
   frame);
-- only a byte-identical prefix duplicate is held, and it is suppressed at the
-  end, so the client never sees the reasoning twice.
+- only a full-length byte-identical duplicate is suppressed at the end, so the
+  client never sees the reasoning twice;
+- the strict-prefix shape (the answer restates the opening of the reasoning
+  and the stream ends) is released, never suppressed — the dedup cannot
+  produce an empty answer.
 
 ## Invariants
 
 | Stream shape | Held | Emitted | Suppressed at settle() |
 | --- | --- | --- | --- |
-| content == reasoning (byte-identical) | all chunks | nothing | yes |
+| content == reasoning (full length, byte-identical) | all chunks | nothing | yes |
+| content is a strict prefix of the reasoning | all chunks | everything, at settle() | no |
 | content diverges (anywhere) | only until divergence | everything, at the divergence frame | no |
 | reasoning shorter than content | only until content outruns the reasoning | everything | no |
+| stream error/abort | — | held tail via release() | no (never on failure path) |
 | no reasoning seen | nothing | everything | no |
 | non-stream path | — | — | untouched (no dedup) |
 
@@ -44,6 +57,7 @@ A normal answer never waits for a single extra chunk:
   messages, gemini, responses) all consume the same stream, so one integration
   covers all four.
 - `noteReasoning()` is fed from `emitThinking`, `feed()` from `emitContent`,
-  and `settle()` runs once at stream end.
+  `settle()` runs once at stream end (success path), and `release()` runs on
+  the partial-failure path before the clean stop.
 - `accText`/`accThinking` keep the full view for the fallback, narrative-scan
   and cascade-history logic — the dedup is client-visible only.
