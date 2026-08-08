@@ -9,7 +9,8 @@
 //     so far plus the current chunk is emitted and the stream passes through
 //     with no further delay;
 //   - suppression fires ONLY at settle() when the accumulated content equals
-//     the FULL reasoning byte-for-byte — the true duplicate. A strict prefix
+//     the FULL reasoning byte-for-byte AND the caller explicitly requested
+//     thinking (reasoning_content visible to them). A strict prefix
 //     (content shorter, stream ends there) is released, never suppressed;
 //   - release() is the failure path: it returns the held tail unconditionally.
 
