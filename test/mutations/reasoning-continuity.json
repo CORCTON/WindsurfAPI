@@ -67,6 +67,12 @@
       "file": "src/session-continuity.js",
       "anchor": "if (!Number.isFinite(n) || n < 1) return 5;",
       "replacement": "if (!Number.isFinite(n) || n <= 0) return 5;"
+    },
+    {
+      "name": "chars clamp fractional hole — 0 < n < 1 must fall back to the default 4000, not Math.floor to a silent 0",
+      "file": "src/session-continuity.js",
+      "anchor": "if (!Number.isFinite(n) || n < 0 || (n > 0 && n < 1)) return 4000;",
+      "replacement": "if (!Number.isFinite(n) || n < 0) return 4000;"
     }
   ]
 }
