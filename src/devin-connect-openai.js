@@ -225,8 +225,16 @@ async function* streamChatWithEmptyRetry(params, { env = process.env } = {}) {
     // Item 1 (loop break): leading think-tagged CONTENT is reclassified into the
     // reasoning channel HERE, at the stream-event level, BEFORE the rescue
     // decision below. A whole turn of ` thinking…` therefore stays a
-    // reasoning-only stream: sawText stays false, so the #238 rescue fires
-    // naturally — the reroute and the rescue combine, neither bypasses the other.
+    // reasoning-only stream.
+    // Honest rescue interplay (corrected after review): such a turn does NOT
+    // fire the #238 rescue — the :284 nudge path requires tools, and
+    // isEmptyCompletion reads sawContent, which the thinking branch below sets
+    // at :238. The real outcome: reasoning delivered as thinking blocks, text
+    // empty, no retry. That is accepted: the reasoning is not lost (the client
+    // receives thinking blocks, not the #238 whole-turn vanish), and sawContent
+    // genuinely means "upstream said something", which is true here.
+    // Deliberately NOT teaching isEmptyCompletion to read sawText — that would
+    // redraw the #238/#241 rescue boundary for a cosmetic gain.
     // (Known limitation: only the ` thinking`…` dialect is recognized; Kimi K2's
     // family uses `◁think▷…◁/think▷` — extending the classifier to that dialect
     // is left for a future PR.)

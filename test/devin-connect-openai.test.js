@@ -1401,5 +1401,28 @@ describe('think-text reroute (connect layer, DEVIN_CONNECT_THINKTEXT_REROUTE)', 
     assert.equal(msg.content, OPEN + 'inner reasoning. ' + CLOSE + 'The answer.');
     assert.equal(msg.reasoning_content, undefined);
   });
+
+  it('history isolation: a leading think block inside an INBOUND history message is forwarded upstream untouched, even with the gate on', async () => {
+    // The classifier runs ONLY on live upstream output events. Caller-pasted
+    // content (a quoted transcript, a literal "what does the tag mean") rides
+    // the inbound message list and must never be reclassified — that would
+    // lose attribution, the mirror image of the leak this feature fixes.
+    process.env.DEVIN_CONNECT_THINKTEXT_REROUTE = '1';
+    let captured = null;
+    __setStreamChatForTest(async function* (params) {
+      captured = params;
+      yield { type: 'content', text: 'ok' };
+      yield { type: 'finish', reason: 'stop', usage: null };
+    });
+    const history = [
+      { role: 'user', content: 'what does ' + OPEN + CLOSE + ' mean?' },
+      { role: 'assistant', content: OPEN + 'quoted from a log' + CLOSE + ' and here is my real answer' },
+      { role: 'user', content: 'go on' },
+    ];
+    const { status, body } = await toChatCompletion({ model: 'swe-1-7', messages: history });
+    assert.equal(status, 200);
+    assert.deepEqual(captured.messages, history);
+    assert.equal(body.choices[0].message.content, 'ok');
+  });
 });
 
