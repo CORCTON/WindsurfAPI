@@ -155,7 +155,7 @@ bash install-ls.sh
 # 或者指定 URL：
 #   bash install-ls.sh --url https://example.com/language_server_linux_x64
 
-# ⚠️ 看不到 opus-4.7 / 其他新模型？
+# ⚠️ LS binary 版本偏旧 / 想换一个来源？
 # 默认下载链已接入 dwgx/windsurf-ls-release 公开 mirror。
 # 如果 mirror 暂未覆盖你的平台，仍可把 Windsurf 桌面端本体里的 LS binary 拷过来：
 #
@@ -167,7 +167,10 @@ bash install-ls.sh
 #   # 从本地桌面端装：
 #   bash install-ls.sh /path/to/language_server_linux_x64
 #
-# LS binary 一换，/v1/models 立刻就能看到最新模型目录了（云端自动发现）。
+# 注意：换 LS binary 不会改变 /v1/models 的内容。
+# 模型目录是代理直连 HTTPS 拉的（GetCascadeModelConfigs / GetCliModelConfigs），
+# 请求里的 ideVersion 写死在 src/windsurf-api.js，不从 binary 读 —— 所以目录只取决于
+# 上游给这个账号授予了什么。看不到某个新模型，是上游还没放给该账号，不是本地文件旧了。
 
 cat > .env << 'EOF'
 PORT=3003
