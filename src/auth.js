@@ -2432,10 +2432,17 @@ function recordRateLimitEvent(account, { upstreamMs, effectiveMs, until, modelKe
  * Public accessor: the rate-limit ring, oldest first (dashboard triage).
  * Returns a copy so a caller cannot mutate the ring; `limit` takes the most
  * RECENT n while preserving that order.
+ *
+ * Without a limit this returns the WHOLE ring rather than the last
+ * RATE_LIMIT_HISTORY_MAX. Capping here too would look equivalent and is not: it
+ * would silently paper over a ring that stopped evicting, so the bound would
+ * become unobservable from outside — the one property this structure exists to
+ * have. The ring is what's bounded; the accessor only reports it.
  */
-export function getRateLimitHistory({ limit = RATE_LIMIT_HISTORY_MAX } = {}) {
-  const n = Math.max(0, Math.min(RATE_LIMIT_HISTORY_MAX, Number(limit) || 0));
-  return _rateLimitHistory.slice(-n).map(e => ({ ...e }));
+export function getRateLimitHistory({ limit = 0 } = {}) {
+  const n = Math.trunc(Number(limit) || 0);
+  const view = n > 0 ? _rateLimitHistory.slice(-n) : _rateLimitHistory.slice();
+  return view.map(e => ({ ...e }));
 }
 
 /** Test aid: drop the ring so one test's events can't leak into another's. */

@@ -1253,8 +1253,8 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
   // returns the n most recent; the ring itself is capped at 500.
   if (subpath === '/rate-limit-history' && method === 'GET') {
     const url = dashboardUrl(req);
-    const limit = parseInt(url.searchParams.get('limit') || '', 10);
-    return json(res, 200, { events: getRateLimitHistory({ limit: Number.isFinite(limit) ? limit : undefined }) });
+    const limit = parseBoundedInt(url.searchParams.get('limit'), 0, { min: 0, max: 500 });
+    return json(res, 200, { events: getRateLimitHistory({ limit }) });
   }
 
   // ─── Logs ─────────────────────────────────────────────
