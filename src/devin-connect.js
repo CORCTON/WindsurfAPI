@@ -940,6 +940,57 @@ function buildClientMetadata(token, deviceSeed, userJwt) {
  * varints, and a large max_newlines is a no-op), so "a working capture" was never
  * evidence for the mapping — only the schema is.
  */
+// ─── Explicit prompt caching (#13), opt-in ──────────────────────────────────
+//
+// WHAT IS MEASURED (repo history, paid Teams account):
+//   - A cache HIT costs ~17.8% of a miss (#220). The upside is real and large.
+//   - Caching is per-ACCOUNT and matches on the prompt PREFIX, NOT on the session
+//     id. Three independent measurements say so: the #220 read A/B (bc0fd13) and
+//     the write A/B (2d1a6aa) both scored hits while this file emitted a FRESH
+//     randomUUID as session id on every request (session continuity did not exist
+//     on the connect path until b0f8330, a day later), and chat.js:2004 records the
+//     three-account experiment — identical body on a second account is a WRITE, a
+//     repeat on the first is a READ.
+//   - So we already get IMPLICIT caching, and the sticky-session subsystem already
+//     pins a caller to one account, which is the condition that makes it work.
+//
+// WHAT IS NOT MEASURED: that field #13 is the tag for system_prompt_cache_options,
+// or that requesting EPHEMERAL improves on what we get implicitly. #13 comes from
+// third-party .proto reimplementations, i.e. DECLARATION ORDER — and prost allows
+// tag gaps, so declaration order is not a wire tag. Same epistemic position as the
+// billing tags above: we know where to look, not what is true.
+//
+// Hence default-OFF (DEVIN_CONNECT_PROMPT_CACHE=1). Off → no #13 on the wire and
+// the request is unchanged. An operator turns it on with a capture in hand, and can
+// confirm the effect with DEVIN_CONNECT_BILLING_TAGS=cache_read_tokens=5 (already
+// calibrated) showing a higher read share.
+const PROMPT_CACHE_EPHEMERAL = 1;
+
+export function isPromptCacheEnabled(env = process.env) {
+  return String(env.DEVIN_CONNECT_PROMPT_CACHE ?? '').trim() === '1';
+}
+
+/**
+ * SystemPromptCacheOptions sub-message, or null when the switch is off.
+ *
+ * Null (not an empty buffer) is what keeps the default wire byte-identical: the
+ * caller spreads nothing rather than emitting a zero-length #13.
+ *
+ * @param {string} systemPrompt  the prompt the cache would key on
+ * @param {object} [env]
+ * @returns {Buffer|null}
+ */
+export function buildSystemPromptCacheOptions(systemPrompt, env = process.env) {
+  if (!isPromptCacheEnabled(env)) return null;
+  // Nothing to cache: an absent or trivially short system prompt cannot pay for a
+  // cache write. Upstream bills a write at roughly an order of magnitude more than
+  // a read (chat.js:2004), so asking to cache a 20-byte prompt is a pure loss.
+  // The floor is deliberately low — it excludes "no system prompt" and obvious
+  // noise without second-guessing an operator who has a real prefix.
+  if (typeof systemPrompt !== 'string' || systemPrompt.trim().length < 64) return null;
+  return writeVarintField(1, PROMPT_CACHE_EPHEMERAL);
+}
+
 function buildCompletionConfig({ maxTokens, temperature, topK, topP, contextWindow } = {}) {
   // LIVE FINDING (free-tier swe-1-6-slow, 2026-06-30): temperature=0 reliably
   // makes the upstream return "an internal error occurred" (3/3), while 0.001
@@ -1141,6 +1192,9 @@ export function buildGetChatMessageRequest({ token, messages, model, sessionId, 
     writeVarintField(3, 4),
   ]);
 
+  // Null unless DEVIN_CONNECT_PROMPT_CACHE=1 and the prompt is worth caching.
+  const cacheOptionsBuf = buildSystemPromptCacheOptions(systemPrompt, env);
+
   const parts = [
     writeMessageField(1, buildClientMetadata(token, deviceSeed, userJwt)),
     writeStringField(2, systemPrompt),
@@ -1149,6 +1203,8 @@ export function buildGetChatMessageRequest({ token, messages, model, sessionId, 
   parts.push(
     writeVarintField(7, 5),
     writeMessageField(8, buildCompletionConfig(completion)),
+    // #13 system_prompt_cache_options — opt-in, see buildSystemPromptCacheOptions.
+    ...(cacheOptionsBuf ? [writeMessageField(13, cacheOptionsBuf)] : []),
     writeMessageField(15, modelConfigBuf),
     writeStringField(16, sessionId || randomUUID()),
     writeVarintField(20, 1),

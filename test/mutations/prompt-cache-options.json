@@ -1,0 +1,38 @@
+{
+  "tests": [
+    "test/prompt-cache-options.test.js"
+  ],
+  "expectBaselinePass": 12,
+  "mutations": [
+    {
+      "name": "the switch accepts any truthy-ish value instead of exactly '1' — the Number()/falsy rewrite that silently flipped sibling knobs in #241/#242, here putting an unconfirmed field on the wire for an operator who set the variable to '0' or 'false'",
+      "file": "src/devin-connect.js",
+      "anchor": "export function isPromptCacheEnabled(env = process.env) {\n  return String(env.DEVIN_CONNECT_PROMPT_CACHE ?? '').trim() === '1';",
+      "replacement": "export function isPromptCacheEnabled(env = process.env) {\n  return !!String(env.DEVIN_CONNECT_PROMPT_CACHE ?? '').trim();"
+    },
+    {
+      "name": "#13 is emitted even when the switch is OFF — an unconfirmed proto coordinate lands on the wire of every operator who never opted in, which is the one failure this default-off design exists to prevent",
+      "file": "src/devin-connect.js",
+      "anchor": "export function buildSystemPromptCacheOptions(systemPrompt, env = process.env) {\n  if (!isPromptCacheEnabled(env)) return null;",
+      "replacement": "export function buildSystemPromptCacheOptions(systemPrompt, env = process.env) {\n  if (false) return null;"
+    },
+    {
+      "name": "the too-short-prompt floor is dropped — a cache WRITE is requested for a trivial prompt, and a write costs roughly an order of magnitude more than a read, so the 'optimisation' bills more than it saves",
+      "file": "src/devin-connect.js",
+      "anchor": "  if (typeof systemPrompt !== 'string' || systemPrompt.trim().length < 64) return null;",
+      "replacement": "  if (typeof systemPrompt !== 'string') return null;"
+    },
+    {
+      "name": "the cache mode is emitted as 0 instead of EPHEMERAL(1) — protobuf omits zero-valued scalars, so #13 arrives as an empty sub-message and the request silently asks for nothing while looking enabled",
+      "file": "src/devin-connect.js",
+      "anchor": "const PROMPT_CACHE_EPHEMERAL = 1;",
+      "replacement": "const PROMPT_CACHE_EPHEMERAL = 0;"
+    },
+    {
+      "name": "the #13 spread ignores the null guard and emits a zero-length field whenever the builder returns null — the default path stops being byte-identical",
+      "file": "src/devin-connect.js",
+      "anchor": "    ...(cacheOptionsBuf ? [writeMessageField(13, cacheOptionsBuf)] : []),",
+      "replacement": "    ...[writeMessageField(13, cacheOptionsBuf || Buffer.alloc(0))],"
+    }
+  ]
+}
