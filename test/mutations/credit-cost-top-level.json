@@ -1,0 +1,20 @@
+{
+  "tests": [
+    "test/devin-connect.test.js"
+  ],
+  "expectBaselinePass": 176,
+  "mutations": [
+    {
+      "name": "the top-level billing pass goes dead — credit_cost pinned at top-level #14 is never read, so a billed turn reports no cost and the operator cannot tell a billed request from a free one",
+      "file": "src/devin-connect.js",
+      "anchor": "  if (opts.billingTags) {\n    for (const [key, tag] of Object.entries(opts.billingTags)) {\n      if (tag >= 0) continue; // sub-message tags were handled above",
+      "replacement": "  if (false && opts.billingTags) {\n    for (const [key, tag] of Object.entries(opts.billingTags)) {\n      if (tag >= 0) continue; // sub-message tags were handled above"
+    },
+    {
+      "name": "a top-level token-count tag lands in billing instead of usage — the dashboard's cache split silently zeroes, the exact mis-attribution #220 was about",
+      "file": "src/devin-connect.js",
+      "anchor": "      if (key === 'cache_read_tokens' || key === 'cache_write_tokens') {\n        // Token counts stay usage, wherever they were read from.",
+      "replacement": "      if (false) {\n        // Token counts stay usage, wherever they were read from."
+    }
+  ]
+}

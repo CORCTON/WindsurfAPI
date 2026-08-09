@@ -1090,10 +1090,19 @@ function parseBillingTagMap(env = process.env) {
   const map = {};
   for (const pair of raw.split(',')) {
     const [key, tag] = pair.split('=').map((s) => s.trim());
-    const n = Number.parseInt(tag, 10);
-    // Only the known billing keys, only positive integer tags. Silently skip
-    // garbage so a typo can't crash the hot decode path.
-    if (key && Number.isInteger(n) && n > 0 &&
+    // `^N` reads tag N from the TOP level of the response instead of the #7
+    // metadata sub-message, stored as -N so the decode path can tell them apart
+    // without a second map. The four .proto reimplementations put credit_cost at
+    // top-level #14 (committed_acu_cost #22, quota basis points #26, overage cents
+    // #27), while every tag calibrated so far lived in #7 — so both locations have
+    // to be expressible. Example, once a paid capture confirms it:
+    //   DEVIN_CONNECT_BILLING_TAGS="cache_read_tokens=5,cache_write_tokens=4,credit_cost=^14"
+    const topLevel = typeof tag === 'string' && tag.startsWith('^');
+    const n0 = Number.parseInt(topLevel ? tag.slice(1) : tag, 10);
+    const n = topLevel && Number.isInteger(n0) && n0 > 0 ? -n0 : n0;
+    // Only the known billing keys, only nonzero integer tags (negative = top-level).
+    // Silently skip garbage so a typo can't crash the hot decode path.
+    if (key && Number.isInteger(n0) && n0 > 0 &&
         ['credit_cost', 'committed_credit_cost', 'committed_acu_cost', 'committed_overage_cost_cents',
          // cache-token usage fields (ModelUsageStats.cache_read_tokens /
          // cache_write_tokens). Same un-calibratable-on-free situation; routed
@@ -1456,6 +1465,7 @@ export function decodeFrame(payload, opts = {}) {
   let usage = null;
   let billing = null;
   let metaDump = null;
+  let topLevelDump = null;
   if (meta) {
     // Same defensive contract as the top-level parse: the #7 metadata sub-message
     // is length-delimited so its bounds are valid, but its CONTENTS can still be
@@ -1487,6 +1497,17 @@ export function decodeFrame(payload, opts = {}) {
     const billingTags = opts.billingTags;
     if (billingTags) {
       for (const [key, tag] of Object.entries(billingTags)) {
+        // A NEGATIVE tag means "read this from the TOP level, not from #7".
+        // Four independent .proto reimplementations put credit_cost at top-level
+        // #14 (with committed_acu_cost #22 and the quota basis-point / overage-cent
+        // pair at #26/#27), i.e. NOT in the #7 metadata sub-message where every
+        // calibrated tag so far has lived. That is a coordinate, not a measurement:
+        // these fields are still zero-and-therefore-absent on a free account, so the
+        // .protos tell us WHERE to look while a paid capture is still what confirms
+        // the value. Encoding the location as `credit_cost=^14` lets an operator
+        // point at the top level without a second env var, and keeps the sub-message
+        // default untouched for the tags that were measured there.
+        if (tag < 0) continue; // handled in the top-level pass below
         const f = getField(mf, tag, 0);
         if (f == null) continue;
         if (key === 'cache_read_tokens' || key === 'cache_write_tokens') {
@@ -1506,6 +1527,41 @@ export function decodeFrame(payload, opts = {}) {
       for (const f of mf) {
         if (f.wireType === 0) metaDump[f.field] = Number(f.value);
       }
+    }
+  }
+
+  // Top-level billing pass. Runs OUTSIDE the `if (meta)` block on purpose: a
+  // response can carry credit_cost at the top level with no #7 sub-message at all
+  // (the sub-message holds token counts, and a billed turn is not obliged to
+  // report them), so nesting this would silently skip exactly the frames it
+  // exists for. Same varint-or-nothing rule as the sub-message pass.
+  if (opts.billingTags) {
+    for (const [key, tag] of Object.entries(opts.billingTags)) {
+      if (tag >= 0) continue; // sub-message tags were handled above
+      const f = getField(fields, -tag, 0);
+      if (f == null) continue;
+      if (key === 'cache_read_tokens' || key === 'cache_write_tokens') {
+        // Token counts stay usage, wherever they were read from. Routing them into
+        // `billing` because of the location they were pinned at would move
+        // prompt_tokens_details.cached_tokens out of usage and silently zero the
+        // dashboard's cache split — the exact mis-attribution #220 was about.
+        // prompt/completion live inside the `if (meta)` block above, so recompute
+        // the usage defaults here rather than reference block-scoped locals.
+        (usage ||= { prompt: Number(getField(fields, 2, 0)?.value ?? 0), completion: Number(getField(fields, 3, 0)?.value ?? 0) })[key] = Number(f.value);
+      } else {
+        (billing ||= {})[key] = Number(f.value);
+      }
+    }
+  }
+  // Calibration hook for the top level, mirroring dumpMeta for the sub-message.
+  // The .protos name top-level #14/#22/#26/#27 but declaration order is not a wire
+  // tag, so an operator still has to see a real paid frame to pin them. This prints
+  // every top-level varint EXCEPT the ones already decoded by name, so the output
+  // is a short list of candidates rather than a haystack.
+  if (opts.dumpMeta) {
+    topLevelDump = {};
+    for (const f of fields) {
+      if (f.wireType === 0 && f.field !== FIELD.FINISH) topLevelDump[f.field] = Number(f.value);
     }
   }
 
@@ -1538,6 +1594,7 @@ export function decodeFrame(payload, opts = {}) {
     if (calls.length) out.toolCalls = calls;
   }
   if (metaDump) out.metaDump = metaDump;
+  if (topLevelDump) out.topLevelDump = topLevelDump;
   // Top-level frame calibration: when dumping, also surface every top-level
   // field so unknown tags like `actual_model_uid` (the concrete model that
   // served a router request) are discoverable. varints → numbers, short

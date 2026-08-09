@@ -700,6 +700,35 @@ describe('decodeFrame', () => {
     assert.equal(d.finish, null);
     assert.equal(d.usage, null);
   });
+
+  it('reads credit_cost from the TOP level when the tag is declared with ^', () => {
+    // Four independent .proto reimplementations put credit_cost at top-level #14
+    // (not in the #7 metadata sub-message where every calibrated tag so far lived).
+    // `^14` in DEVIN_CONNECT_BILLING_TAGS means "top level", so a paid capture that
+    // confirms the coordinate can wire it without a second env var. A frame with
+    // #14 and NO #7 sub-message is the exact shape the top-level pass exists for.
+    const payload = Buffer.concat([
+      writeStringField(1, 'bot-1'),
+      writeStringField(3, 'the answer'),
+      writeVarintField(14, 12345), // credit_cost, top-level
+    ]);
+    const d = decodeFrame(payload, { billingTags: { credit_cost: -14 } });
+    assert.equal(d.billing.credit_cost, 12345);
+  });
+
+  it('does not let a top-level cache-token tag leak into billing (usage stays usage)', () => {
+    // A cache_read_tokens tag pinned at the top level would, without the guard,
+    // land in `billing` instead of `usage`, silently zeroing the dashboard's cache
+    // split. The usage vs billing routing must follow the KEY, not the location.
+    const payload = Buffer.concat([
+      writeStringField(1, 'bot-1'),
+      writeVarintField(14, 4096), // cache_read_tokens pinned top-level for the test
+    ]);
+    const d = decodeFrame(payload, { billingTags: { cache_read_tokens: -14 } });
+    assert.equal(d.usage.cache_read_tokens, 4096, 'token counts must stay usage');
+    assert.equal(d.billing?.cache_read_tokens, undefined,
+      'a token count must not surface as a billing field');
+  });
 });
 
 describe('decodeFrame malformed-frame resilience (FRAME-1)', () => {
