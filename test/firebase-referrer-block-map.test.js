@@ -137,6 +137,35 @@ describe('Firebase referrer-block — end-to-end via transport seam', () => {
     );
   });
 
+  it('returns ERR_HTTP_REFERRER_BLOCKED for the REAL envelope — numeric code + prose message + details[].reason', async () => {
+    // The realistic Google 403 is NOT the code-only shape above. It is:
+    //   {error:{code:403, status:'PERMISSION_DENIED',
+    //           message:'Requests from referer <x> are blocked.',
+    //           details:[{reason:'API_KEY_HTTP_REFERRER_BLOCKED'}]}}
+    // The fix that reads `details[].reason` exists precisely for this shape; before
+    // it, only message/code were read, so the mapping never fired and the operator got
+    // the prose string as their error "code". This pins the shape the fix targets.
+    const t = makeTransport([
+      ['SeatManagementService/CheckUserLoginMethod', { status: 200, data: {} }],
+      ['windsurf.com/_devin-auth/connections', { status: 200, data: {} }],
+      ['identitytoolkit.googleapis.com', {
+        status: 403,
+        data: { error: { code: 403, status: 'PERMISSION_DENIED', message: 'Requests from referer <x> are blocked.', details: [{ reason: 'API_KEY_HTTP_REFERRER_BLOCKED' }] } },
+      }],
+    ]);
+    __setLoginTransportForTests(t);
+    await assert.rejects(
+      () => windsurfLogin('referrer-block2@example.com', 'throwaway-password', null),
+      (err) => {
+        assert.equal(err.code, 'ERR_HTTP_REFERRER_BLOCKED',
+          'the structured reason in details[] must resolve to the mapped code');
+        assert.equal(err.isAuthFail, false,
+          'a referrer restriction is a deployment problem, not an auth failure');
+        return true;
+      },
+    );
+  });
+
   it('sends x-client-version + desktop referrer headers on every auth request', async () => {
     // The referrer-block fix only helps if the egress headers carry the same
     // desktop-client identity the upstream referrer allowlist expects. Pin

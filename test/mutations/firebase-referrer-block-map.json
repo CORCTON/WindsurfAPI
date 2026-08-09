@@ -2,7 +2,7 @@
   "tests": [
     "test/firebase-referrer-block-map.test.js"
   ],
-  "expectBaselinePass": 5,
+  "expectBaselinePass": 6,
   "mutations": [
     {
       "name": "the errorCodeMap entry for API_KEY_HTTP_REFERRER_BLOCKED dropped — the code falls through to the raw code / fallback",
