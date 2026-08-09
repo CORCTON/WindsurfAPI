@@ -1,0 +1,26 @@
+{
+  "tests": [
+    "test/firebase-referrer-block-map.test.js"
+  ],
+  "expectBaselinePass": 5,
+  "mutations": [
+    {
+      "name": "the errorCodeMap entry for API_KEY_HTTP_REFERRER_BLOCKED dropped — the code falls through to the raw code / fallback",
+      "file": "src/dashboard/windsurf-login.js",
+      "anchor": "    'API_KEY_HTTP_REFERRER_BLOCKED': 'ERR_HTTP_REFERRER_BLOCKED',",
+      "replacement": "    'API_KEY_HTTP_REFERRER_BLOCKED': 'ERR_LOGIN_FAILED',"
+    },
+    {
+      "name": "the firebase hop reads only the message — a code-only 403 loses the code and defaults to a generic message",
+      "file": "src/dashboard/windsurf-login.js",
+      "anchor": "    const msg = fbRes.data.error.message\n      || fbRes.data.error.code\n      || 'Unknown Firebase error';",
+      "replacement": "    const msg = fbRes.data.error.message || 'Unknown Firebase error';"
+    },
+    {
+      "name": "x-client-version dropped from the shared request headers — the desktop-identity header set is incomplete",
+      "file": "src/dashboard/windsurf-login.js",
+      "anchor": "    'Content-Length': Buffer.byteLength(body),\n    'x-client-version': CLIENT_VERSION,",
+      "replacement": "    'Content-Length': Buffer.byteLength(body),"
+    }
+  ]
+}

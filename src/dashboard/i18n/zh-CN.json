@@ -1314,6 +1314,7 @@
     "ERR_TOO_MANY_ATTEMPTS": "尝试太多次 请稍后再试",
     "ERR_INVALID_EMAIL": "邮箱格式错误",
     "ERR_CODEIUM_REGISTER_FAILED": "Codeium 注册失败",
+    "ERR_HTTP_REFERRER_BLOCKED": "上游拒绝请求：该 Firebase API Key 限制请求来源，服务器的 referrer 不在白名单内。请检查登录代理 / 出口 IP，或在 Firebase 控制台放行。",
     "ERR_AUTH1_TOKEN_MISSING": "Auth1 回应缺少 token",
     "ERR_POSTAUTH_FAILED": "Windsurf PostAuth 失败",
     "ERR_TOKEN_FETCH_FAILED": "获取一次性 Auth Token 失败",
