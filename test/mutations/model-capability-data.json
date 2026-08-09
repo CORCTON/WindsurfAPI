@@ -1,0 +1,26 @@
+{
+  "tests": [
+    "test/model-capability-data.test.js"
+  ],
+  "expectBaselinePass": 12,
+  "mutations": [
+    {
+      "name": "the upstream `disabled` flag is discarded again — a tier-forbidden model becomes indistinguishable from an enabled one, so the preflight cannot fire and the request spends a roundtrip to learn what the catalog already said",
+      "file": "src/models.js",
+      "anchor": "    disabled: bool(m.disabled),",
+      "replacement": "    disabled: undefined,"
+    },
+    {
+      "name": "the chat preflight goes dead — a model the upstream explicitly disabled for this tier is attempted anyway, burning a pool health penalty on a request that could never succeed",
+      "file": "src/handlers/chat.js",
+      "anchor": "  if (isModelDisabledUpstream(routingModelKey)) {",
+      "replacement": "  if (false && isModelDisabledUpstream(routingModelKey)) {"
+    },
+    {
+      "name": "silence becomes a `no`: an absent `disabled` field defaults to true, so every statically-catalogued model and every account whose catalog has not synced yet is refused — the fail-open direction this catalog is careful about everywhere else",
+      "file": "src/models.js",
+      "anchor": "export function isModelDisabledUpstream(modelKey) {\n  return getModelCaps(modelKey)?.disabled === true;",
+      "replacement": "export function isModelDisabledUpstream(modelKey) {\n  return getModelCaps(modelKey)?.disabled !== false;"
+    }
+  ]
+}

@@ -7,7 +7,7 @@ import { createHash, randomUUID } from 'crypto';
 import { WindsurfClient, contentToString, isCascadeTransportError } from '../client.js';
 import { getApiKey, acquireAccountByKey, releaseAccountById, currentApiKeyForId, getAccountAvailability, reportError, reportSuccess, markRateLimited, markQuotaExhausted, reportInternalError, reportDeadToken, updateCapability, getAccountList, isAllRateLimited, isAllTemporarilyUnavailable, refundReservation, looksLikeBanSignal, reportBanSignal, clearBanSignals, isModelBlockedByDrought, isConnectSelectorBlockedByDrought, getDroughtSummary, reLoginAccount, getAccountCount, hasConnectEntitledAccount, recordAccountSpend, ensureDeviceSeed } from '../auth.js';
 import { isStickyEnabled, setStickyBinding, peekStickyBinding } from '../account/sticky-session.js';
-import { resolveModel, getModelInfo, pickRateLimitFallback } from '../models.js';
+import { resolveModel, getModelInfo, pickRateLimitFallback, isModelDisabledUpstream, getModelCaps } from '../models.js';
 import { getLsFor, ensureLs } from '../langserver.js';
 import { config, log } from '../config.js';
 import { safeAccountRef, safeKeyRef, safeLogValue } from '../log-safety.js';
@@ -2845,6 +2845,23 @@ async function _handleChatCompletionsInner(body, context = {}) {
     } else {
       return { status: 403, body: { error: { message: access.reason, type: 'model_blocked' } } };
     }
+  }
+
+  // Upstream tier gate (new). The cloud catalog's ClientModelConfig carries the
+  // upstream's own `disabled` flag — "this account's tier may not use this model".
+  // Without a preflight, a tier-forbidden model spends a chat roundtrip and then
+  // fails with a permission_denied that is indistinguishable from a transient
+  // fault, so the account pool burns a health penalty on a request that was never
+  // going to succeed. Reading the flag costs nothing (the catalog already arrived
+  // with the model list) and turns the failure into a deterministic 402 before any
+  // roundtrip. Only an EXPLICIT `true` refuses — absence of the flag is not a "no"
+  // (see models.js isModelDisabledUpstream: refusing on silence would break every
+  // statically-catalogued model and every unsynced account).
+  if (isModelDisabledUpstream(routingModelKey)) {
+    const caps = getModelCaps(routingModelKey);
+    const reason = caps?.disabledReason || 'This model is not enabled for this account\'s plan.';
+    log.warn(`Chat[${reqId}]: ${routingModelKey} disabled by upstream for this tier — rejecting before any roundtrip`);
+    return { status: 402, body: { error: { message: reason, type: 'model_blocked' } } };
   }
 
   // DEVIN_CONNECT short-circuit: the pure-HTTP egress owns its own model

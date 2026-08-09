@@ -895,6 +895,18 @@ function applyCloudModels(configs, { accountId = null } = {}) {
       enumValue: 0,
       modelUid: uid,
       credit: m.creditMultiplier || 1,
+      // Capability data the upstream already sent and this merge used to discard.
+      // GetCascadeModelConfigs returns the full ClientModelConfig; keeping only
+      // uid/provider/credit meant every capability question (does this model take
+      // images? what is its real output ceiling? is the tier allowed to use it?)
+      // had to be answered from a hardcoded table or by spending a chat roundtrip
+      // and reading the error. `disabled` is the load-bearing one: it is the
+      // upstream's own "this account's tier may not use this model", and without
+      // it a tier-forbidden model is indistinguishable from a transient fault.
+      //
+      // Undefined when absent rather than defaulted — a missing field means "the
+      // upstream did not say", which must not read as "false".
+      caps: cloudModelCaps(m),
     };
     _lookup.set(key, key);
     _lookup.set(uid, key);
@@ -963,6 +975,66 @@ function cloudCatalogUidSet(configs) {
     if (uid) uids.add(uid);
   }
   return uids;
+}
+
+/**
+ * Capability fields off one upstream ClientModelConfig.
+ *
+ * Every value is left `undefined` when the upstream did not send it. That
+ * distinction matters most for `disabled`: `false` means "the upstream says this
+ * account may use it", `undefined` means "we were not told", and only the former
+ * is safe to act on. Defaulting the absent case to `false` would turn silence
+ * into permission — the fail-open direction this catalog is careful about
+ * everywhere else (see mergeCloudCatalogSnapshot's empty/malformed handling).
+ *
+ * Field names follow the upstream JSON (camelCase off Connect's JSON codec).
+ */
+function cloudModelCaps(m) {
+  if (!m || typeof m !== 'object') return undefined;
+  const num = (v) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : undefined);
+  const bool = (v) => (typeof v === 'boolean' ? v : undefined);
+  const str = (v) => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
+
+  const caps = {
+    // The tier gate. Upstream's own answer to "may this account use this model".
+    disabled: bool(m.disabled),
+    // Human-facing reason that pairs with `disabled` — real text for the opaque
+    // "model not enabled" the dashboard used to show with no explanation.
+    disabledReason: str(m.disabledReason?.shortReason || m.disabledReason?.description || m.disabledReason),
+    supportsImages: bool(m.supportsImages),
+    isCapacityLimited: bool(m.isCapacityLimited),
+    maxTokens: num(m.maxTokens),
+    maxOutputTokens: num(m.modelInfo?.maxOutputTokens ?? m.maxOutputTokens),
+    maxInputTokens: num(m.maxNumChatInputTokens),
+    costTier: str(m.modelCostTier),
+  };
+  // Drop the keys the upstream stayed silent on so a consumer can use `in`.
+  for (const k of Object.keys(caps)) if (caps[k] === undefined) delete caps[k];
+  return Object.keys(caps).length ? Object.freeze(caps) : undefined;
+}
+
+/**
+ * Capability data for a model key, or null when the catalog has none.
+ *
+ * Null is the honest answer for a statically-catalogued model: the static table
+ * carries no upstream capability data, and inventing defaults here would let a
+ * caller believe the upstream vouched for something it never said.
+ */
+export function getModelCaps(modelKey) {
+  if (!modelKey || typeof modelKey !== 'string') return null;
+  const resolved = _lookup.get(modelKey) || _lookup.get(modelKey.toLowerCase()) || modelKey;
+  return MODELS[resolved]?.caps || null;
+}
+
+/**
+ * True only when the upstream explicitly said this model is disabled for the tier.
+ *
+ * `undefined` (not told) reads as NOT disabled on purpose: a preflight that
+ * refuses on silence would break every statically-catalogued model and every
+ * account whose catalog has not synced yet.
+ */
+export function isModelDisabledUpstream(modelKey) {
+  return getModelCaps(modelKey)?.disabled === true;
 }
 
 function cloudCatalogSetsEqual(left, right) {
