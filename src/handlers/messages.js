@@ -577,6 +577,10 @@ function anthropicToOpenAI(body, ccActive = false) {
   };
   const messages = [];
   const toolNameById = new Map();
+  // T2 (Thinking-core): capture the LAST assistant turn's incoming thinking before
+  // the drop below — a fallback reasoning source for the continuity store when the
+  // upstream response itself carries none (resumed dialogs).
+  let lastIncomingThinking = null;
   if (body.system) {
     const rawSys = typeof body.system === 'string'
       ? body.system
@@ -597,6 +601,7 @@ function anthropicToOpenAI(body, ccActive = false) {
       const imageParts = [];
       const toolCalls = [];
       const toolResults = [];
+      const msgThinking = [];
       for (const block of m.content) {
         if (block.type === 'text') {
           textParts.push(block.text || '');
@@ -628,6 +633,7 @@ function anthropicToOpenAI(body, ccActive = false) {
             log.info(`messages: document block (${mt}) not decoded — forwarded as text placeholder`);
           }
         } else if (block.type === 'thinking') {
+          if (typeof block.thinking === 'string' && block.thinking) msgThinking.push(block.thinking);
           // Incoming assistant thinking blocks are dropped on history translation:
           // 1) Upstream swe-1-7 (K2 family) accepts outgoing candidate tag #11 in ChatMessage,
           //    but causally ignores its content (0/3 causal effect; tag #9 is incoming-only).
@@ -655,6 +661,9 @@ function anthropicToOpenAI(body, ccActive = false) {
           });
           toolResults.push({ role: 'tool', tool_call_id: block.tool_use_id, content });
         }
+      }
+      if (role === 'assistant' && msgThinking.length) {
+        lastIncomingThinking = msgThinking.join('\n');
       }
       // Tool results must directly follow the assistant tool_calls message
       // in OpenAI format. Push them before the user content message.
@@ -741,6 +750,7 @@ function anthropicToOpenAI(body, ccActive = false) {
     translatedResponseFormat = { type: 'json_object' };
   }
   return {
+    ...(lastIncomingThinking ? { __incomingThinking: lastIncomingThinking } : {}),
     model: body.model || 'claude-sonnet-4.6',
     messages,
     max_tokens: body.max_tokens || 8192,
@@ -1541,7 +1551,9 @@ export async function handleMessages(body, context = {}) {
           : context.nativeBridgeCallerKey,
       }
     : context;
-
+  // T2: the captured incoming thinking rides the body as __incomingThinking
+  // (single __-prefixed carrier, same convention as __route); chat.js reads it
+  // as a fallback continuity-store source when the outbound response has none.
   if (!wantStream) {
     const result = await chatHandler({ ...openaiBody, stream: false, __route: 'messages' }, effectiveContext);
     if (result.status !== 200) {
