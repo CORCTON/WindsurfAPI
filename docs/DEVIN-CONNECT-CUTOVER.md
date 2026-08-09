@@ -411,10 +411,12 @@ DEVIN_CONNECT_STOP_REASON_MAP="1=stop,2=stop,3=length,5=content_filter"
 ```
 
 Unknown values always fall back to `stop` so a finished stream is never an error.
-Note: `max_tokens` is NOT reliably enforced upstream — the free-tier probe (16 vs
-1000 → identical output) and a paid re-check (16 vs 4096 → byte-identical output)
-both show the cap being ignored, so a genuinely truncated turn may be rare enough
-that pinning 3/5 requires deliberately provoking one.
+Note: both historical probes (free tier 16 vs 1000, paid 16 vs 4096) saw the cap
+ignored — but BOTH ran while the encoder had `max_tokens` on the wrong field (#3,
+which is `max_newlines`; corrected 2026-08-09, see §8.9). Neither probe therefore
+measured `max_tokens` at all. Re-run them before concluding anything about upstream
+enforcement, and note that a genuinely truncated turn is still what pinning 3/5
+requires.
 
 ### 8.8 Live re-login recovery check (real credentials, zero-billable)
 
@@ -474,9 +476,20 @@ to `MIN_TEMPERATURE=0.001` (nearest-greedy the server accepts) rather than letti
 the call hard-fail. Verified: temp=2 → "Elephant!", temp≈0 → stable "Dog"/"Cat",
 proving sampling genuinely reaches the model.
 
-KNOWN LIMIT (unchanged): `max_tokens` (#3) is not an enforced output cap on the
-free tier (16 vs 1000 → identical output). Forwarded for paid; pin the real tag
-from a paid capture (§8.5) before relying on output-length limiting.
+TAG MAP CORRECTED (2026-08-09): `max_tokens` is field **#2**, not #3 — #3 is
+`max_newlines`. Four independent `.proto` definitions of `CompletionConfiguration`
+(reverse-engineered by unrelated projects) agree, and the encoder now matches
+(`src/devin-connect.js` `buildCompletionConfig`, pinned byte-level by
+`test/completion-config-max-tokens-tag.test.js`). The old layout sent the 128000
+context window as `max_tokens`, i.e. the cap was pinned wide open.
+
+STILL UNRESOLVED: the swap explains the free-tier probe (16 vs 1000 → identical
+output: the cap never reached the enforcing field) but it does **not** explain the
+paid re-check recorded in §8.7 (16 vs 4096 → byte-identical output). The paid tier
+is where a cap should be honoured, so that data point remains unaccounted for.
+Treat "max_tokens is now enforceable" as a schema-backed expectation, NOT a
+measured fact, until a paid capture shows a request with a small cap actually
+truncating. The change is wire-safe either way: a large `max_newlines` is a no-op.
 
 ### 8.10 Native tool definitions (groundwork, paid-calibration gated)
 

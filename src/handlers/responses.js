@@ -1622,6 +1622,28 @@ export async function handleResponses(body, deps = {}) {
         translator.error(e);
       }
 
+      // The `[DONE]` sentinel, after the terminal event and before the socket closes.
+      // A direct Responses client does not need it — this API carries its outcome on
+      // response.completed / .incomplete / .failed — but the relays sitting in front of
+      // this one are OpenAI-shaped and read `[DONE]` as "the stream ended cleanly".
+      // new-api drops the terminal event of a stream that lacks it, and that event is
+      // the ONLY carrier of the usage block on this route (see the O1 comment above),
+      // so its billing row silently came out empty. The chat exit has always written
+      // this frame on both its success and its post-error path; this one never did,
+      // which split the two routes' wire shape for the identical upstream.
+      //
+      // Gated on `finished` for the same reason finish() refuses to report an absent
+      // finish_reason as 'completed': `[DONE]` is what a relay reads as "whole". A
+      // client that vanished mid-answer never reaches captureRes.end(), so no terminal
+      // `[DONE]` is what a relay reads as "whole". A client that vanished mid-answer
+      // never reaches captureRes.end(), so no terminal event goes out — writing the
+      // sentinel there would dress a half turn in an ending it never earned. Same rule
+      // for a FAILED stream: `[DONE]` on `response.failed`/`response.incomplete` makes
+      // a relay treat the failure as a clean stop, which is the exact hole this fix
+      // exists to plug, on the failure side. chat.js's post-error path writes an
+      // explicit error chunk before `[DONE]`; here the failure is already in the
+      // terminal event, so the sentinel must simply not be written.
+      if (translator.finished && !translator.failed && !realRes.writableEnded) realRes.write('data: [DONE]\n\n');
       if (!realRes.writableEnded) realRes.end();
     },
   };

@@ -1,0 +1,20 @@
+{
+  "tests": [
+    "test/rate-limit-history.test.js"
+  ],
+  "expectBaselinePass": 4,
+  "mutations": [
+    {
+      "name": "the gap returns: markRateLimited stops recording, so the ring stays empty and no rate-limit event is observable",
+      "file": "src/auth.js",
+      "anchor": "  recordRateLimitEvent(account, { upstreamMs: durationMs, effectiveMs: safeMs, until, modelKey, healthKind });\n",
+      "replacement": ""
+    },
+    {
+      "name": "the bound is removed: the ring grows without evicting, so a 429 storm keeps every event forever",
+      "file": "src/auth.js",
+      "anchor": "  if (_rateLimitHistory.length > RATE_LIMIT_HISTORY_MAX) {\n    _rateLimitHistory.splice(0, _rateLimitHistory.length - RATE_LIMIT_HISTORY_MAX);\n  }",
+      "replacement": ""
+    }
+  ]
+}

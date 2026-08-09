@@ -103,8 +103,18 @@ const CLIENT_VERSION = '2026.8.18';
 const SOURCE = Object.freeze({ USER: 1, ASSISTANT: 2, TOOL_RESULT: 4 });
 
 // CompletionConfig defaults, matched to the captured CLI request.
+// #2 = max_tokens, #3 = max_newlines (schema-confirmed); see buildCompletionConfig.
 const DEFAULT_CONTEXT_WINDOW = 128000;
 const DEFAULT_MAX_TOKENS = 4096;
+// What goes on the wire at #2 when the caller named no cap. Deliberately NOT
+// DEFAULT_MAX_TOKENS: since the tag fix, #2 is an ENFORCED output cap, and a defaulted
+// call must not be quietly capped below the repo's own output convention (config.js
+// MAX_TOKENS=8192, and the `|| 8192` fallbacks in handlers/messages.js + gemini.js).
+// Overridable so an operator can raise or lower it without a code change.
+const WIRE_DEFAULT_MAX_TOKENS = (() => {
+  const n = Number(process.env.DEVIN_CONNECT_WIRE_MAX_TOKENS);
+  return Number.isInteger(n) && n > 0 ? n : 8192;
+})();
 const DEFAULT_TEMPERATURE = 1.0;
 // Smallest temperature the upstream accepts; exactly 0 → server "internal error"
 // (live-verified). Callers asking for 0 (greedy) get clamped to this instead.
@@ -737,18 +747,19 @@ function buildClientMetadata(token, deviceSeed) {
 
 /** Build CompletionConfig (field #8).
  *
- * Field→tag mapping is calibrated from a working live capture (this exact byte
- * layout produces correct completions). The recon (P5 §line60) confirms the
- * CompletionConfig field NAMES/arity (temperature, top_p, top_k, max_tokens = 4
- * fields) but NOT their tag numbers.
+ * TAG MAP RE-CALIBRATED FROM THE SCHEMA (was: guessed from field NAME ORDER).
+ * Four independent `.proto` definitions of CompletionConfiguration agree:
+ *   #2 = max_tokens, #3 = max_newlines.
+ * The earlier layout had those two swapped — it sent the 128000 context window as
+ * max_tokens and the caller's output cap as max_newlines. That is why the
+ * free-tier probe (2026-06-30) saw `maxTokens` 16 → 1000 produce IDENTICAL output
+ * (256 completion tokens, finish=stop): the cap never reached the field that
+ * enforces it, and max_tokens was pinned wide open at the context window. The old
+ * comment read that as "the free model ignores the cap" and declined to re-tag.
  *
- * KNOWN LIMIT (free-tier probe, 2026-06-30): varying `maxTokens` (#3 here) from
- * 16 to 1000 against `swe-1-6-slow` yields IDENTICAL output (256 completion
- * tokens, finish=stop) — i.e. #3 is NOT an enforced output cap on the free tier.
- * Either the free model ignores the cap or #3 is mis-tagged. We deliberately do
- * NOT re-tag it: the current layout demonstrably produces correct results, and a
- * blind tag change risks breaking a working request. Pin the real max_tokens tag
- * from a paid capture before relying on output-length limiting.
+ * The swapped wire still produced correct completions (both fields are plausible
+ * varints, and a large max_newlines is a no-op), so "a working capture" was never
+ * evidence for the mapping — only the schema is.
  */
 function buildCompletionConfig({ maxTokens, temperature, topK, topP, contextWindow } = {}) {
   // LIVE FINDING (free-tier swe-1-6-slow, 2026-06-30): temperature=0 reliably
@@ -762,8 +773,24 @@ function buildCompletionConfig({ maxTokens, temperature, topK, topP, contextWind
   if (temp < MIN_TEMPERATURE) temp = MIN_TEMPERATURE;
   return Buffer.concat([
     writeVarintField(1, 1),
-    writeVarintField(2, contextWindow ?? DEFAULT_CONTEXT_WINDOW),
-    writeVarintField(3, maxTokens ?? DEFAULT_MAX_TOKENS),
+    // Schema ground truth: #2 = max_tokens (caller's output cap), #3 = max_newlines.
+    //
+    // The default here is load-bearing in a way it was NOT before the tag fix. While
+    // max_tokens sat on #3 (max_newlines) the value was a no-op, so DEFAULT_MAX_TOKENS
+    // could be anything. Now #2 is the real cap and this default lands on the wire for
+    // every caller that omits max_tokens — and two of them do: /v1/responses only sets
+    // it when max_output_tokens is present (handlers/responses.js), and chat callers
+    // that pass only temperature/top_p. Sending 4096 there would silently truncate
+    // answers that used to complete, and — because resolveFinishReason compares
+    // completion_tokens against the CALLER's cap, not the encoded one — the truncation
+    // would be invisible on a defaulted call and mis-reported as 'length' on a call
+    // that happened to ask for 4096.
+    //
+    // So the default is the repo-wide output convention (config.js MAX_TOKENS, and the
+    // `|| 8192` fallbacks in handlers/messages.js and handlers/gemini.js), not the old
+    // dead constant. DEFAULT_MAX_TOKENS stays 4096 for callers that read it directly.
+    writeVarintField(2, maxTokens ?? WIRE_DEFAULT_MAX_TOKENS),
+    writeVarintField(3, contextWindow ?? DEFAULT_CONTEXT_WINDOW),
     writeFixed64Field(5, f64le(temp)),
     writeVarintField(7, topK ?? DEFAULT_TOP_K),
     writeFixed64Field(8, f64le(topP ?? DEFAULT_TOP_P)),
@@ -2241,9 +2268,15 @@ export async function* streamChat({
         const finishUsage = normalizeConnectUsage(lastUsage);
         yield {
           type: 'finish',
-          // Truncation is inferred from completion_tokens hitting the caller's cap,
-          // NOT from the un-calibrated enum — see resolveFinishReason.
-          reason: resolveFinishReason(lastFinish, finishUsage, completion?.maxTokens, env),
+          // Truncation is inferred from completion_tokens hitting the cap that was
+          // actually ENCODED, NOT from the un-calibrated enum — see resolveFinishReason.
+          //
+          // It must be the effective cap, not `completion?.maxTokens`: since the #2/#3
+          // tag fix the wire carries WIRE_DEFAULT_MAX_TOKENS whenever the caller named
+          // no cap, so reading the caller's (absent) value here would leave every
+          // defaulted call's truncation undetectable — the stream would stop at the
+          // wire cap and still report a clean 'stop'.
+          reason: resolveFinishReason(lastFinish, finishUsage, completion?.maxTokens ?? WIRE_DEFAULT_MAX_TOKENS, env),
           // Same normalization the Cascade path already applies (chat.js, #118):
           // prompt_tokens INCLUDES cache_read (cached_tokens is a SUBSET detail of
           // it, per OpenAI's shape), and total_tokens carries the full cost

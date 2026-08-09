@@ -1,0 +1,40 @@
+{
+  "tests": [
+    "test/cascade-think-reroute.test.js",
+    "test/response-classifier.test.js",
+    "test/default-on-switch-registry.test.js"
+  ],
+  "expectBaselinePass": 28,
+  "mutations": [
+    {
+      "name": "the Cascade interception point goes dead — the classifier is never fed, so leading think-tagged content streams straight to the client exactly as it did before the fix. This is #250 itself re-introduced on the path that carries the traffic",
+      "file": "src/handlers/chat.js",
+      "anchor": "          const routed = thinkClassifier.feed(clean);",
+      "replacement": "          const routed = { text: clean, thinking: '' };"
+    },
+    {
+      "name": "the switch inverts: the reroute is skipped by default and only active when explicitly set to '0'. A default-on kill switch that reads backwards is the shape that ships a fix protecting nobody, and it also breaks the OFF-path assertion — pins both directions of the gate rather than just 'a gate exists'",
+      "file": "src/handlers/chat.js",
+      "anchor": "  return String(env.WINDSURFAPI_CASCADE_THINK_REROUTE || '1') !== '0';",
+      "replacement": "  return String(env.WINDSURFAPI_CASCADE_THINK_REROUTE || '1') === '0';"
+    },
+    {
+      "name": "the classifier is never flushed at the stream tail, so an unterminated span is silently swallowed instead of delivered as text. flush() is the caller-side invariant of ThinkTextClassifier and forgetting it loses content, which is exactly what the reroute must never do",
+      "file": "src/handlers/chat.js",
+      "anchor": "              const tail = thinkClassifier.flush();\n              if (tail) emitContent(tail);",
+      "replacement": "              const tail = thinkClassifier.flush();\n              if (false) emitContent(tail);"
+    },
+    {
+      "name": "MAX_LEAD overflow is checked BEFORE the marker scan again (the pre-hardening ordering in response-classifier.js): once enough undecided bytes are held, a leading think block is dumped to the text channel unscanned. The reroute silently stops working on whole-body or whitespace-heavy deltas — the leak it exists to break",
+      "file": "src/response-classifier.js",
+      "anchor": "    const oi = this.pending.indexOf(THINK_OPEN);\n    if (oi >= 0) {",
+      "replacement": "    if (this.pending.length > 8192) return this._commitText();\n    const oi = this.pending.indexOf(THINK_OPEN);\n    if (oi >= 0) {"
+    },
+    {
+      "name": "the accThinking release on the failure path is dropped — a closed rerouted span buffered for emulateTools is silently lost when the stream errors, and an all-thinking turn closes with a raw error frame and no stop",
+      "file": "src/handlers/chat.js",
+      "anchor": "          if (accThinking) {\n            const bufferedThinking = accThinking;",
+      "replacement": "          if (false && accThinking) {\n            const bufferedThinking = accThinking;"
+    }
+  ]
+}

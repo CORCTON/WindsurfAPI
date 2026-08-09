@@ -312,7 +312,7 @@ describe('buildGetChatMessageRequest', () => {
       completion: { maxTokens: 256 },
     });
     const comp = parseFields(getField(parseFields(proto), 8, 2).value);
-    assert.equal(getField(comp, 3, 0).value, 256);
+    assert.equal(getField(comp, 2, 0).value, 256);   // #2 = max_tokens
   });
 
   it('forwards all sampling controls (temperature/top_p/top_k/max_tokens)', () => {
@@ -322,7 +322,7 @@ describe('buildGetChatMessageRequest', () => {
       completion: { maxTokens: 512, temperature: 0.7, topP: 0.5, topK: 100 },
     });
     const comp = parseFields(getField(parseFields(proto), 8, 2).value);
-    assert.equal(getField(comp, 3, 0).value, 512);            // max_tokens
+    assert.equal(getField(comp, 2, 0).value, 512);            // max_tokens (#2)
     assert.equal(getField(comp, 7, 0).value, 100);            // top_k
     assert.ok(Math.abs(getField(comp, 5, 1).value.readDoubleLE(0) - 0.7) < 1e-9); // temperature
     assert.ok(Math.abs(getField(comp, 8, 1).value.readDoubleLE(0) - 0.5) < 1e-9); // top_p
