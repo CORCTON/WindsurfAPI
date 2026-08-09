@@ -3185,8 +3185,8 @@ async function _handleChatCompletionsInner(body, context = {}) {
     // request were silently dropped on the DEVIN_CONNECT path — every call ran at
     // the built-in defaults regardless of what the caller asked for. Only set
     // keys the caller actually provided; buildCompletionConfig fills the rest with
-    // its calibrated defaults. (NB: max_tokens #3 is not an enforced output cap on
-    // the free tier — see buildCompletionConfig — but it is forwarded for paid.)
+    // its calibrated defaults. (NB: max_tokens is forwarded at #2 — see
+    // buildCompletionConfig — and is enforced where the tier honours the cap.)
     const completionOverrides = {};
     if (Number.isFinite(body.temperature)) completionOverrides.temperature = body.temperature;
     if (Number.isFinite(body.top_p)) completionOverrides.topP = body.top_p;
