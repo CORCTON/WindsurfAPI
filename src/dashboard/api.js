@@ -10,7 +10,7 @@ import {
   getAccountList, getAccountCount, getAccountListStats, getAccountPublic, addAccountByKey, addAccountByToken,
   removeAccount, setAccountStatus, resetAccountErrors, updateAccountLabel,
   isAuthenticated, probeAccount, ensureLsForAccount,
-  refreshCredits, refreshAllCredits,
+  refreshCredits, refreshAllCredits, searchWebForAccount,
   setAccountBlockedModels, setAccountTokens, setAccountTier, setAccountSpendPolicy,
   getAccountInternal, isLocalBindHost, maskApiKey, safeEqualString,
   checkLockout, failedAuthAttempt, successfulAuthAttempt,
@@ -1148,6 +1148,24 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
   const creditRefresh = subpath.match(/^\/accounts\/([^/]+)\/refresh-credits$/);
   if (creditRefresh && method === 'POST') {
     const r = await refreshCredits(creditRefresh[1]);
+    return json(res, r.ok ? 200 : 400, r);
+  }
+
+  // POST /accounts/:id/web-search — run one upstream web search on this account.
+  // Exposes GetWebSearchResults, which the repo has implemented and tested since it
+  // was reverse-engineered but never called from anywhere. Costs no model credits:
+  // it rides the account's own session token.
+  //
+  // Authentication is inherited, not re-implemented: every /dashboard/api/* route
+  // except /auth passes through the checkAuth gate above, so this endpoint is only
+  // reachable by an authenticated dashboard session.
+  const webSearch = subpath.match(/^\/accounts\/([^/]+)\/web-search$/);
+  if (webSearch && method === 'POST') {
+    const r = await searchWebForAccount(webSearch[1], {
+      query: body?.query,
+      limit: body?.limit,
+      domain: body?.domain,
+    });
     return json(res, r.ok ? 200 : 400, r);
   }
 

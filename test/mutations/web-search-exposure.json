@@ -1,0 +1,38 @@
+{
+  "tests": [
+    "test/web-search-exposure.test.js"
+  ],
+  "expectBaselinePass": 7,
+  "mutations": [
+    {
+      "name": "an empty query reaches the upstream — a blank search spends an upstream call and an upstream rate-limit slot on a request that cannot return anything",
+      "file": "src/auth.js",
+      "anchor": "  if (!q) return { ok: false, error: 'query required' };",
+      "replacement": "  if (false) return { ok: false, error: 'query required' };"
+    },
+    {
+      "name": "the non-active guard is dropped — a disabled or errored account's likely-dead token is used anyway, turning a clear 'account is error' into an opaque upstream failure",
+      "file": "src/auth.js",
+      "anchor": "  if (account.status !== 'active') return { ok: false, error: `Account is ${account.status}` };",
+      "replacement": "  if (false) return { ok: false, error: `Account is ${account.status}` };"
+    },
+    {
+      "name": "the untrimmed query is sent — leading/trailing whitespace changes the upstream cache/rate-limit key, so the same search counts as a different one",
+      "file": "src/auth.js",
+      "anchor": "    const results = await getWebSearchResults(account.apiKey, { query: q, limit, domain }, proxy);",
+      "replacement": "    const results = await getWebSearchResults(account.apiKey, { query, limit, domain }, proxy);"
+    },
+    {
+      "name": "an upstream throw propagates instead of returning in-band — the dashboard gets a 500 on a dead token rather than a message it can render, breaking the convention every other account helper follows",
+      "file": "src/auth.js",
+      "anchor": "    log.warn(`Web search failed for ${safeAccountRef(account)}: ${e.message}`);\n    return { ok: false, error: e.message };",
+      "replacement": "    throw e;"
+    },
+    {
+      "name": "the unknown-account guard is dropped — a bogus id dereferences undefined and crashes the request instead of answering 'Account not found'",
+      "file": "src/auth.js",
+      "anchor": "  if (!account) return { ok: false, error: 'Account not found' };\n  // An error'd/disabled account's token is the likeliest to be dead; refusing here",
+      "replacement": "  // An error'd/disabled account's token is the likeliest to be dead; refusing here"
+    }
+  ]
+}

@@ -839,6 +839,13 @@ export function __setModelCatalogDeps(deps) {
   _modelCatalogDeps = deps;
 }
 
+// Same seam shape for the web-search exposure: ESM exports are non-configurable, so
+// a test cannot monkey-patch windsurf-api.getWebSearchResults. Inject instead.
+let _webSearchDeps = null;
+export function __setWebSearchDeps(deps) {
+  _webSearchDeps = deps;
+}
+
 export async function __waitForModelCatalogSync() {
   await Promise.allSettled(
     [..._modelCatalogSyncPromises.values()].map(({ promise }) => promise),
@@ -3378,6 +3385,44 @@ export function getAccountListStats() {
 
 export function getAccountInternal(id) {
   return accounts.find(a => a.id === id) || null;
+}
+
+/**
+ * Run one upstream web search on a named account.
+ *
+ * The upstream call (windsurf-api.js getWebSearchResults, the RPC
+ * GetWebSearchResults) has existed and been tested since it was reverse-
+ * engineered, but nothing ever called it — this is the exposure. It costs no
+ * model credits: it rides the account's own session token, so the only budget it
+ * touches is whatever rate limit the upstream applies to search itself.
+ *
+ * The ACCOUNT IS NAMED BY THE CALLER rather than picked here, matching
+ * refreshCredits below. Silent selection would make an unexplained rate-limit or
+ * ban land on an account the operator did not choose, and the dashboard already
+ * knows which account it is asking about.
+ *
+ * Errors come back in-band ({ok:false}) like every other dashboard-facing helper,
+ * so a failed search renders as a message instead of a 500.
+ */
+export async function searchWebForAccount(id, { query, limit, domain } = {}) {
+  const q = typeof query === 'string' ? query.trim() : '';
+  if (!q) return { ok: false, error: 'query required' };
+  const account = accounts.find(a => a.id === id);
+  if (!account) return { ok: false, error: 'Account not found' };
+  // An error'd/disabled account's token is the likeliest to be dead; refusing here
+  // gives a clear reason instead of an opaque upstream failure.
+  if (account.status !== 'active') return { ok: false, error: `Account is ${account.status}` };
+  try {
+    const getWebSearchResults = _webSearchDeps?.getWebSearchResults
+      || (await import('./windsurf-api.js')).getWebSearchResults;
+    const proxy = getEffectiveProxy(account.id) || null;
+    const results = await getWebSearchResults(account.apiKey, { query: q, limit, domain }, proxy);
+    return { ok: true, ...results };
+  } catch (e) {
+    // safeAccountRef, never the raw key: this string reaches the dashboard and the log.
+    log.warn(`Web search failed for ${safeAccountRef(account)}: ${e.message}`);
+    return { ok: false, error: e.message };
+  }
 }
 
 /**
