@@ -7,8 +7,8 @@
     {
       "name": "the original swap restored — #2 carries the context window, so max_tokens is effectively uncapped",
       "file": "src/devin-connect.js",
-      "anchor": "    writeVarintField(2, maxTokens ?? DEFAULT_MAX_TOKENS),\n    writeVarintField(3, contextWindow ?? DEFAULT_CONTEXT_WINDOW),",
-      "replacement": "    writeVarintField(2, contextWindow ?? DEFAULT_CONTEXT_WINDOW),\n    writeVarintField(3, maxTokens ?? DEFAULT_MAX_TOKENS),"
+      "anchor": "    writeVarintField(2, maxTokens ?? WIRE_DEFAULT_MAX_TOKENS),\n    writeVarintField(3, contextWindow ?? DEFAULT_CONTEXT_WINDOW),",
+      "replacement": "    writeVarintField(2, contextWindow ?? DEFAULT_CONTEXT_WINDOW),\n    writeVarintField(3, maxTokens ?? WIRE_DEFAULT_MAX_TOKENS),"
     },
     {
       "name": "half-swap: #2 gets the cap but #3 also gets it — max_newlines silently clamped to the output cap",
