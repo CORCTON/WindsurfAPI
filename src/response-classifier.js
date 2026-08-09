@@ -29,23 +29,55 @@ export class ThinkTextClassifier {
 
   // Feed a content delta; returns { text, thinking } — slices to emit on each channel
   // right now ('' when nothing is due).
+  //
+  // think/undecided share one explicit loop so a chain of blocks inside a single delta
+  // is processed iteratively. The original mutual recursion (_feedThink -> _feedUndecided
+  // -> _feedThink -> ...) grew one stack frame per stacked block and threw a RangeError
+  // at a few thousand of them; MAX_PENDING does not bound that, since it only caps a
+  // single unterminated span, not a chain of closed ones.
   feed(delta) {
     if (!delta) return { text: '', thinking: '' };
     if (this.mode === 'text') return { text: delta, thinking: '' };
-    if (this.mode === 'think') return this._feedThink(delta);
-    return this._feedUndecided(delta);
+
+    let rest = delta;
+    let text = '';
+    let thinking = '';
+
+    while (true) {
+      // Each helper scans `this.pending`, so the remainder of a closed block (or the
+      // original delta) is folded in at the top of every iteration.
+      this.pending += rest;
+      rest = '';
+
+      if (this.mode === 'think') {
+        const s = this._scanThink();
+        if (s.text !== undefined) return { text: s.text, thinking }; // MAX_PENDING dump
+        if (s.hold) return { text, thinking };  // buffer until the close marker proves it
+        thinking += s.span;                     // closed block -> reroute its reasoning
+        rest = s.rest;                          // re-scan the remainder this same delta
+        continue;
+      }
+
+      const u = this._scanUndecided();
+      if (u.toThink) continue;                  // leading marker -> think mode, same delta
+      if (u.text !== undefined) {
+        return { text: text + u.text, thinking }; // committed as text (inline / overflow)
+      }
+      return { text, thinking };                // hold: may still grow into a marker
+    }
   }
 
-  _feedUndecided(delta) {
-    this.pending += delta;
-
+  // Scan an undecided buffer for a decision. Returns either a completed result (the
+  // caller returns it), `{ toThink: true }` to hand the remainder after a leading
+  // marker to think mode, or `{ toThink: false }` to hold. Never recurses.
+  _scanUndecided() {
     const oi = this.pending.indexOf(THINK_OPEN);
     if (oi >= 0) {
       if (this.pending.slice(0, oi).trim() === '') {
         // Leading marker -> enter think mode; drop whitespace-only prefix.
         this.mode = 'think';
         this.pending = this.pending.slice(oi + THINK_OPEN.length);
-        return this._feedThink(''); // process the remainder of this same delta
+        return { toThink: true }; // process the remainder of this same delta
       }
       // Marker present but real text precedes it -> inline, not a leak.
       return this._commitText();
@@ -59,8 +91,8 @@ export class ThinkTextClassifier {
 
     // No full marker yet. Could the pending still grow into one?
     const core = this.pending.replace(/^\s+/, '');
-    if (core.length === 0) return { text: '', thinking: '' }; // only whitespace so far
-    if (THINK_OPEN.startsWith(core)) return { text: '', thinking: '' }; // partial marker
+    if (core.length === 0) return { toThink: false }; // only whitespace so far
+    if (THINK_OPEN.startsWith(core)) return { toThink: false }; // partial marker
     return this._commitText(); // definitively not a leading marker
   }
 
@@ -71,17 +103,18 @@ export class ThinkTextClassifier {
     return { text: out, thinking: '' };
   }
 
-  _feedThink(delta) {
-    this.pending += delta;
-
+  // Scan a think-mode buffer for a closing marker. Returns `{ hold: true }` to keep
+  // buffering, `{ text, thinking }` for the MAX_PENDING dump-as-text escape, or
+  // `{ span, rest }` for a closed block — the caller re-scans `rest` in the same
+  // iteration, so a chain of blocks never nests another call.
+  _scanThink() {
     const ci = this.pending.indexOf(THINK_CLOSE);
     if (ci >= 0) {
       const span = this.pending.slice(0, ci);
       const rest = this.pending.slice(ci + THINK_CLOSE.length);
       this.pending = '';
       this.mode = 'undecided'; // may catch a following block; normal text commits
-      const cont = this._feedUndecided(rest);
-      return { text: cont.text, thinking: span + cont.thinking };
+      return { span, rest };
     }
 
     if (this.pending.length > MAX_PENDING) {
@@ -93,7 +126,7 @@ export class ThinkTextClassifier {
       return { text: dump, thinking: '' };
     }
 
-    return { text: '', thinking: '' }; // buffer until the close marker proves it
+    return { hold: true }; // buffer until the close marker proves it
   }
 
   // Stream end: flush whatever is held. Undecided content is text; an unterminated

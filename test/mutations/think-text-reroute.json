@@ -3,7 +3,7 @@
     "test/response-classifier.test.js",
     "test/messages.test.js"
   ],
-  "expectBaselinePass": 90,
+  "expectBaselinePass": 91,
   "mutations": [
     {
       "name": "leading-marker reroute disabled entirely — think-tagged content is never rerouted",
@@ -20,8 +20,8 @@
     {
       "name": "think-mode buffering removed — think content leaks to the text channel mid-span",
       "file": "src/response-classifier.js",
-      "anchor": "    return { text: '', thinking: '' }; // buffer until the close marker proves it",
-      "replacement": "    return { text: delta, thinking: '' }; // buffer until the close marker proves it"
+      "anchor": "    return { hold: true }; // buffer until the close marker proves it",
+      "replacement": "    return { text: this.pending, thinking: '' }; // buffer until the close marker proves it"
     }
   ]
 }
