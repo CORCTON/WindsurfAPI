@@ -2378,6 +2378,69 @@ function residentProbeSkip(account, admission = getLsAdmissionForAccount(account
   return null;
 }
 
+// ─── Ban history: bounded log of every rate-limit event ─────────────────────
+// _health (C5, above) answers "how many throttles did this account take in the
+// last hour" — a COUNT. It cannot answer the question an operator actually asks
+// after a lockout: WHICH window did the upstream ask for, and which one did we
+// apply? Those two differ whenever markRateLimited clamps (the Math.max(1000,…)
+// floor below), and the clamp is exactly where a real reset window gets lost —
+// #242's resetMs drop was invisible for that reason. So this records BOTH sides
+// per event, in arrival order, ring-buffered so a 429 storm cannot grow it.
+// In-memory only and deliberately NOT persisted: unlike _health this is triage
+// detail, not selection input, so it must not enlarge accounts.json.
+const RATE_LIMIT_HISTORY_MAX = 500;
+const _rateLimitHistory = [];
+
+/**
+ * Append one rate-limit event, evicting the oldest once at capacity.
+ * `upstreamMs` is what the caller asked for (may be null/0/garbage — that IS
+ * the signal worth keeping); `effectiveMs` is what markRateLimited clamped it to.
+ */
+// Normalize a caller-supplied window to a number, or null when no usable window
+// arrived. null/undefined/'' mean "the upstream window never reached us" (#242);
+// 0 is a real — if degenerate — window, so it is NOT nulled. Garbage (NaN)
+// is a window that cannot be used, so it is nulled too.
+function toWindowMs(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function recordRateLimitEvent(account, { upstreamMs, effectiveMs, until, modelKey, healthKind }) {
+  const raw = toWindowMs(upstreamMs);
+  _rateLimitHistory.push({
+    at: Date.now(),
+    accountId: account?.id || 'unknown',
+    // Selector or model key the cooldown was scoped to; null = whole account.
+    modelKey: modelKey || null,
+    // Raw request, normalized to a number-or-null so a caller passing undefined
+    // is distinguishable from one passing 0.
+    upstreamMs: raw,
+    effectiveMs,
+    // True when the floor/normalization moved the window — the operator's cue
+    // that the upstream window did not survive the trip.
+    clamped: effectiveMs !== raw,
+    expiresAt: until,
+    kind: healthKind,
+  });
+  if (_rateLimitHistory.length > RATE_LIMIT_HISTORY_MAX) {
+    _rateLimitHistory.splice(0, _rateLimitHistory.length - RATE_LIMIT_HISTORY_MAX);
+  }
+}
+
+/**
+ * Public accessor: the rate-limit ring, oldest first (dashboard triage).
+ * Returns a copy so a caller cannot mutate the ring; `limit` takes the most
+ * RECENT n while preserving that order.
+ */
+export function getRateLimitHistory({ limit = RATE_LIMIT_HISTORY_MAX } = {}) {
+  const n = Math.max(0, Math.min(RATE_LIMIT_HISTORY_MAX, Number(limit) || 0));
+  return _rateLimitHistory.slice(-n).map(e => ({ ...e }));
+}
+
+/** Test aid: drop the ring so one test's events can't leak into another's. */
+export function _resetRateLimitHistoryForTests() { _rateLimitHistory.length = 0; }
+
 /**
  * Mark an account as rate-limited for a duration (default 5 min).
  * When `modelKey` is provided, only that model is blocked on this account —
@@ -2390,6 +2453,7 @@ export function markRateLimited(apiKey, durationMs = 5 * 60 * 1000, modelKey = n
   recordHealthEvent(account, healthKind);
   const safeMs = Math.max(1000, Number(durationMs) || 0);
   const until = Date.now() + safeMs;
+  recordRateLimitEvent(account, { upstreamMs: durationMs, effectiveMs: safeMs, until, modelKey, healthKind });
   if (modelKey) {
     if (!account._modelRateLimits) account._modelRateLimits = {};
     account._modelRateLimits[modelKey] = Math.max(account._modelRateLimits[modelKey] || 0, until);

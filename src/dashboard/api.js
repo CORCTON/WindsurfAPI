@@ -14,7 +14,7 @@ import {
   setAccountBlockedModels, setAccountTokens, setAccountTier, setAccountSpendPolicy,
   getAccountInternal, isLocalBindHost, maskApiKey, safeEqualString,
   checkLockout, failedAuthAttempt, successfulAuthAttempt,
-  getDroughtSummary, getPoolHealthWindow,
+  getDroughtSummary, getPoolHealthWindow, getRateLimitHistory,
   getCurrentlyFreeConnectSelectors, isConnectSelectorCurrentlyFree,
 } from '../auth.js';
 import { restartLsForProxy } from '../langserver.js';
@@ -1244,6 +1244,17 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
   if (subpath === '/connect-metrics' && method === 'DELETE') {
     resetConnectMetrics();
     return json(res, 200, { success: true });
+  }
+
+  // ─── Rate-limit history ───────────────────────────────
+  // Bounded ring of the most recent markRateLimited events (upstream window vs
+  // the clamped window that was actually applied), so an operator can see what
+  // a lockout was really waiting for instead of grepping logs. `?limit=n`
+  // returns the n most recent; the ring itself is capped at 500.
+  if (subpath === '/rate-limit-history' && method === 'GET') {
+    const url = dashboardUrl(req);
+    const limit = parseInt(url.searchParams.get('limit') || '', 10);
+    return json(res, 200, { events: getRateLimitHistory({ limit: Number.isFinite(limit) ? limit : undefined }) });
   }
 
   // ─── Logs ─────────────────────────────────────────────
