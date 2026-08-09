@@ -64,6 +64,7 @@ import { sanitizeText, sanitizeToolCall, PathSanitizeStream } from '../sanitize.
 import { systemFingerprint } from '../system-fingerprint.js';
 import { registerSseController } from '../sse-registry.js';
 import { createStreamReasoningDedup, isReasoningDedupEnabled } from '../reasoning-dedup.js';
+import { ThinkTextClassifier } from '../response-classifier.js';
 import {
   recordNativeBridgeAccountGateReject,
   recordNativeBridgeAccountGateSkip,
@@ -79,6 +80,39 @@ const HEARTBEAT_MS = 15_000;
 const QUEUE_RETRY_MS = 1_000;
 const QUEUE_MAX_WAIT_MS = 30_000;
 const IP_RATE_LIMIT_BURST_FLOOR_MS = 30_000;
+
+// #250 — reroute a LEADING think-tagged span out of the CONTENT channel into
+// reasoning on the Cascade stream path, using the same ThinkTextClassifier the
+// connect layer already runs (src/devin-connect-openai.js:241). Until this, the
+// Cascade path had no think-reroute defense at all — and it is the path the
+// README points Claude Code at, so it carries most of the traffic #250 affects.
+// Covers streamResponse's legacy `rawGetChatMessage` egress too: both flows
+// funnel through the same emitContent, and leaving one unprotected would just
+// relocate the leak. Named for the flow that matters.
+//
+// DEFAULT ON, off switch WINDSURFAPI_CASCADE_THINK_REROUTE=0.
+//
+// Why ON, given the sibling connect gate defaults OFF: #250's leak is
+// self-reinforcing — the client stores rerouted-as-visible reasoning and resends
+// it next turn, re-priming more reasoning-as-text. A fix that ships OFF protects
+// nobody on the route that actually carries the traffic. The transform is
+// narrow: ONLY a marker at the very start of the content stream (optional
+// leading whitespace) is rerouted, so an ordinary answer is byte-identical.
+//
+// Both failure shapes named in review are bounded by machinery already on this
+// path, which is what makes ON defensible rather than optimistic:
+//   - content loss (rerouted bytes invisible to a content-only client) — a turn
+//     that was ENTIRELY a think block lands in accThinking, where the existing
+//     shouldFallbackThinkingToText net promotes it back to content for a
+//     non-thinking model, exactly as it does for a genuine thinking-only turn;
+//   - duplicated text (same bytes on both channels) — the rerouted span goes
+//     through the reasoning sink, so reasoningDedup.noteReasoning() sees it and
+//     a model that then repeats it verbatim as text is suppressed by the
+//     existing duplicate logic instead of double-delivered.
+// Setting it to '0' restores byte-identical egress to before this change.
+export function isCascadeThinkRerouteEnabled(env = process.env) {
+  return String(env.WINDSURFAPI_CASCADE_THINK_REROUTE || '1') !== '0';
+}
 
 // Build the option bag the v2.0.25 semantic key needs. tools / tool_choice /
 // preamble are baked into the digest so a tool schema change misses instead
@@ -5354,9 +5388,44 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
       const reasoningDedup = isReasoningDedupEnabled()
         ? createStreamReasoningDedup({ wantThinking: !!deps.wantThinking })
         : null;
+      // #250 — a fresh per-stream classifier. Content bytes that are rerouted to
+      // the reasoning channel are excluded from what this path sends, so a
+      // classifier must NOT be shared across streams (its pending/mode state is
+      // mutated on every feed). Rebuilt on each retry attempt alongside
+      // pathStreamText (see the attempt>0 reset block). Off when the gate is
+      // off, or in wantJson (JSON is fenced/non-interleaved; a reroute there
+      // would strip <think> spans from the payload, changing 5982-5988).
+      let thinkClassifier = (useCascade && isCascadeThinkRerouteEnabled() && !wantJson)
+        ? new ThinkTextClassifier()
+        : null;
 
       const emitContent = (clean) => {
         if (!clean) return;
+        // #250 — reroute a LEADING think-tagged span out of content into
+        // reasoning BEFORE the dedup, so the dedup's prefix tracking sees the
+        // post-reroute split and cannot double-transform (a rerouted span feeds
+        // the reasoning sink; a verbatim text repeat of it is then a duplicate
+        // to suppress, not a fresh reroute). Rerouting calls emitThinking →
+        // noteReasoning, which SEEDS seenReasoning — the reason the classifier
+        // must run first: fed AFTER the dedup, its rerouted output would look
+        // like a duplicate prefix to the dedup and get held.
+        if (thinkClassifier) {
+          const routed = thinkClassifier.feed(clean);
+          if (routed.thinking) {
+            // Treat a rerouted span EXACTLY as if upstream had delivered it on
+            // the thinking channel, mirroring the chunk.thinking branch below —
+            // including its emulateTools special case. In tool-emulation mode
+            // thinking must NOT be streamed mid-turn: a reasoning_content delta
+            // before a tail tool_call makes Claude Code report "Content block
+            // not found". So buffer into accThinking exactly as that branch
+            // does, and let the stream-end flush decide. Cascade+emulateTools is
+            // the README's Claude Code config, i.e. the live case for #250.
+            if (emulateTools) accThinking += routed.thinking;
+            else emitThinking(routed.thinking);
+          }
+          if (!routed.text) return;
+          clean = routed.text;
+        }
         accText += clean;
         // When response_format=json_object/json_schema is set, buffer text
         // instead of streaming it out. We can't safely fence-strip in the
@@ -5573,6 +5642,9 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             }
             pathStreamText = new PathSanitizeStream();
             pathStreamThinking = new PathSanitizeStream();
+            thinkClassifier = (useCascade && isCascadeThinkRerouteEnabled() && !wantJson)
+              ? new ThinkTextClassifier()
+              : null;
             nativeFunctionParser = nativeBridgeOn
               ? new NativeFunctionCallStreamParser(nativeOpts?.callerLookup || new Map())
               : null;
@@ -5806,6 +5878,15 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
               }
             }
             emitContent(pathStreamText.flush());
+            // #250 — flush the think classifier BEFORE the thinking flush below:
+            // an unterminated/undecided tail is delivered as text (visible beats
+            // dropped), and doing it here lets the ACCUMULATE=true pathStreamThinking
+            // flush below see any rerouted tail it should dedup against. flush() is
+            // mandatory on this path — a forgotten flush drops an unterminated span.
+            if (thinkClassifier) {
+              const tail = thinkClassifier.flush();
+              if (tail) emitContent(tail);
+            }
             // v2.0.146 fix: scan accThinking for <tool_call> blocks when
             // the text-only toolParser produced nothing. Opus 4.8 xhigh
             // and similar high-reasoning models sometimes emit the full
@@ -6213,6 +6294,22 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             log.info(`Chat[${reqId}]: stream reuse entry was invalidated (cascade not_found upstream); not restoring to pool`);
           }
 
+          // #250 failure path: release whatever the think classifier still holds
+          // so an undecided/unterminated span is delivered as text rather than
+          // dropped (visible beats dropped — same policy as the success tail).
+          //
+          // This runs BEFORE the emittedClientPayload branch on purpose. The
+          // classifier can be holding the ENTIRE stream so far (a leading span
+          // that never closed emits nothing until flush), in which case
+          // emittedClientPayload is still false; flushing inside the branch would
+          // therefore drop those bytes and send an error frame for a turn that
+          // did produce content. Flushing here lets emitContent set the flag, so
+          // the "partial delivered" branch is chosen correctly.
+          if (thinkClassifier) {
+            const rerouteTail = thinkClassifier.flush();
+            if (rerouteTail) emitContent(rerouteTail);
+          }
+
           if (emittedClientPayload) {
             // We already streamed real assistant content. Injecting
             // "[Error: ...]" as a content delta here would corrupt the
@@ -6225,10 +6322,16 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             // (release(), not settle() — nothing is suppressed here), so a
             // client that does not render the reasoning channel still gets
             // the duplicate tail instead of silence.
+            //
+            // This used to call an undefined `chunk(...)` helper (introduced by
+            // 26b939bc): a ReferenceError swallowed by the enclosing try/catch,
+            // which also skipped finishPartialStreamAfterError below — so the
+            // client lost the held tail AND the synthetic stop. Use the same
+            // literal frame shape as every sibling send() in this function.
             const heldTail = reasoningDedup?.release() ?? '';
             if (heldTail) {
-              send(chunk({ id, created, model,
-                choices: [{ index: 0, delta: { content: heldTail }, finish_reason: null }] }));
+              send({ id, object: 'chat.completion.chunk', created, model,
+                choices: [{ index: 0, delta: { content: heldTail }, finish_reason: null }] });
             }
             finishPartialStreamAfterError({ id, created, model, send, res, internalRoute: !isOpenAIClient });
             log.warn(`Stream: partial response delivered then failed (${errMsg})`);

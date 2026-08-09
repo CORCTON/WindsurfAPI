@@ -79,6 +79,11 @@ const LEDGER = {
     waived: 'off means maintenance runs even while requests are in flight — asserting '
       + 'that reliably needs a timing fixture. Known gap.',
   },
+  // #250 — off means a leading think-tagged content span stays in the content
+  // channel on the Cascade stream path (byte-identical egress, no reroute). The
+  // off path IS tested: cascade-think-reroute.test.js drives it to '0' and
+  // asserts the marker bytes stay verbatim in content.
+  WINDSURFAPI_CASCADE_THINK_REROUTE: { tested: true },
   WINDSURFAPI_NLU_RETRY: {
     waived: 'off disables the narrative retry nudge; the behaviour is covered indirectly '
       + 'by nlu-negation-and-arg-slot.json but not via the switch. Known gap.',

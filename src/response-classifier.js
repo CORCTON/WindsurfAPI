@@ -39,9 +39,6 @@ export class ThinkTextClassifier {
   _feedUndecided(delta) {
     this.pending += delta;
 
-    // Enough held without a decision -> it is plain text; commit.
-    if (this.pending.length > MAX_LEAD) return this._commitText();
-
     const oi = this.pending.indexOf(THINK_OPEN);
     if (oi >= 0) {
       if (this.pending.slice(0, oi).trim() === '') {
@@ -53,6 +50,12 @@ export class ThinkTextClassifier {
       // Marker present but real text precedes it -> inline, not a leak.
       return this._commitText();
     }
+
+    // Enough held without a decision -> it is plain text; commit. This check
+    // MUST run after the marker scan (not before): MAX_LEAD is a cap on undecided
+    // *content* that proves it is text, not a budget that lets an early overflow
+    // dump a leading think block to the text channel before the scan ever runs.
+    if (this.pending.length > MAX_LEAD) return this._commitText();
 
     // No full marker yet. Could the pending still grow into one?
     const core = this.pending.replace(/^\s+/, '');
