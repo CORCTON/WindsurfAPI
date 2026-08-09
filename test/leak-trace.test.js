@@ -42,6 +42,9 @@ function fakeStreamRes() {
       listeners.get(event).push(cb);
       return this;
     },
+    emit(event) {
+      for (const cb of listeners.get(event) || []) cb();
+    },
   };
 }
 
@@ -190,6 +193,33 @@ it('gate ON: settle log on an UPSTREAM-ERROR exit records the outcome, not an al
     assert.ok(settle, 'settle log present even on the error exit');
     assert.ok(settle.includes('"outcome":"upstream-error"'), `error exit must say why the fields are empty, got: ${settle}`);
     assert.ok(settle.includes('"contentChars":0'), 'empty fields are expected here — and now explained');
+  } finally {
+    removeAccount(acct.id);
+  }
+});
+it('gate ON: settle log on a CLIENT-ABORT exit records the outcome client-abort', async () => {
+  process.env.WINDSURFAPI_LEAK_TRACE = '1';
+  process.env.DEVIN_CONNECT = '1';
+  const key = `leak-trace-token-${Math.random().toString(36).slice(2)}`;
+  const acct = addAccountByKey(key, 'leak-trace');
+  try {
+    let fakeResRef;
+    __setConnectDeps({
+      streamChatCompletion: async (params, send) => {
+        if (fakeResRef) fakeResRef.emit('close');
+        throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+      },
+    });
+    const result = await handleChatCompletions(
+      { model: 'swe-1-6-slow', stream: true, messages: [{ role: 'user', content: 'hi' }] },
+      { callerKey: '' },
+    );
+    const res = fakeStreamRes();
+    fakeResRef = res;
+    await result.handler(res);
+    const settle = leakLines().find((l) => l.includes('LEAK_TRACE settle'));
+    assert.ok(settle, 'settle log present even on the client abort exit');
+    assert.ok(settle.includes('"outcome":"client-abort"'), `abort exit must set outcome to client-abort, got: ${settle}`);
   } finally {
     removeAccount(acct.id);
   }

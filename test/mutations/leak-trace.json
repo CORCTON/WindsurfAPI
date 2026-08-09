@@ -1,6 +1,6 @@
 {
   "tests": ["test/leak-trace.test.js"],
-  "expectBaselinePass": 6,
+  "expectBaselinePass": 8,
   "mutations": [
     {
       "name": "gate inverted — tracing never fires",
@@ -56,6 +56,13 @@
       "file": "src/handlers/chat.js",
       "anchor": "outcome: lastOkSr ? 'ok' : (abortController.signal.aborted ? 'client-abort' : 'upstream-error'),",
       "replacement": "outcome: 'ok',",
+      "expectCaught": true
+    },
+    {
+      "name": "settle outcome client-abort check removed",
+      "file": "src/handlers/chat.js",
+      "anchor": "outcome: lastOkSr ? 'ok' : (abortController.signal.aborted ? 'client-abort' : 'upstream-error'),",
+      "replacement": "outcome: lastOkSr ? 'ok' : 'upstream-error',",
       "expectCaught": true
     }
   ]
