@@ -192,6 +192,12 @@ const CHROME_VERSIONS = [
   '130.0.0.0', '131.0.0.0', '132.0.0.0', '133.0.0.0', '134.0.0.0',
 ];
 
+// Same version the official IDE reports (src/windsurf.js DEFAULT_CLIENT_VERSION),
+// sent as x-client-version on the Auth1/check-login-method hops. Mirror the
+// upstream browser/desktop client header set so referrer-based firewall rules
+// see the same fingerprint as a real Windsurf client.
+const CLIENT_VERSION = process.env.WINDSURF_CLIENT_VERSION || '2.0.67';
+
 const ACCEPT_LANGUAGES = [
   'en-US,en;q=0.9', 'en-GB,en;q=0.9', 'zh-TW,zh;q=0.9,en;q=0.8',
   'zh-CN,zh;q=0.9,en;q=0.8', 'ja,en-US;q=0.9,en;q=0.8',
@@ -208,6 +214,9 @@ function generateFingerprint() {
   const major = chromeVer.split('.')[0];
   const ua = `Mozilla/5.0 (${os}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeVer} Safari/537.36`;
 
+  // Auth1/PostAuth routes are gated on a desktop-browser referrer; a desktop
+  // User-Agent + Origin/Referer pair keeps this proxy indistinguishable from
+  // the real Windsurf website client (mirrors cubezhao/ai-tools-mng auth.rs).
   return {
     'User-Agent': ua,
     'Accept-Language': pick(ACCEPT_LANGUAGES),
@@ -229,6 +238,7 @@ function buildJsonHeaders(fingerprint, body, extra = {}) {
     ...fingerprint,
     'Content-Type': 'application/json',
     'Content-Length': Buffer.byteLength(body),
+    'x-client-version': CLIENT_VERSION,
     ...extra,
   };
 }
@@ -338,6 +348,10 @@ function createFriendlyAuthError(prefix, detail, fallback = 'ERR_LOGIN_FAILED') 
     'USER_DISABLED': 'ERR_USER_DISABLED',
     'TOO_MANY_ATTEMPTS_TRY_LATER': 'ERR_TOO_MANY_ATTEMPTS',
     'INVALID_EMAIL': 'ERR_INVALID_EMAIL',
+    // Firebase API-key referrer restriction (403). Not a credential failure —
+    // our egress is what upstream rejected, so it must read as a deployment
+    // problem, not "wrong password", and must never feed the email lockout.
+    'API_KEY_HTTP_REFERRER_BLOCKED': 'ERR_HTTP_REFERRER_BLOCKED',
   };
   const errorCode = errorCodeMap[normalized] || normalized || fallback;
   const err = new Error(errorCode);
@@ -649,7 +663,13 @@ async function windsurfLoginViaFirebase(email, password, fingerprint, proxy) {
   const fbRes = await httpsRequest(FIREBASE_AUTH_URL, { method: 'POST', headers: fbHeaders }, firebaseBody, proxy);
 
   if (fbRes.data.error) {
-    const msg = fbRes.data.error.message || 'Unknown Firebase error';
+    // 403s from identitytoolkit carry just `{error:{message}}`; a Referer/
+    // API-key restriction arrives as API_KEY_HTTP_REFERRER_BLOCKED, which the
+    // friendly-error mapper (createFriendlyAuthError) resolves to a clear
+    // ERR_HTTP_REFERRER_BLOCKED instead of the raw code.
+    const msg = fbRes.data.error.message
+      || fbRes.data.error.code
+      || 'Unknown Firebase error';
     throw createFriendlyAuthError('Firebase', msg, msg);
   }
 
