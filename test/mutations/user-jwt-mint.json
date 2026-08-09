@@ -1,0 +1,38 @@
+{
+  "tests": [
+    "test/user-jwt-mint.test.js"
+  ],
+  "expectBaselinePass": 16,
+  "mutations": [
+    {
+      "name": "the epoch guard is dropped — a mint that was in flight across an account switch repopulates the cache, so the PREVIOUS account's credential rides the next tenant's request. Silent, cross-account, and invisible without this guard",
+      "file": "src/devin-connect.js",
+      "anchor": "      if (epoch !== _userJwtEpoch) return null; // account changed under us",
+      "replacement": "      // epoch guard removed"
+    },
+    {
+      "name": "in-flight coalescing is dropped — a concurrent burst on a cold cache mints once per caller instead of once, multiplying auth RPCs against the upstream at exactly the moment a pool is recovering",
+      "file": "src/devin-connect.js",
+      "anchor": "  const pending = _userJwtInflight.get(key);\n  if (pending) return pending;",
+      "replacement": "  const pending = null;"
+    },
+    {
+      "name": "a JWT with no readable exp gets cached anyway — a credential we cannot age out is presented until the process restarts, so a rotated or revoked token keeps being sent",
+      "file": "src/devin-connect.js",
+      "anchor": "      if (expMs) _userJwtCache.set(key, { jwt, expMs, epoch });",
+      "replacement": "      _userJwtCache.set(key, { jwt, expMs: expMs || (Date.now() + 86400000), epoch });"
+    },
+    {
+      "name": "the #21 field is emitted even for an empty JWT — a zero-length field 21 appears on the DEFAULT path, changing a working wire for every operator who never enabled the switch",
+      "file": "src/devin-connect.js",
+      "anchor": "    ...(userJwt ? [writeStringField(METADATA_USER_JWT_FIELD, userJwt)] : []),",
+      "replacement": "    ...(userJwt !== undefined ? [writeStringField(METADATA_USER_JWT_FIELD, userJwt || '')] : []),"
+    },
+    {
+      "name": "the switch accepts any truthy-ish value instead of exactly '1' — the same Number()/falsy rewrite that silently flipped sibling knobs in #241/#242, here turning a wire-changing credential on for an operator who set it to '0' or 'false'",
+      "file": "src/devin-connect.js",
+      "anchor": "export function isUserJwtEnabled(env = process.env) {\n  return String(env.DEVIN_CONNECT_USER_JWT ?? '').trim() === '1';",
+      "replacement": "export function isUserJwtEnabled(env = process.env) {\n  return !!String(env.DEVIN_CONNECT_USER_JWT ?? '').trim();"
+    }
+  ]
+}

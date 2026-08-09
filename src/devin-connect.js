@@ -37,7 +37,7 @@ import {
   writeMessageField, writeStringField, writeVarintField, writeFixed64Field,
   parseFields, getField, getAllFields,
 } from './proto.js';
-import { wrapRequest, wrapEnvelope, StreamingFrameParser, connectHeaders } from './connect.js';
+import { wrapRequest, wrapEnvelope, StreamingFrameParser, connectHeaders, tryGunzip } from './connect.js';
 // Observability counter only (mirrors devin-connect-openai.js importing
 // recordArgRepair from cline-compat). cc-compat is a zero-I/O, zero-pipeline-
 // import pure module, so this cannot create a cycle or perturb the wire path.
@@ -45,6 +45,12 @@ import { recordSchemaNormalized } from './handlers/cc-compat.js';
 
 const HOST = 'server.codeium.com';
 const PATH = '/exa.api_server_pb.ApiServerService/GetChatMessage';
+// Short-lived user JWT. Four independent .proto reimplementations agree on the
+// method and the response shape ({user_jwt=1, custom_api_server_url=2}); the
+// credential is HS256 with roughly a 24-minute lifetime and rides the request as
+// ClientMetadata #21. See mintUserJwt below for why this ships default-OFF.
+const USER_JWT_PATH = '/exa.auth_pb.AuthService/GetUserJwt';
+const METADATA_USER_JWT_FIELD = 21;
 
 // ─── Wire capture (RE / vision analysis, gated) ─────────────────────────────
 // When DEVIN_CONNECT_WIRE_DUMP=1, drop the raw upstream GetChatMessage
@@ -726,11 +732,179 @@ function encodeToolDef(tool, tags) {
   return Buffer.concat(fields);
 }
 
+// ─── Short-lived user JWT (GetUserJwt), opt-in ──────────────────────────────
+//
+// The upstream exposes exa.auth_pb.AuthService/GetUserJwt, which exchanges the
+// long-lived session token for a short-lived HS256 JWT (~24 min) that rides the
+// chat request as ClientMetadata #21. Four independent .proto reimplementations
+// agree on the method name and the response shape, and one third-party client
+// treats the JWT as REQUIRED for chat RPCs.
+//
+// It ships default-OFF (DEVIN_CONNECT_USER_JWT=1 to enable), for one reason: our
+// chat path demonstrably works WITHOUT it today. "Another client sends this" is a
+// coordinate, not evidence that our requests need it, and adding an unrequested
+// credential field to a working wire is the kind of change that fails in a way
+// only production traffic reveals. Enabling it is therefore an operator decision
+// backed by their own capture. When off, not a single byte of the request changes
+// and no extra RPC is issued.
+//
+// Cache design, mirroring the one third-party client that ships this: keyed per
+// (token, host), refreshed 60s before expiry, with in-flight coalescing so a burst
+// of concurrent requests mints once — plus a monotonic epoch that invalidates a
+// mint already in flight. The epoch is the part worth copying deliberately: without
+// it, a mint started before a logout/rotation can land afterwards and repopulate
+// the cache with a credential belonging to the PREVIOUS account, which then rides
+// the next tenant's request. The failure is silent and cross-account, so the guard
+// is not optional.
+const _userJwtCache = new Map(); // `${token} ${host}` → { jwt, expMs, epoch }
+const _userJwtInflight = new Map(); // same key → Promise<string|null>
+let _userJwtEpoch = 0;
+
+/** Bump the epoch so any in-flight mint is discarded instead of cached. */
+export function invalidateUserJwtCache() {
+  _userJwtEpoch += 1;
+  _userJwtCache.clear();
+  _userJwtInflight.clear();
+}
+
+export function isUserJwtEnabled(env = process.env) {
+  return String(env.DEVIN_CONNECT_USER_JWT ?? '').trim() === '1';
+}
+
+/** Seconds of headroom before `exp` at which a cached JWT is considered stale. */
+const USER_JWT_REFRESH_SKEW_MS = 60_000;
+
+/**
+ * `exp` (ms) out of a JWT payload, or null when it carries none.
+ *
+ * A JWT with no readable `exp` is treated as non-cacheable rather than
+ * cached-forever: holding a credential we cannot age out is how a rotated or
+ * revoked token keeps getting presented until the process restarts.
+ */
+export function userJwtExpiryMs(jwt) {
+  if (typeof jwt !== 'string') return null;
+  const parts = jwt.split('.');
+  if (parts.length < 2) return null;
+  try {
+    const json = Buffer.from(parts[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
+    const exp = Number(JSON.parse(json)?.exp);
+    return Number.isFinite(exp) && exp > 0 ? exp * 1000 : null;
+  } catch {
+    // A malformed payload is "no expiry known", never a throw: this runs on the
+    // request path and an upstream that returns junk must degrade, not 500.
+    return null;
+  }
+}
+
+/**
+ * Mint (or reuse) the short-lived user JWT for one session token.
+ *
+ * Returns null on ANY failure — unreachable upstream, non-200, unparseable frame,
+ * missing field. Null is a first-class outcome, not an error: the chat request is
+ * known to work without #21, so a mint failure must degrade to the historical wire
+ * rather than fail the user's request. That is also why nothing here throws.
+ *
+ * @param {string} sessionToken
+ * @param {{host?: string, signal?: AbortSignal, now?: number}} [opts]
+ * @returns {Promise<string|null>}
+ */
+export async function mintUserJwt(sessionToken, opts = {}) {
+  if (!sessionToken) return null;
+  const host = opts.host || HOST;
+  const now = Number.isFinite(opts.now) ? opts.now : Date.now();
+  const key = `${sessionToken} ${host}`;
+
+  const hit = _userJwtCache.get(key);
+  if (hit && hit.expMs - USER_JWT_REFRESH_SKEW_MS > now) return hit.jwt;
+
+  // Coalesce: a burst of concurrent requests on a cold cache must mint once.
+  const pending = _userJwtInflight.get(key);
+  if (pending) return pending;
+
+  // Captured BEFORE the await. If invalidateUserJwtCache() runs while this mint is
+  // in flight, the epoch moves and the result is dropped instead of repopulating
+  // the cache with a credential for an account that is no longer current.
+  const epoch = _userJwtEpoch;
+  const task = (async () => {
+    try {
+      const proto = writeMessageField(1, buildClientMetadata(sessionToken, opts.deviceSeed));
+      const framed = wrapEnvelope(proto, { compress: false });
+      const raw = await postConnectUnary(host, USER_JWT_PATH, framed, sessionToken, opts.signal);
+      if (!raw) return null;
+      const jwt = getField(parseFields(raw), 1, 2)?.value?.toString('utf8')?.trim();
+      if (!jwt) return null;
+      if (epoch !== _userJwtEpoch) return null; // account changed under us
+      const expMs = userJwtExpiryMs(jwt);
+      // No readable exp → usable once, never cached. See userJwtExpiryMs.
+      if (expMs) _userJwtCache.set(key, { jwt, expMs, epoch });
+      return jwt;
+    } catch (e) {
+      log.debug(`GetUserJwt mint failed (degrading to the no-JWT wire): ${e.message}`);
+      return null;
+    } finally {
+      _userJwtInflight.delete(key);
+    }
+  })();
+  _userJwtInflight.set(key, task);
+  return task;
+}
+
+/**
+ * One unary Connect-RPC round trip → the response's single protobuf frame.
+ *
+ * Resolves null (never rejects) for any non-200 or malformed body: every caller
+ * here treats failure as "carry on without the optional credential".
+ */
+function postConnectUnary(host, path, framed, sessionToken, signal) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (v) => { if (!settled) { settled = true; resolve(v); } };
+    let req;
+    try {
+      req = requestImpl({
+        hostname: host,
+        port: 443,
+        path,
+        method: 'POST',
+        headers: connectHeaders({
+          authorization: `Basic ${sessionToken}-${sessionToken}`,
+          'Content-Length': framed.length,
+          Accept: '*/*',
+        }),
+        signal,
+      }, (res) => {
+        const chunks = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () => {
+          if (res.statusCode !== 200) return done(null);
+          const body = Buffer.concat(chunks);
+          // Connect envelope: [flags][len:4BE][payload]. A trailer-only response
+          // (flag 0x02) carries no message and must not be parsed as one.
+          if (body.length < 5) return done(null);
+          const flags = body[0];
+          const len = body.readUInt32BE(1);
+          if (flags & 0x02) return done(null);
+          const payload = body.subarray(5, 5 + len);
+          done((flags & 0x01) ? tryGunzip(payload) : payload);
+        });
+        res.on('error', () => done(null));
+      });
+      req.on('error', () => done(null));
+      req.end(framed);
+    } catch {
+      done(null);
+    }
+  });
+}
+
 /**
  * Build the ClientMetadata sub-message (field #1). The token is embedded SINGLE
  * here (the doubling is only for the HTTP Authorization header).
+ *
+ * `userJwt` (optional) is appended as #21. Absent → byte-identical to before, so
+ * the default path is untouched.
  */
-function buildClientMetadata(token, deviceSeed) {
+function buildClientMetadata(token, deviceSeed, userJwt) {
   return Buffer.concat([
     writeStringField(1, CLIENT_NAME),
     writeStringField(2, CLIENT_VERSION),
@@ -739,6 +913,11 @@ function buildClientMetadata(token, deviceSeed) {
     writeStringField(5, 'windows'),
     writeStringField(7, CLIENT_VERSION),
     writeStringField(12, CLIENT_NAME),
+    // #21 short-lived user JWT, only when the caller minted one (opt-in). Emitted
+    // before #31 to keep the fields ascending, matching every other field here.
+    // An empty/absent value contributes NOTHING — not a zero-length #21 — so the
+    // default request stays byte-identical to the pre-JWT wire.
+    ...(userJwt ? [writeStringField(METADATA_USER_JWT_FIELD, userJwt)] : []),
     // #31 device fingerprint. deviceSeed (per-account stable mode, opt-in) makes
     // it deterministic; undefined → historical per-request random (byte-equiv).
     writeStringField(31, generateFingerprint(deviceSeed)),
@@ -808,7 +987,7 @@ function buildCompletionConfig({ maxTokens, temperature, topK, topP, contextWind
  * @param {object}   [params.completion]  CompletionConfig overrides
  * @returns {Buffer} raw protobuf (un-enveloped)
  */
-export function buildGetChatMessageRequest({ token, messages, model, sessionId, completion, tools, nativeToolCall = false, deviceSeed, env = process.env, sessionModelConfig, continuityTrail } = {}) {
+export function buildGetChatMessageRequest({ token, messages, model, sessionId, completion, tools, nativeToolCall = false, deviceSeed, userJwt, env = process.env, sessionModelConfig, continuityTrail } = {}) {
   if (!token) throw new Error('DEVIN_CONNECT: missing session token');
   if (!model) throw new Error('DEVIN_CONNECT: missing model selector');
 
@@ -963,7 +1142,7 @@ export function buildGetChatMessageRequest({ token, messages, model, sessionId, 
   ]);
 
   const parts = [
-    writeMessageField(1, buildClientMetadata(token, deviceSeed)),
+    writeMessageField(1, buildClientMetadata(token, deviceSeed, userJwt)),
     writeStringField(2, systemPrompt),
   ];
   for (const cm of chatMessages) parts.push(writeMessageField(3, cm));
@@ -2062,7 +2241,18 @@ export async function* streamChat({
     ? tools.map((t) => t?.function?.name || t?.name).filter(Boolean)
     : null;
 
-  const proto = buildGetChatMessageRequest({ token: sessionToken, messages, model, sessionId, completion, tools, nativeToolCall, deviceSeed, env, sessionModelConfig, continuityTrail });
+  // Optional short-lived credential (#21). Awaited before the proto is built
+  // because it travels INSIDE the message, not as a header. mintUserJwt never
+  // throws and resolves null on every failure path, so enabling the switch cannot
+  // turn an upstream JWT problem into a failed user request — it degrades to the
+  // historical no-JWT wire. Minted against the DEFAULT host on purpose: the
+  // per-account host override below is a default-off RE aid, and pointing the auth
+  // service at an overridden host would mint against a different origin than the
+  // one the .protos describe.
+  const userJwt = isUserJwtEnabled(env)
+    ? await mintUserJwt(sessionToken, { host: HOST, signal, deviceSeed })
+    : undefined;
+  const proto = buildGetChatMessageRequest({ token: sessionToken, messages, model, sessionId, completion, tools, nativeToolCall, deviceSeed, userJwt, env, sessionModelConfig, continuityTrail });
   // Request envelope is sent UNCOMPRESSED (flag 0). The live calibration showed
   // the server rejects a gzipped request frame with an opaque "internal" error;
   // it still streams gzipped frames back, which the parser handles.
