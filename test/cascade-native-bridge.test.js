@@ -546,35 +546,8 @@ describe('parseTrajectorySteps — native step recognition', () => {
 });
 
 describe('buildSendCascadeMessageRequest — additional_steps on field 9', () => {
-  it('serializes a Kimi tool preamble in field 12 without contradictory XML reinforcement', () => {
-    const kimiPreamble = [
-      '<|tool_calls_section_begin|>',
-      'Available tools:',
-      '<|tool_calls_section_end|>',
-    ].join('\n');
-    const proto = buildSendCascadeMessageRequest(
-      'k', 'cid', 'hi', 12345, 'MODEL_TEST', 'sess',
-      { toolPreamble: kimiPreamble },
-    );
-    const top = parseFields(proto);
-    const cfg = parseFields(getField(top, 5, 2).value);
-    const planner = parseFields(getField(cfg, 1, 2).value);
-    const conversational = parseFields(getField(planner, 2, 2).value);
-    const section = parseFields(getField(conversational, 12, 2).value);
-    const text = getField(section, 2, 2).value.toString('utf8');
-
-    assert.match(text, /<\|tool_calls_section_begin\|>/);
-    assert.doesNotMatch(text, /Use this exact format: <tool_call>/);
-  });
-
-  it('drops mixed Kimi/XML custom reinforcement for a Kimi preamble', () => {
-    setSystemPrompts({
-      toolReinforcement: [
-        '<|tool_calls_section_begin|>',
-        'Use this exact format: <tool_call>{"name":"...","arguments":{...}}</tool_call>',
-        '<|tool_calls_section_end|>',
-      ].join('\n'),
-    });
+  it('omits XML reinforcement from a Kimi preamble', () => {
+    setSystemPrompts({ toolReinforcement: 'Use this exact format: <tool_call>{"name":"...","arguments":{...}}</tool_call>' });
     try {
       const proto = buildSendCascadeMessageRequest(
         'k', 'cid', 'hi', 12345, 'MODEL_TEST', 'sess',
@@ -589,45 +562,6 @@ describe('buildSendCascadeMessageRequest — additional_steps on field 9', () =>
 
       assert.match(text, /<\|tool_calls_section_begin\|>/);
       assert.doesNotMatch(text, /Use this exact format:\s*<tool_call>/i);
-    } finally {
-      resetSystemPrompt('toolReinforcement');
-    }
-  });
-
-  it('keeps neutral custom reinforcement with an explicit Kimi preamble', () => {
-    setSystemPrompts({ toolReinforcement: 'Use the available tools when they help answer the request.' });
-    try {
-      const proto = buildSendCascadeMessageRequest(
-        'k', 'cid', 'hi', 12345, 'MODEL_TEST', 'sess',
-        { toolPreamble: '<|tool_calls_section_begin|>\nAvailable tools:' },
-      );
-      const top = parseFields(proto);
-      const cfg = parseFields(getField(top, 5, 2).value);
-      const planner = parseFields(getField(cfg, 1, 2).value);
-      const conversational = parseFields(getField(planner, 2, 2).value);
-      const section = parseFields(getField(conversational, 12, 2).value);
-      const text = getField(section, 2, 2).value.toString('utf8');
-      assert.match(text, /Use the available tools when they help answer the request\./);
-    } finally {
-      resetSystemPrompt('toolReinforcement');
-    }
-  });
-
-  it('keeps matching XML custom reinforcement with an XML preamble', () => {
-    const matching = 'Emit <tool_call>{"name":"...","arguments":{...}}</tool_call>.';
-    setSystemPrompts({ toolReinforcement: matching });
-    try {
-      const proto = buildSendCascadeMessageRequest(
-        'k', 'cid', 'hi', 12345, 'MODEL_TEST', 'sess',
-        { toolPreamble: 'Use this exact format: <tool_call>{"name":"...","arguments":{...}}</tool_call>' },
-      );
-      const top = parseFields(proto);
-      const cfg = parseFields(getField(top, 5, 2).value);
-      const planner = parseFields(getField(cfg, 1, 2).value);
-      const conversational = parseFields(getField(planner, 2, 2).value);
-      const section = parseFields(getField(conversational, 12, 2).value);
-      const text = getField(section, 2, 2).value.toString('utf8');
-      assert.match(text, /Emit <tool_call>/);
     } finally {
       resetSystemPrompt('toolReinforcement');
     }

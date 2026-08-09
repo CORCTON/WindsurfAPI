@@ -170,10 +170,8 @@ function runSuite(tests) {
   // warns is open-ended (round 8: where did this guard's vocabulary come from?).
   out = out.replace(/\x1b\[[0-9;]*m/g, '');
   const sum = (re) => [...out.matchAll(re)].reduce((n, m) => n + Number(m[1]), 0);
-  // Node 22 writes TAP's final counters as `# pass N`; Node 24 writes
-  // `ℹ pass N`. Both forms are emitted by supported Node versions.
-  const pass = sum(/^(?:#|ℹ) pass (\d+)$/gm);
-  const fail = sum(/^(?:#|ℹ) fail (\d+)$/gm);
+  const pass = sum(/^ℹ pass (\d+)$/gm);
+  const fail = sum(/^ℹ fail (\d+)$/gm);
   const names = [...out.matchAll(/^✖ (.+?) \(\d/gm)].map((m) => m[1]);
   return { pass, fail, total: pass + fail, ok: fail === 0 && pass > 0, failedNames: [...new Set(names)] };
 }

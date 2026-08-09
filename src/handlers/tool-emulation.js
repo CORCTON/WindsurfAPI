@@ -1271,44 +1271,6 @@ function parseKimiToolCall(nameWithIndex, argsRaw) {
   return { name: parsedName, arguments: parsedArgs, suffix: nameWithIndex.includes(':') ? `_${nameWithIndex.split(':').pop().trim()}` : '' };
 }
 
-function isKimiWrapperlessProtected(body, index) {
-  let quote = null;
-  let escaped = false;
-  let backticks = 0;
-  for (let i = 0; i < index; i++) {
-    const ch = body[i];
-    if (ch === '\n' || ch === '\r') {
-      quote = null;
-      escaped = false;
-      continue;
-    }
-    if (escaped) { escaped = false; continue; }
-    if (ch === '\\' && quote) { escaped = true; continue; }
-    if (ch === '`' && !quote) { backticks += 1; continue; }
-    if (ch === '"' || ch === "'") {
-      if (ch === "'" && /[A-Za-z0-9_]/.test(body[i - 1] || '') && /[A-Za-z0-9_]/.test(body[i + 1] || '')) continue;
-      if (!quote) quote = ch;
-      else if (quote === ch) quote = null;
-    }
-  }
-  return quote !== null || (backticks % 2) === 1;
-}
-
-function findKimiWrapperlessCall(body, from = 0, precedingChar = '') {
-  const prefix = /functions\.([A-Za-z0-9_.-]+):([0-9]+)(?=\{)/g;
-  prefix.lastIndex = from;
-  let match;
-  while ((match = prefix.exec(body)) !== null) {
-    const start = match.index;
-    const boundary = start === 0 ? (from === 0 || /\s/.test(precedingChar)) : /\s/.test(body[start - 1]);
-    if (!boundary || isKimiWrapperlessProtected(body, start)) continue;
-    const objectStart = start + match[0].length;
-    const end = matchClosingBrace(body, objectStart);
-    return { start, objectStart, end, nameWithIndex: match[0], json: end === -1 ? null : body.slice(objectStart, end + 1) };
-  }
-  return null;
-}
-
 function parseNonOpenAIDialectBuffer(dialect, body, startSeen) {
   if (dialect === 'kimi_k2') {
     let cursor = 0;
@@ -1317,33 +1279,13 @@ function parseNonOpenAIDialectBuffer(dialect, body, startSeen) {
     while (true) {
       const sectionStart = body.indexOf(KIMI_TOOL_SECTION_BEGIN, cursor);
       const xmlStart = body.indexOf(GLM47_TOOL_OPEN, cursor);
-      const lightning = findKimiWrapperlessCall(body, cursor);
-      const starts = [sectionStart, xmlStart, lightning?.start].filter((idx) => idx !== undefined && idx !== -1);
+      const starts = [sectionStart, xmlStart].filter(idx => idx !== -1);
       if (!starts.length) {
         outText += body.slice(cursor);
         break;
       }
       const nextStart = Math.min(...starts);
       outText += body.slice(cursor, nextStart);
-
-      if (nextStart === lightning?.start) {
-        if (lightning.end === -1) {
-          outText += body.slice(nextStart);
-          break;
-        }
-        const parsed = parseKimiToolCall(lightning.nameWithIndex, lightning.json);
-        if (!parsed) {
-          outText += body.slice(lightning.start, lightning.end + 1);
-        } else {
-          calls.push({
-            id: `call_${startSeen + calls.length}_${Date.now().toString(36)}${parsed.suffix}`,
-            name: parsed.name,
-            argumentsJson: JSON.stringify(parsed.arguments || {}),
-          });
-        }
-        cursor = lightning.end + 1;
-        continue;
-      }
 
       if (nextStart === sectionStart) {
         const payloadStart = sectionStart + KIMI_TOOL_SECTION_BEGIN.length;
@@ -1476,7 +1418,6 @@ export class ToolCallStreamParser {
     this.inToolCode = false;
     this.inBareCall = false;
     this._totalSeen = 0;
-    this._lastStreamChar = '';
     this.parseToolCode = options.parseToolCode !== false;
     this.parseBareJson = options.parseBareJson !== false;
     this.dialect = options.dialect || pickToolDialect(options.modelKey, options.provider, options.route || null);
@@ -1570,10 +1511,6 @@ export class ToolCallStreamParser {
         const idx = this.buffer.indexOf(s);
         if (idx !== -1 && (earliest === -1 || idx < earliest)) earliest = idx;
       }
-      if (this.dialect === 'kimi_k2') {
-        const lightning = findKimiWrapperlessCall(this.buffer, 0, this._lastStreamChar);
-        if (lightning && (earliest === -1 || lightning.start < earliest)) earliest = lightning.start;
-      }
       if (earliest === -1) {
         let holdLen = 0;
         for (const s of sentinels) {
@@ -1585,21 +1522,10 @@ export class ToolCallStreamParser {
             }
           }
         }
-        if (this.dialect === 'kimi_k2') {
-          const partialLightning = this.buffer.match(/(?:^|\s)functions\.[A-Za-z0-9_.-]*(?::[0-9]*)?$/)
-            || (this._lastStreamChar && /\s/.test(this._lastStreamChar)
-              && ('functions.'.startsWith(this.buffer)
-                || this.buffer.match(/^functions(?:\.[A-Za-z0-9_.-]*(?::[0-9]*)?)?$/)));
-          if (partialLightning) {
-            const partialLength = typeof partialLightning === 'boolean' ? this.buffer.length : partialLightning[0].length;
-            holdLen = Math.max(holdLen, partialLength);
-          }
-        }
         const emitUpto = this.buffer.length - holdLen;
         if (emitUpto > 0) {
           const text = this.buffer.slice(0, emitUpto);
           this.buffer = this.buffer.slice(emitUpto);
-          if (this.dialect === 'kimi_k2') this._lastStreamChar = text.at(-1) || this._lastStreamChar;
           return { text, toolCalls: [], items: [{ type: 'text', text }] };
         }
         return { text: '', toolCalls: [], items: [] };
@@ -1608,7 +1534,6 @@ export class ToolCallStreamParser {
       if (earliest > 0) {
         const text = this.buffer.slice(0, earliest);
         this.buffer = this.buffer.slice(earliest);
-        if (this.dialect === 'kimi_k2') this._lastStreamChar = text.at(-1) || this._lastStreamChar;
         return { text, toolCalls: [], items: [{ type: 'text', text }] };
       }
       // TOOL-2 — sentinel sits at buffer start (earliest===0): every later
@@ -1749,7 +1674,6 @@ export class ToolCallStreamParser {
       if (nextIdx === -1) {
         let holdLen = 0;
         const holdPrefixes = [TC_OPEN, TR_PREFIX];
-        if (this.dialect === 'kimi_k2') holdPrefixes.push('functions.');
         if (this.parseToolCode) holdPrefixes.push(TC_CODE);
         if (this.parseBareJson) holdPrefixes.push(TC_BARE);
         for (const prefix of holdPrefixes) {
@@ -1759,16 +1683,6 @@ export class ToolCallStreamParser {
               holdLen = Math.max(holdLen, len);
               break;
             }
-          }
-        }
-        if (this.dialect === 'kimi_k2') {
-          const partialLightning = this.buffer.match(/(?:^|\s)functions\.[A-Za-z0-9_.-]*(?::[0-9]*)?$/)
-            || (this._lastStreamChar && /\s/.test(this._lastStreamChar)
-              && ('functions.'.startsWith(this.buffer)
-                || this.buffer.match(/^functions(?:\.[A-Za-z0-9_.-]*(?::[0-9]*)?)?$/)));
-          if (partialLightning) {
-            const partialLength = typeof partialLightning === 'boolean' ? this.buffer.length : partialLightning[0].length;
-            holdLen = Math.max(holdLen, partialLength);
           }
         }
         const emitUpto = this.buffer.length - holdLen;
