@@ -52,6 +52,13 @@ const LEDGER = {
       + 'NOT revived, which needs a real child process; covered by lsp-capacity-matrix at '
       + 'the layer above.',
   },
+  // Both found only after this file's discovery patterns were widened to accept `??`.
+  RESPONSE_CACHE_ENABLED: {
+    waived: 'off means "do not serve a cached response". No test drives it — the switch '
+      + 'was invisible to this ledger until the ?? form was covered, so the gap is newly '
+      + 'visible rather than newly created. Worth a test; recorded honestly until then.',
+  },
+  WINDSURFAPI_ENV_LIFT: { tested: true },
   LS_MEMORY_GUARD: {
     waived: 'the off path is "do not kill an LS over RSS" — proving that requires driving '
       + 'a real process past a memory threshold. Deliberately unguarded.',
@@ -104,14 +111,20 @@ const LEDGER = {
 const DEFAULT_ON_PATTERNS = [
   /(?:process\.)?env\.([A-Z][A-Z0-9_]+)\s*!==\s*'0'/g,
   /(?:process\.)?env\.([A-Z][A-Z0-9_]+)\s*\|\|\s*'1'\)\s*!==\s*'0'/g,
-  // `env.X || '1'` is default-ON however the comparison is then spelled. The two
-  // patterns above both require `!== '0'`, which missed
-  // `String(env.WINDSURFAPI_NEUTRALIZE_CLIENT_ID || '1') === '0'` — an early-RETURN
-  // spelling that is equally default-ON. The switch was live, default-ON, and
-  // invisible to this ledger until an audit found it by hand. Anchor on the
-  // `|| '1'` fallback itself rather than on the comparison, since that is what
-  // actually makes a switch default-ON.
-  /(?:process\.)?env\.([A-Z][A-Z0-9_]+)\s*\|\|\s*'1'/g,
+  // A `'1'` FALLBACK is what makes a switch default-ON, however the comparison is
+  // then spelled. The two patterns above both require `!== '0'`, which missed three
+  // live default-ON switches, each found by hand rather than by this ledger:
+  //   String(env.WINDSURFAPI_NEUTRALIZE_CLIENT_ID || '1') === '0'   // early return
+  //   String(env.RESPONSE_CACHE_ENABLED ?? env.WINDSURFAPI_RESPONSE_CACHE ?? '1')
+  //   String(env.WINDSURFAPI_ENV_LIFT ?? '1').trim().toLowerCase() === '0'
+  // So anchor on the fallback itself, and accept BOTH `||` and `??` — the nullish
+  // form is not a stylistic variant here, it is how two of the three are written.
+  // The middle allows the chained form (`env.A ?? env.B ?? '1'`) to register every
+  // name in the chain, since setting any of them changes behaviour — but it may only
+  // skip over further `env.X ??` links, never arbitrary text. A looser `[^)]*?`
+  // matched `env.DASHBOARD_PASSWORD || ''` by running past the end of its expression
+  // to a `'1'` elsewhere on the line, reporting a credential as a default-on switch.
+  /(?:process\.)?env\.([A-Z][A-Z0-9_]+)\s*(?:\|\||\?\?)\s*(?:(?:process\.)?env\.[A-Z][A-Z0-9_]+\s*(?:\|\||\?\?)\s*)*'1'/g,
 ];
 
 function readTree(dir) {
