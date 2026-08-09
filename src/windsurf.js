@@ -387,6 +387,43 @@ export function buildSendCascadeMessageRequest(apiKey, cascadeId, text, modelEnu
   return Buffer.concat(parts);
 }
 
+function detectToolProtocols(text) {
+  const protocols = new Set();
+  if (typeof text !== 'string' || text.length === 0) return protocols;
+
+  if (/<\s*\|\s*tool_calls_section_(?:begin|end)\s*\|\s*>/i.test(text)) {
+    protocols.add('kimi_k2');
+  }
+  if (/<\s*arg_(?:key|value)\s*>/i.test(text)) protocols.add('glm47');
+  if (/['\"]\s*(?:function_call|tool_calls)\s*['\"]/i.test(text)) {
+    protocols.add('gpt_native');
+  }
+  if (
+    /use\s+this\s+exact\s+format\s*:\s*<\s*tool_call\s*>/i.test(text)
+    || (
+      /<\s*tool_call\s*>/i.test(text)
+      && /['\"]\s*name\s*['\"]\s*:/i.test(text)
+      && /['\"]\s*arguments\s*['\"]\s*:/i.test(text)
+    )
+  ) {
+    protocols.add('openai_json_xml');
+  }
+  return protocols;
+}
+
+function compatibleToolReinforcement(toolPreamble, reinforcement) {
+  const preambleProtocols = detectToolProtocols(toolPreamble);
+  const reinforcementProtocols = detectToolProtocols(reinforcement);
+  if (
+    reinforcementProtocols.size > 0
+    && (
+      reinforcementProtocols.size !== preambleProtocols.size
+      || [...reinforcementProtocols].some(protocol => !preambleProtocols.has(protocol))
+    )
+  ) return '';
+  return reinforcement || '';
+}
+
 function buildCascadeConfig(modelEnum, modelUid, { toolPreamble, forceDefault, nativeMode, nativeAllowlist, nativeEnvironment } = {}) {
   // CascadeConversationalPlannerConfig.planner_mode (field 4) uses
   // codeium_common.ConversationalPlannerMode:
@@ -447,7 +484,8 @@ function buildCascadeConfig(modelEnum, modelUid, { toolPreamble, forceDefault, n
     // Primary (and only) delivery: additional_instructions_section
     // (field 12, OVERRIDE). Always rendered, even in NO_TOOL planner mode.
     const sp = getSystemPrompts();
-    const reinforcement = '\n\n' + sp.toolReinforcement;
+    const reinforcementText = compatibleToolReinforcement(toolPreamble, sp.toolReinforcement);
+    const reinforcement = reinforcementText ? '\n\n' + reinforcementText : '';
     const fullSection = toolPreamble + reinforcement;
     const additionalSection = Buffer.concat([
       writeVarintField(1, 1),             // SECTION_OVERRIDE_MODE_OVERRIDE

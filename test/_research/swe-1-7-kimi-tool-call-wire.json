@@ -1,0 +1,20 @@
+{
+  "purpose": "Sanitized upstream wire evidence for PR #252 dialect selection",
+  "captured_at": "2026-08-09T12:36:14.699Z",
+  "request_model": "swe-1-7",
+  "request_mode": "streaming OpenAI chat completion through Hermes provider devin with tools enabled",
+  "source": {
+    "rpc_method": "GetCascadeTrajectoryGeneratorMetadata",
+    "direction": "response",
+    "transport": "grpc",
+    "record_sequence": 30,
+    "payload_bytes": 67703,
+    "payload_sha256_prefix": "51ff2993d2cf8639",
+    "field_path": ["fields", "1", "fields", "3", "fields", "4", "fields", "1"],
+    "field_number": 3,
+    "field_bytes": 156,
+    "field_sha256_prefix": "766e6a2492a09e81"
+  },
+  "raw_response_field": "<|tool_calls_section_begin|><|tool_call_begin|>functions.terminal:0<|tool_call_argument_begin|>{\"command\": \"pwd\"}<|tool_call_end|><|tool_calls_section_end|>",
+  "sanitization": "The captured call is an intentionally harmless pwd probe. Account keys, tokens, user identifiers, workspace paths, unrelated prompt text, and the remainder of the protobuf response are omitted. Hashes are the 16-hex prefixes emitted by the repository's proto tracer."
+}

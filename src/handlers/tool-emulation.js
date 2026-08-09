@@ -194,7 +194,7 @@ export function buildToolPreamble(tools, toolChoice = 'auto', modelKey = null, p
   if (dialect === 'glm47') {
     emit = `<tool_call>NAME<arg_key>k</arg_key><arg_value>v</arg_value></tool_call>`;
   } else if (dialect === 'kimi_k2') {
-    emit = `<|tool_calls_section_begin|><|tool_call_begin|>NAME:0<|tool_call_argument_begin|>{"k":"v"}<|tool_call_end|><|tool_calls_section_end|>`;
+    emit = `<|tool_calls_section_begin|><|tool_call_begin|>functions.NAME:0<|tool_call_argument_begin|>{"k":"v"}<|tool_call_end|><|tool_calls_section_end|>`;
   } else if (dialect === 'gpt_native') {
     emit = `{"function_call":{"name":"NAME","arguments":{"k":"v"}}}`;
   } else {
@@ -237,7 +237,10 @@ export function buildToolPreamble(tools, toolChoice = 'auto', modelKey = null, p
     const hintLine = hints.length ? ' ' + hints.join(' ') : '';
     return `Tools available this turn: ${names.join(', ')}. ${emitLine}${antiRefusal ? ' ' + antiRefusal : ''}${choiceClause}${hintLine} ${WORKSPACE_PATH_HINT} IMPORTANT: if the user's message does not require a tool, just reply normally in plain text — never reply empty. Only use a tool when it is actually needed.`;
   }
-  return `Tools available this turn: ${names.join(', ')}. To call one, emit a single-line block: ${emit}.${antiRefusal ? ' ' + antiRefusal : ''}${choiceClause} ${hints.join(' ')} ${WORKSPACE_PATH_HINT} Otherwise answer directly in plain text. After the last call, stop generating; the caller returns results in the next turn as <tool_result tool_call_id="...">...</tool_result>.`;
+  const resultFormat = dialect === 'kimi_k2'
+    ? 'After the last call, stop generating; the caller returns each result in the next turn as ## Return of functions.FUNCTION_NAME:INDEX followed by its content.'
+    : 'After the last call, stop generating; the caller returns results in the next turn as <tool_result tool_call_id="...">...</tool_result>.';
+  return `Tools available this turn: ${names.join(', ')}. To call one, emit a single-line block: ${emit}.${antiRefusal ? ' ' + antiRefusal : ''}${choiceClause} ${hints.join(' ')} ${WORKSPACE_PATH_HINT} Otherwise answer directly in plain text. ${resultFormat}`;
 }
 
 /**
@@ -277,7 +280,7 @@ Rules:
     kimi_k2: `You have access to the following functions. They are REAL callable tools — the caller will execute them and return results. Use the native kimi_k2 tool-call format used by the vLLM parser:
 
 <|tool_calls_section_begin|>
-<|tool_call_begin|>FUNCTION_NAME:INDEX<|tool_call_argument_begin|>{"arg":"value",...}<|tool_call_end|>
+<|tool_call_begin|>functions.FUNCTION_NAME:INDEX<|tool_call_argument_begin|>{"arg":"value",...}<|tool_call_end|>
 ...
 <|tool_calls_section_end|>
 
@@ -289,6 +292,7 @@ Rules:
 5. NEVER FABRICATE OUTPUT. Do not invent file contents, command outputs, timestamps, or search results — those come from the tool execution, not from you.
 6. The functions listed below ARE available — do not say "I cannot" / "I have no tools" / "我没有访问权限". Use the section format above.
 7. ALWAYS provide concrete argument values, never placeholders like "command" / "the file" / "用命令". Pick a real value or your best guess.
+8. Tool results return in the next turn as ## Return of functions.FUNCTION_NAME:INDEX followed by their content. Continue from those results; do not repeat a completed call.
 `,
     openai_json_xml: `You have access to the following functions. They are REAL callable tools — the caller will execute them and return results.
 
@@ -381,9 +385,13 @@ export function pickToolDialect(modelKey, provider, route = null) {
     }
     return 'openai_json_xml';
   }
-  // SWE-1.X use the same <|tool_call_begin|> / <|tool_call_end|> dialect as
-  // Kimi K2 — observed in production traffic 2026-08-07.
-  if (normalizedModelKey.startsWith('swe')) {
+  // SWE-1.5 / SWE-1.6 / SWE-1.7 use the same <|tool_call_begin|> /
+  // <|tool_call_end|> dialect as Kimi K2 — observed in production traffic
+  // 2026-08-07. Narrow to observed SKUs only: swe-1-6-slow is a distinct
+  // upstream deployment (FREE_REACHABLE_SELECTORS) that still emits
+  // openai_json_xml, and future swe-* variants may differ too.
+  if (/^swe-1[.-](5|6|7)(-|$)/.test(normalizedModelKey)
+      && !normalizedModelKey.endsWith('-slow')) {
     return 'kimi_k2';
   }
   // v2.0.62 (#115) — GPT family + Codex/Responses route uses bare-JSON
@@ -418,7 +426,15 @@ function formatAssistantToolCallForDialect(name, parsedArgs, dialect, _id) {
   }
   if (dialect === 'kimi_k2') {
     const argsJson = JSON.stringify(parsedArgs ?? {});
-    return `<|tool_calls_section_begin|><|tool_call_begin|>${name}:0<|tool_call_argument_begin|>${argsJson}<|tool_call_end|><|tool_calls_section_end|>`;
+    // Kimi history is not merely illustrative text: the model's template
+    // uses this ID to attach the later tool result.  `_id` is already a
+    // canonical `functions.<name>:<index>` value when normalizing history.
+    // Keeping the old `name:0` form lost both the required `functions.`
+    // namespace and the index of every call after the first one.
+    const toolCallId = typeof _id === 'string' && _id
+      ? _id
+      : `functions.${name}:0`;
+    return `<|tool_calls_section_begin|><|tool_call_begin|>${toolCallId}<|tool_call_argument_begin|>${argsJson}<|tool_call_end|><|tool_calls_section_end|>`;
   }
   if (dialect === 'gpt_native') {
     // v2.0.62 (#115) — GPT history serializer matches the bare-JSON
@@ -1031,16 +1047,70 @@ export function normalizeMessagesForCascade(messages, tools, options = {}) {
   const dialect = pickToolDialect(modelKey, provider, route);
   const out = [];
 
-  for (const m of messages) {
+  // OpenAI clients assign opaque call_* IDs, while Kimi's chat template
+  // pairs a tool result with the textual ID `functions.<name>:<index>`.
+  // Build the relation before rewriting so a later role:'tool' turn can
+  // refer to exactly the call the model saw in its preceding assistant turn.
+  const kimiToolResultIds = new Map();
+  if (!nativeStructured && dialect === 'kimi_k2') {
+    for (const message of messages) {
+      if (message?.role !== 'assistant' || !Array.isArray(message.tool_calls)) continue;
+      message.tool_calls.forEach((tc, index) => {
+        if (tc?.id == null) return;
+        const name = tc.function?.name || 'unknown';
+        kimiToolResultIds.set(String(tc.id), `functions.${name}:${index}`);
+      });
+    }
+  }
+
+  for (let messageIndex = 0; messageIndex < messages.length; messageIndex++) {
+    const m = messages[messageIndex];
     if (!m || !m.role) { out.push(m); continue; }
 
     if (m.role === 'tool') {
       if (nativeStructured) { out.push(m); continue; } // keep structured for native #7 tool_result
+      if (dialect === 'kimi_k2') {
+        // Tool results belonging to one assistant batch must remain one logical
+        // continuation. Sending every result as a separate synthetic user turn
+        // makes a 16-call read batch look like 16 fresh user requests, which
+        // caused SWE to lose the original task and recreate its todo plan.
+        const resultParts = [];
+        let cursor = messageIndex;
+        while (cursor < messages.length && messages[cursor]?.role === 'tool') {
+          const toolMessage = messages[cursor];
+          const kimiToolCallId = kimiToolResultIds.get(String(toolMessage.tool_call_id ?? ''));
+          if (!kimiToolCallId) break;
+          const rawContent = typeof toolMessage.content === 'string'
+            ? toolMessage.content
+            : JSON.stringify(toolMessage.content ?? '');
+          const content = neutralizeToolResultBody(rawContent);
+          resultParts.push(`## Return of ${kimiToolCallId}\n${content}`);
+          cursor++;
+        }
+        if (resultParts.length) {
+          out.push({ role: 'user', content: resultParts.join('\n\n') });
+          messageIndex = cursor - 1;
+          continue;
+        }
+      }
       const id = sanitizeToolCallId(m.tool_call_id);
       const rawContent = typeof m.content === 'string'
         ? m.content
         : JSON.stringify(m.content ?? '');
       const content = neutralizeToolResultBody(rawContent);
+      const kimiToolCallId = dialect === 'kimi_k2'
+        ? kimiToolResultIds.get(String(m.tool_call_id ?? ''))
+        : null;
+      if (kimiToolCallId) {
+        // This is the text Kimi's official template uses for a tool return.
+        // It must use the same function/index ID emitted above; XML wrappers
+        // are a foreign protocol and caused SWE to repeat completed calls.
+        out.push({
+          role: 'user',
+          content: `## Return of ${kimiToolCallId}\n${content}`,
+        });
+        continue;
+      }
       out.push({
         role: 'user',
         content: `<tool_result tool_call_id="${id}">\n${content}\n</tool_result>`,
@@ -1060,11 +1130,26 @@ export function normalizeMessagesForCascade(messages, tools, options = {}) {
       // Note: m.reasoning_content is intentionally dropped on assistant history rebuild:
       // upstream swe-1-7 accepts outgoing tag #11 but ignores it (0/3 causal effect),
       // while promoting reasoning to text content creates self-reflection loops.
-      for (const tc of m.tool_calls) {
-        const name = tc.function?.name || 'unknown';
-        const args = tc.function?.arguments;
-        const parsed = typeof args === 'string' ? (safeParseJson(args) ?? {}) : (args ?? {});
-        parts.push(formatAssistantToolCallForDialect(name, parsed, dialect, tc.id));
+      if (dialect === 'kimi_k2') {
+        // Kimi renders all calls made by one assistant message inside one
+        // section. Repeating section delimiters for every parallel call is
+        // not its native history shape and makes a large batch look like
+        // multiple interrupted assistant turns.
+        const kimiCalls = m.tool_calls.map((tc, index) => {
+          const name = tc.function?.name || 'unknown';
+          const args = tc.function?.arguments;
+          const parsed = typeof args === 'string' ? (safeParseJson(args) ?? {}) : (args ?? {});
+          const toolCallId = kimiToolResultIds.get(String(tc.id ?? '')) || `functions.${name}:${index}`;
+          return `<|tool_call_begin|>${toolCallId}<|tool_call_argument_begin|>${JSON.stringify(parsed ?? {})}<|tool_call_end|>`;
+        });
+        parts.push(`<|tool_calls_section_begin|>${kimiCalls.join('')}<|tool_calls_section_end|>`);
+      } else {
+        for (const tc of m.tool_calls) {
+          const name = tc.function?.name || 'unknown';
+          const args = tc.function?.arguments;
+          const parsed = typeof args === 'string' ? (safeParseJson(args) ?? {}) : (args ?? {});
+          parts.push(formatAssistantToolCallForDialect(name, parsed, dialect, tc.id));
+        }
       }
       out.push({ role: 'assistant', content: parts.join('\n') });
       continue;
@@ -1093,11 +1178,11 @@ export function normalizeMessagesForCascade(messages, tools, options = {}) {
     for (let i = out.length - 1; i >= 0; i--) {
       if (out[i].role !== 'user') continue;
       const cur = contentTextForPreambleCheck(out[i].content);
-      // Skip synthetic tool_result-only turns; they are not a place to
-      // re-introduce tools. (A user turn that happens to MENTION the
-      // marker but also has real text is fine — only pure tool_result
-      // wrappers are skipped.)
-      if (/^\s*<tool_result\b/.test(cur)) break;
+      // Skip synthetic tool-result-only turns; they are not a place to
+      // re-introduce tools. Kimi/SWE uses its native `## Return of
+      // functions.name:index` envelope instead of the XML envelope. A user
+      // turn that merely mentions either marker but has real text is fine.
+      if (/^\s*(?:<tool_result\b|## Return of functions\.[A-Za-z0-9_.-]+:\d+(?:\r?\n|$))/.test(cur)) break;
       out[i] = { ...out[i], content: prependPreambleToContent(out[i].content, preamble) };
       break;
     }
@@ -1183,6 +1268,44 @@ function parseKimiToolCall(nameWithIndex, argsRaw) {
   return { name: parsedName, arguments: parsedArgs, suffix: nameWithIndex.includes(':') ? `_${nameWithIndex.split(':').pop().trim()}` : '' };
 }
 
+function isKimiWrapperlessProtected(body, index) {
+  let quote = null;
+  let escaped = false;
+  let backticks = 0;
+  for (let i = 0; i < index; i++) {
+    const ch = body[i];
+    if (ch === '\n' || ch === '\r') {
+      quote = null;
+      escaped = false;
+      continue;
+    }
+    if (escaped) { escaped = false; continue; }
+    if (ch === '\\' && quote) { escaped = true; continue; }
+    if (ch === '`' && !quote) { backticks += 1; continue; }
+    if (ch === '"' || ch === "'") {
+      if (ch === "'" && /[A-Za-z0-9_]/.test(body[i - 1] || '') && /[A-Za-z0-9_]/.test(body[i + 1] || '')) continue;
+      if (!quote) quote = ch;
+      else if (quote === ch) quote = null;
+    }
+  }
+  return quote !== null || (backticks % 2) === 1;
+}
+
+function findKimiWrapperlessCall(body, from = 0, precedingChar = '') {
+  const prefix = /functions\.([A-Za-z0-9_.-]+):([0-9]+)(?=\{)/g;
+  prefix.lastIndex = from;
+  let match;
+  while ((match = prefix.exec(body)) !== null) {
+    const start = match.index;
+    const boundary = start === 0 ? (from === 0 || /\s/.test(precedingChar)) : /\s/.test(body[start - 1]);
+    if (!boundary || isKimiWrapperlessProtected(body, start)) continue;
+    const objectStart = start + match[0].length;
+    const end = matchClosingBrace(body, objectStart);
+    return { start, objectStart, end, nameWithIndex: match[0], json: end === -1 ? null : body.slice(objectStart, end + 1) };
+  }
+  return null;
+}
+
 function parseNonOpenAIDialectBuffer(dialect, body, startSeen) {
   if (dialect === 'kimi_k2') {
     let cursor = 0;
@@ -1190,43 +1313,100 @@ function parseNonOpenAIDialectBuffer(dialect, body, startSeen) {
     const calls = [];
     while (true) {
       const sectionStart = body.indexOf(KIMI_TOOL_SECTION_BEGIN, cursor);
-      if (sectionStart === -1) {
+      const xmlStart = body.indexOf(GLM47_TOOL_OPEN, cursor);
+      const lightning = findKimiWrapperlessCall(body, cursor);
+      const starts = [sectionStart, xmlStart, lightning?.start].filter((idx) => idx !== undefined && idx !== -1);
+      if (!starts.length) {
         outText += body.slice(cursor);
         break;
       }
-      outText += body.slice(cursor, sectionStart);
-      const sectionPayloadStart = sectionStart + KIMI_TOOL_SECTION_BEGIN.length;
-      const sectionEnd = body.indexOf(KIMI_TOOL_SECTION_END, sectionPayloadStart);
-      if (sectionEnd === -1) {
-        // No complete section; keep the tail as-is so no tool-call text leaks.
-        outText += body.slice(sectionPayloadStart - KIMI_TOOL_SECTION_BEGIN.length);
-        break;
-      }
-      const sectionText = body.slice(sectionPayloadStart, sectionEnd);
-      const beginToken = KIMI_TOOL_CALL_BEGIN;
-      const argToken = KIMI_TOOL_CALL_ARG;
-      const endToken = KIMI_TOOL_CALL_END;
-      let callCursor = 0;
-      while (true) {
-        const begin = sectionText.indexOf(beginToken, callCursor);
-        if (begin === -1) break;
-        const arg = sectionText.indexOf(argToken, begin + beginToken.length);
-        if (arg === -1) break;
-        const nameWithIndex = sectionText.slice(begin + beginToken.length, arg).trim();
-        const end = sectionText.indexOf(endToken, arg + argToken.length);
-        if (end === -1) break;
-        const argsText = sectionText.slice(arg + argToken.length, end).trim();
-        const parsed = parseKimiToolCall(nameWithIndex, argsText);
-        if (parsed) {
+      const nextStart = Math.min(...starts);
+      outText += body.slice(cursor, nextStart);
+
+      if (nextStart === lightning?.start) {
+        if (lightning.end === -1) {
+          outText += body.slice(nextStart);
+          break;
+        }
+        const parsed = parseKimiToolCall(lightning.nameWithIndex, lightning.json);
+        if (!parsed) {
+          outText += body.slice(lightning.start, lightning.end + 1);
+        } else {
           calls.push({
             id: `call_${startSeen + calls.length}_${Date.now().toString(36)}${parsed.suffix}`,
             name: parsed.name,
             argumentsJson: JSON.stringify(parsed.arguments || {}),
           });
         }
-        callCursor = end + endToken.length;
+        cursor = lightning.end + 1;
+        continue;
       }
-      cursor = sectionEnd + KIMI_TOOL_SECTION_END.length;
+
+      if (nextStart === sectionStart) {
+        const payloadStart = sectionStart + KIMI_TOOL_SECTION_BEGIN.length;
+        const sectionEnd = body.indexOf(KIMI_TOOL_SECTION_END, payloadStart);
+        if (sectionEnd === -1) {
+          outText += body.slice(sectionStart);
+          break;
+        }
+        const sectionText = body.slice(payloadStart, sectionEnd);
+        const sectionCalls = [];
+        let callCursor = 0;
+        let valid = true;
+        while (callCursor < sectionText.length) {
+          const begin = sectionText.indexOf(KIMI_TOOL_CALL_BEGIN, callCursor);
+          if (begin === -1) break;
+          const arg = sectionText.indexOf(KIMI_TOOL_CALL_ARG, begin + KIMI_TOOL_CALL_BEGIN.length);
+          const end = arg === -1 ? -1 : sectionText.indexOf(KIMI_TOOL_CALL_END, arg + KIMI_TOOL_CALL_ARG.length);
+          if (arg === -1 || end === -1) {
+            valid = false;
+            break;
+          }
+          const parsed = parseKimiToolCall(
+            sectionText.slice(begin + KIMI_TOOL_CALL_BEGIN.length, arg).trim(),
+            sectionText.slice(arg + KIMI_TOOL_CALL_ARG.length, end).trim(),
+          );
+          if (!parsed) {
+            valid = false;
+            break;
+          }
+          sectionCalls.push(parsed);
+          callCursor = end + KIMI_TOOL_CALL_END.length;
+        }
+        if (!valid || !sectionCalls.length) {
+          outText += body.slice(sectionStart, sectionEnd + KIMI_TOOL_SECTION_END.length);
+        } else {
+          for (const parsed of sectionCalls) {
+            calls.push({
+              id: `call_${startSeen + calls.length}_${Date.now().toString(36)}${parsed.suffix}`,
+              name: parsed.name,
+              argumentsJson: JSON.stringify(parsed.arguments || {}),
+            });
+          }
+        }
+        cursor = sectionEnd + KIMI_TOOL_SECTION_END.length;
+        continue;
+      }
+
+      const bodyStart = xmlStart + GLM47_TOOL_OPEN.length;
+      const close = body.indexOf(GLM47_TOOL_CLOSE, bodyStart);
+      if (close === -1) {
+        outText += body.slice(xmlStart);
+        break;
+      }
+      const parsed = safeParseJson(body.slice(bodyStart, close).trim());
+      if (!parsed || typeof parsed.name !== 'string' || !parsed.name.trim()) {
+        outText += body.slice(xmlStart, close + GLM47_TOOL_CLOSE.length);
+      } else {
+        calls.push({
+          id: `call_${startSeen + calls.length}_${Date.now().toString(36)}`,
+          name: parsed.name,
+          argumentsJson: typeof parsed.arguments === 'string'
+            ? parsed.arguments
+            : JSON.stringify(parsed.arguments ?? {}),
+        });
+      }
+      cursor = close + GLM47_TOOL_CLOSE.length;
     }
     return { text: outText, toolCalls: calls };
   }
@@ -1293,6 +1473,7 @@ export class ToolCallStreamParser {
     this.inToolCode = false;
     this.inBareCall = false;
     this._totalSeen = 0;
+    this._lastStreamChar = '';
     this.parseToolCode = options.parseToolCode !== false;
     this.parseBareJson = options.parseBareJson !== false;
     this.dialect = options.dialect || pickToolDialect(options.modelKey, options.provider, options.route || null);
@@ -1380,11 +1561,15 @@ export class ToolCallStreamParser {
         ? ['<tool_call>']
         : this.dialect === 'gpt_native'
           ? ['{"function_call"', '{"tool_calls"', '{"tool_call"', '{"function"', '{"name"', '{ "function_call"', '{ "tool_calls"', '{ "name"']
-          : ['<|tool_calls_section_begin|>'];
+          : ['<|tool_calls_section_begin|>', '<tool_call>'];
       let earliest = -1;
       for (const s of sentinels) {
         const idx = this.buffer.indexOf(s);
         if (idx !== -1 && (earliest === -1 || idx < earliest)) earliest = idx;
+      }
+      if (this.dialect === 'kimi_k2') {
+        const lightning = findKimiWrapperlessCall(this.buffer, 0, this._lastStreamChar);
+        if (lightning && (earliest === -1 || lightning.start < earliest)) earliest = lightning.start;
       }
       if (earliest === -1) {
         let holdLen = 0;
@@ -1397,10 +1582,21 @@ export class ToolCallStreamParser {
             }
           }
         }
+        if (this.dialect === 'kimi_k2') {
+          const partialLightning = this.buffer.match(/(?:^|\s)functions\.[A-Za-z0-9_.-]*(?::[0-9]*)?$/)
+            || (this._lastStreamChar && /\s/.test(this._lastStreamChar)
+              && ('functions.'.startsWith(this.buffer)
+                || this.buffer.match(/^functions(?:\.[A-Za-z0-9_.-]*(?::[0-9]*)?)?$/)));
+          if (partialLightning) {
+            const partialLength = typeof partialLightning === 'boolean' ? this.buffer.length : partialLightning[0].length;
+            holdLen = Math.max(holdLen, partialLength);
+          }
+        }
         const emitUpto = this.buffer.length - holdLen;
         if (emitUpto > 0) {
           const text = this.buffer.slice(0, emitUpto);
           this.buffer = this.buffer.slice(emitUpto);
+          if (this.dialect === 'kimi_k2') this._lastStreamChar = text.at(-1) || this._lastStreamChar;
           return { text, toolCalls: [], items: [{ type: 'text', text }] };
         }
         return { text: '', toolCalls: [], items: [] };
@@ -1409,6 +1605,7 @@ export class ToolCallStreamParser {
       if (earliest > 0) {
         const text = this.buffer.slice(0, earliest);
         this.buffer = this.buffer.slice(earliest);
+        if (this.dialect === 'kimi_k2') this._lastStreamChar = text.at(-1) || this._lastStreamChar;
         return { text, toolCalls: [], items: [{ type: 'text', text }] };
       }
       // TOOL-2 — sentinel sits at buffer start (earliest===0): every later
@@ -1549,6 +1746,7 @@ export class ToolCallStreamParser {
       if (nextIdx === -1) {
         let holdLen = 0;
         const holdPrefixes = [TC_OPEN, TR_PREFIX];
+        if (this.dialect === 'kimi_k2') holdPrefixes.push('functions.');
         if (this.parseToolCode) holdPrefixes.push(TC_CODE);
         if (this.parseBareJson) holdPrefixes.push(TC_BARE);
         for (const prefix of holdPrefixes) {
@@ -1558,6 +1756,16 @@ export class ToolCallStreamParser {
               holdLen = Math.max(holdLen, len);
               break;
             }
+          }
+        }
+        if (this.dialect === 'kimi_k2') {
+          const partialLightning = this.buffer.match(/(?:^|\s)functions\.[A-Za-z0-9_.-]*(?::[0-9]*)?$/)
+            || (this._lastStreamChar && /\s/.test(this._lastStreamChar)
+              && ('functions.'.startsWith(this.buffer)
+                || this.buffer.match(/^functions(?:\.[A-Za-z0-9_.-]*(?::[0-9]*)?)?$/)));
+          if (partialLightning) {
+            const partialLength = typeof partialLightning === 'boolean' ? this.buffer.length : partialLightning[0].length;
+            holdLen = Math.max(holdLen, partialLength);
           }
         }
         const emitUpto = this.buffer.length - holdLen;
@@ -1696,7 +1904,7 @@ export function parseToolCallsFromText(text, options = {}) {
     text: a.text + b.text,
     toolCalls: [...a.toolCalls, ...b.toolCalls],
   };
-  if (primary.toolCalls.length > 0 || !text) return primary;
+  if (primary.toolCalls.length > 0 || !text || parser.dialect === 'kimi_k2') return primary;
   // Salvage only runs when we'd otherwise return zero tool calls — never
   // overrides the primary parser when it found something.
   const salvaged = salvageToolCallsFromText(primary.text || text);
