@@ -31,10 +31,49 @@ const IGNORED_PATHS = new Set([
   'test/secret-scan.test.js',
 ]);
 
+// `test/` was skipped wholesale until 2026-08. Audit round 12 measured the cost:
+// of ~2333 added lines in a typical round, ~1100 were never scanned — and a real key
+// pasted into a fixture is exactly as leaked as one in src/. So test/ IS scanned now.
+//
+// What made the blanket skip tempting is that fixtures legitimately contain key-SHAPED
+// strings (8 in the tree when this changed, all of the `sk-ws-01-fixturekey…` /
+// `sk-1234567890…` form). Those are allow-listed below by SHAPE, not by path: a fixture
+// must look obviously synthetic to pass. A random-looking 20-char secret in a test file
+// still fails the scan, which is the point.
 const IGNORED_PREFIXES = [
-  'test/',
   'test/_research/',
 ];
+
+// A match is a fixture only if the SECRET ITSELF advertises that it is fake. Keep this
+// list tight: every entry is a hole, so it must be a shape no real credential has.
+const FIXTURE_MARKERS = [
+  'fixture',        // sk-ws-01-fixturekey1234567890abcdef
+  'example',
+  'placeholder',
+  'dummy',
+  'redacted',
+  'fake',
+  'not-real',       // throwaway-not-real
+  'not-a-real',
+  'not-a-valid',    // definitely-not-a-valid-token
+  'invalid',
+  'throwaway',
+  'test-only',
+];
+
+// Sequential digits/letters — no issued credential looks like this.
+const FIXTURE_SEQUENCES = [
+  '1234567890',
+  '0987654321',
+  'abcdefghijklmnop',
+];
+
+function isSyntheticFixture(repoPath, matchText) {
+  if (!repoPath.startsWith('test/')) return false;
+  const lower = String(matchText).toLowerCase();
+  if (FIXTURE_MARKERS.some((m) => lower.includes(m))) return true;
+  return FIXTURE_SEQUENCES.some((s) => lower.includes(s));
+}
 
 const IGNORED_EXTENSIONS = new Set([
   '.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.zip', '.db',
@@ -81,11 +120,15 @@ function scanFile(file) {
   if (!existsSync(abs) || !statSync(abs).isFile()) return [];
   const text = readFileSync(abs, 'utf8');
   const findings = [];
+  const repoPath = toRepoPath(file);
   for (const rule of RULES) {
     rule.regex.lastIndex = 0;
     for (const match of text.matchAll(rule.regex)) {
+      // Fixtures under test/ are exempt only when the matched text itself looks
+      // synthetic. A real-looking secret in a test file is still a finding.
+      if (isSyntheticFixture(repoPath, match[0])) continue;
       findings.push({
-        path: toRepoPath(file),
+        path: repoPath,
         line: lineForOffset(text, match.index || 0),
         rule: rule.id,
       });

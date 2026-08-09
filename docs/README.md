@@ -43,6 +43,25 @@ Handoffs are **append-only**: a superseded one keeps its original conclusions, w
 included, because how a conclusion was reached is part of the record. For current state, the
 newest always wins.
 
+## Verification tooling
+
+The test suite does **not** run the mutation specs, so three gates can be green while a spec
+silently stopped guarding. These are the tools that close that gap:
+
+- `scripts/spec-static-check.mjs` — **0.3s, runs in CI on every PR.** Anchor uniqueness + spec
+  well-formedness, no test execution. Catches a PR that edited a pinned line (the mutation
+  becomes a no-op that reports SURVIVED). Exit 2 on failure.
+- `scripts/spec-baseline-audit.mjs [filter]` — **re-measures every spec's `expectBaselinePass`
+  by actually running its test files** (slow; ~40 min for all 25). Run after merges, not per-PR.
+  Baseline drift is a merge product: each PR measures its own spec right alone, and is wrong
+  once stacked (#241 anchors, retry-rescue 82/87→88, reasoning-continuity 289→300).
+- `test/default-on-switch-registry.test.js` — ledger of every default-on behaviour switch;
+  each must have an off-path test or a recorded waiver. A default-on switch shipping without a
+  ledger entry fails CI. Added after #247 shipped as the sole default-on change in a batch with
+  no kill switch and a content-loss failure shape.
+- `scripts/secret-scan.mjs` — now scans `test/` too (fixtures exempt by SHAPE, not path).
+  Round 12 measured ~1100 of ~2333 new lines were never scanned.
+
 ## Protocol and product notes
 
 - [Architecture Review](review.html): project map from startup to HTTP routes, protocol bridge,

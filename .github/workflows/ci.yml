@@ -33,6 +33,31 @@ jobs:
             node -e "JSON.parse(require('fs').readFileSync('$f'))"
           done
 
+  # Mutation-spec consistency. Three baseline/anchor drifts reached master in one week
+  # (#241's anchors, retry-rescue 82/87 -> 88, reasoning-continuity 289 -> 300) and the
+  # test suite saw none of them: it does not run specs. These checks read files only and
+  # cost ~0.3s, so they are mandatory rather than a local habit someone has to remember.
+  #
+  # Baseline VALUE drift is deliberately NOT checked here — it needs a real test run per
+  # spec (~40 min for all 25). That is the post-merge sweep: scripts/spec-baseline-audit.mjs.
+  specs:
+    name: Mutation spec consistency
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Node 24
+        uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+
+      - name: Anchors unique, specs well-formed
+        run: node scripts/spec-static-check.mjs
+
+      - name: Secret scan (includes test/ — half of a typical diff lives there)
+        run: node scripts/secret-scan.mjs
+
   test:
     name: Unit tests shard ${{ matrix.shard }}
     runs-on: ubuntu-latest

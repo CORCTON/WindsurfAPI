@@ -23,6 +23,8 @@ scripts/*
 !scripts/sync-docs-contributors.mjs
 !scripts/secret-scan.mjs
 !scripts/run-test-shard.mjs
+!scripts/spec-static-check.mjs
+!scripts/spec-baseline-audit.mjs
 !scripts/cascade-survival-probe.mjs
 !scripts/devin-connect-smoke.mjs
 !scripts/devin-connect-paid-verify.mjs
