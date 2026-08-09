@@ -84,6 +84,12 @@ const LEDGER = {
   // off path IS tested: cascade-think-reroute.test.js drives it to '0' and
   // asserts the marker bytes stay verbatim in content.
   WINDSURFAPI_CASCADE_THINK_REROUTE: { tested: true },
+  // Found by a hand audit, not by this ledger: it is spelled
+  // `String(env.X || '1') === '0'` as an early return, which the two original
+  // discovery patterns (both anchored on `!== '0'`) could not see. The third pattern
+  // now anchors on the `|| '1'` fallback instead. Off path IS tested —
+  // client-identity-neutralize.test.js drives it with '0' at three sites.
+  WINDSURFAPI_NEUTRALIZE_CLIENT_ID: { tested: true },
   WINDSURFAPI_NLU_RETRY: {
     waived: 'off disables the narrative retry nudge; the behaviour is covered indirectly '
       + 'by nlu-negation-and-arg-slot.json but not via the switch. Known gap.',
@@ -98,6 +104,14 @@ const LEDGER = {
 const DEFAULT_ON_PATTERNS = [
   /(?:process\.)?env\.([A-Z][A-Z0-9_]+)\s*!==\s*'0'/g,
   /(?:process\.)?env\.([A-Z][A-Z0-9_]+)\s*\|\|\s*'1'\)\s*!==\s*'0'/g,
+  // `env.X || '1'` is default-ON however the comparison is then spelled. The two
+  // patterns above both require `!== '0'`, which missed
+  // `String(env.WINDSURFAPI_NEUTRALIZE_CLIENT_ID || '1') === '0'` — an early-RETURN
+  // spelling that is equally default-ON. The switch was live, default-ON, and
+  // invisible to this ledger until an audit found it by hand. Anchor on the
+  // `|| '1'` fallback itself rather than on the comparison, since that is what
+  // actually makes a switch default-ON.
+  /(?:process\.)?env\.([A-Z][A-Z0-9_]+)\s*\|\|\s*'1'/g,
 ];
 
 function readTree(dir) {
