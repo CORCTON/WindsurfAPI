@@ -490,6 +490,46 @@
       "mergedAt": "2026-08-04",
       "title": "fix(devin-connect): rescue nudge quotes the failed attempt's reasoning tail",
       "summary": "#238 修掉了 reasoning 被整段丢弃那一半,这个 PR 修剩下的一半:reasoning 发出来了但动作没发。原来的救援只喊\"别想了,出工具调用\",模型于是从零重想;现在 nudge 把上一次失败尝试的 reasoning 尾部(默认取尾 2000 字符,取尾是因为最后的意图在末尾)包进去,模型接着自己刚才想到哪把动作发出来。证据是 wire 级的:2026-07-28 的 trajectory 第 8 步 13 个 reasoning delta 然后 finish、content 零,而同一账号同一模型的第 3、5 步正常出工具调用 —— 账号有能力,只是有时不做;tool_choice: required 不改变结果,所以缺口在上游生成侧、恢复只能做在代理这边。三条评审意见两轮内全部改到位,而且改得比要求的更远:(1) nudge 累积 —— 每次救援从已增长的 attemptParams 重建,旧 nudge 是 role:user 所以过滤器全留下,带 digest 后第 5 次救援会塞 ~10.4KB 陈旧提示词、且模型会同时看到两条都写着\"你上次想到\"的消息各引用不同一次尝试;他改成从未经修改的原始 params 重建,并补了一条带 callCount 前置断言的测试(没有那条前置断言,长度断言会在\"什么都没发生\"的运行上恒真),还显式断言陈旧 digest 不在场。(2) 覆盖声明 —— 他原本写这修了 native 模式的覆盖缺口,维护方核出 emulateTools 在 connect 路径上字面就是 connectTools.length > 0、与新门等价;他没有辩护,直接撤下并如实改写成\"把判据从名字有误导性的 flag 换成请求自带属性\",还把维护方提的脆弱耦合顾虑写进代码注释。(3) field 0 是 protobuf 保留字段 —— 维护方只列为备注、明说不算修改要求,他仍然收进了编码器自己,并用字节长度同一性钉死。合并后维护方补了一条他没覆盖的:digest 的 cap 没有上限,而同一函数上面十二行的 RESCUE_MAX 早因同一个洞加过钳(1e9 能过 Number.isFinite),实测 50000 字符 reasoning + 1e9 → nudge 50089 字节。另外合并本身静默打断了两条既有突变 anchor(他往 rescue 判据里插了 hasTools,而那两条 anchor 正是那行),测试套件不跑 spec 所以三个绿灯都看不见 —— 这两条都不是他能预见的。未到 MR/LR 是因为 cap 缺钳属于提交前自查能发现的(邻居的注释里就写着教训)。"
+    },
+    {
+      "login": "warelik",
+      "githubId": 54947489,
+      "pr": 247,
+      "weight": "S",
+      "weightLabel": "出口逐字去重 · 增量前缀比较,并把「客户端看不见 reasoning」这条前提交还给调用方",
+      "mergedAt": "2026-08-09",
+      "title": "feat(chat): incremental reasoning/content dedup — release on divergence, suppress only a verbatim full duplicate",
+      "summary": "thinking 模型偶发把整段 reasoning 又原样写进 content 通道(issue #250 记录的形状),客户端于是看到同一段文字两遍。这个 PR 在出口做增量去重:content 只在逐字节匹配已累积 reasoning 的前缀时被短暂持有,一旦分歧就把持有的加当前块一次性放出并 latch,此后全程透传。设计的关键不在去重本身,而在**抑制的前提**:抑制只在 settle() 且 content 等于 FULL reasoning 逐字节相同、**并且调用方明确要了 thinking** 时发生。第二个条件是他在第二轮自己找到的判据 —— 维护方上一轮指出「reasoning_content 不是 OpenAI 规范字段,标准 SDK 客户端只读 delta.content,所以抑制掉 content 等于答案没到达」,并给了 shouldFallbackThinkingToText:970-973 作为同一判据的先例;他没有辩护,直接照那个先例把 wantThinking 接进 createStreamReasoningDedup,并把 docs/reasoning-dedup.md 的不变式表按两个取值重写(原文档自相矛盾:一处写「the dedup cannot produce an empty answer」,四行后的表格却写 content==reasoning 时 emit nothing —— 实测是后者)。第一轮维护方拦下的严格前缀形状(content 是 reasoning 的前缀、流在此结束 → 抑制成空)也在同一轮封死,改成前缀只释放不抑制。HELD_CAP 做成直接约束而不是依赖「held 天然被 reasoning 长度限住」这条间接约束,是 default-ON 路径上的正确选择 —— 维护方实测越过 1 MiB 时输入 1048626 字符输出 1048626,零丢失。多字节安全维护方特意攻过:在 UTF-16 代理对中间切开(emoji ZWJ 序列、CJK 逐字符跨块)都正确重组、无 U+FFFD,因为他在字符串上比较而不是 Buffer,startsWith 天然按码点。release() 在失败路径无条件放出、不经抑制,顺序也对。他还自曝了一个写错的 expectBaselinePass(14 改 13)。合并后维护方补了一条他没做的:这是这批五个 PR 里唯一默认生效且无 kill switch 的行为变更,失败形状是内容丢失,所以加了 WINDSURFAPI_REASONING_DEDUP off-switch(默认开,只有精确 '0' 关闭)—— 那属于部署侧要求,不是实现缺陷。未到 MR/LR 是因为第一轮严格前缀洞和第二轮完全等长洞是同一前提错误的两次发作(提交前自查能发现)。"
+    },
+    {
+      "login": "warelik",
+      "githubId": 54947489,
+      "pr": 243,
+      "weight": "A+",
+      "weightLabel": "前导 think 标记重路由到 thinking 通道 · 在出口掐断 reasoning/content 血",
+      "mergedAt": "2026-08-09",
+      "title": "fix(messages): reroute leading think-tagged content to the thinking channel — break reasoning/content bleed at the source",
+      "summary": "thinking 模型把前导 `<think>...</think>` 整段写进 content 通道(issue #250 的形状),客户端把可见文本存下来又发回去,形成自强化循环。修法在 devin-connect-openai 的流事件层加一个分类器,把前导 think-tagged content 重路由到 thinking 通道,让整轮保持 reasoning-only 流。关键设计是**诚实的 rescue 交互**:重路由的轮次不触发 #238 rescue(那要求 tools,且 isEmptyCompletion 读 sawContent —— 而 thinking 分支会置它),真实结果是 reasoning 作为 thinking blocks 送达、text 空、不重试 —— 这是被接受的,因为 reasoning 没丢(客户端收到 thinking blocks,不是 #238 那种整轮消失)。而且**刻意不**教 isEmptyCompletion 去读 sawText —— 那会为了表面收益重画 #238/#241 的 rescue 边界。局限写进了代码注释:Kimi K2 的 ◁think▷ 方言没扩展,留给未来 PR。新增 spec think-text-reroute.json 3 条突变全 CAUGHT。未到 S 是因为范围描述低报了:标题和 .env.example 都说 Anthropic Messages egress,但分类器接在 streamChatWithEmptyRetry 上、服务 toChatCompletion 和 streamChatCompletion,是 connect 全 4 条路由 —— 变量名是诚实的(DEVIN_CONNECT_ 前缀),文档低报了。另外这个 PR 与 #242 的合并产生 baseline 碰撞(retry-rescue 81→88,两个 PR 各自量对叠起来都错),是合并时实测修复的。"
+    },
+    {
+      "login": "warelik",
+      "githubId": 54947489,
+      "pr": 242,
+      "weight": "S",
+      "weightLabel": "会话保真 · 稳定 ModelConfig + reasoning 尾注,opt-in 默认关",
+      "mergedAt": "2026-08-09",
+      "title": "feat(devin-connect): session fidelity for multi-turn agentic work — stable ModelConfig + reasoning continuity",
+      "summary": "DEVIN_CONNECT 每次调用都用 randomUUID 造新 session_id,一段多轮对话在上游 velocity limiter 眼里是 N 个全新会话。这个 PR 在 #226 的 pair-chain 基础上做会话保真:① 稳定 ModelConfig(#15.1 会话内恒定、#15.2 每轮单调,对齐 devin.exe,opt-in DEVIN_CONNECT_MODEL_CONFIG_STABLE 默认关);② reasoning 连续性(会话内 reasoning 尾摘要,按 TTL+LRU 有界,下一个系统提示词 checkpoint 回注,opt-in DEVIN_CONNECT_SESSION_REASONING_INJECT 默认关)。两个旋钮都是 opt-in 且默认关,关闭时与现状字节等价。评审两轮改到位,且改得比要求远:count 和 chars 两个小数洞(0.5 → Math.floor 静默 0)各补一条突变钉住,count 的 ceil 钳还援引了 #241 合并后维护方补的 DIGEST_MAX_CEILING 作为先例 —— 维护方核过那条教训他确实读进去了;'' 空串处理成默认而不是 0(与 count 对同一输入给相反答案的那条被拦下);一个新 spec reasoning-continuity.json 11 条突变全 CAUGHT。结构上与 #248 的 root-anchor 有真实交互(把 resolveSessionId 的匹配逻辑抽进 findExistingState,而 #248 的 root fallback 依赖那两个局部变量) —— 这是合并时实测发现并修复的,不是评审能预见的。未到 MR/LR 是因为两个小数洞属于同族缺陷(一个 PR 内复发)。"
+    },
+    {
+      "login": "warelik",
+      "githubId": 54947489,
+      "pr": 248,
+      "weight": "A",
+      "weightLabel": "压缩存活 · root-anchor 回退,单对话历史压缩后仍找回会话",
+      "mergedAt": "2026-08-09",
+      "title": "feat(session-continuity): survive single-dialog history compaction — root-anchor fallback",
+      "summary": "kimi 之类的客户端会在长对话里压缩历史:0/31 保留的 pair 逐字或规范都存活不下来,客户端改写保留尾 —— 但对话的第一轮输入逐字存活。这个 PR 用 root anchor(首轮输入哈希)索引每个 state,compaction 之后 pair 证据全丢时,通过 root 重新关联。三条防线:root-index the fork(分叉共享开端的 root,避免压缩后被并回原会话的 hijack)、模糊规则(多个活跃候选无 pair 证据 → 不分配给任何,生成新 id)、TTL 驱逐(过期 state 不通过压缩复活)。guard 只在「没有任何入站哈希命中索引」时走 root(seen 为空)—— 前缀 pair 仍命中的分叉对话不得被 root 重关联。新增 spec session-continuity-compaction-survival.json 3 条突变全 CAUGHT。未到 S 是因为「survive client history compaction」只在单对话成立,而 PR 描述说成通用能力;另外与 #242 的 findExistingState 抽取有结构性交互(git 三方合并看不见,合并时实测 15 条测试失败后修复),说明拆函数抽局部这类重构跨 PR 叠加时风险在文本层之下。"
     }
   ]
 }
