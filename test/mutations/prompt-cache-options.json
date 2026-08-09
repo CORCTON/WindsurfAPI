@@ -29,10 +29,10 @@
       "replacement": "const PROMPT_CACHE_EPHEMERAL = 0;"
     },
     {
-      "name": "the #13 spread ignores the null guard and emits a zero-length field whenever the builder returns null — the default path stops being byte-identical",
+      "name": "the #13 spread emits the mode varint at the TOP level instead of wrapping it in the sub-message — field 1 of the request (ClientMetadata) collides with a bare varint, corrupting the metadata the upstream authenticates on",
       "file": "src/devin-connect.js",
       "anchor": "    ...(cacheOptionsBuf ? [writeMessageField(13, cacheOptionsBuf)] : []),",
-      "replacement": "    ...[writeMessageField(13, cacheOptionsBuf || Buffer.alloc(0))],"
+      "replacement": "    ...(cacheOptionsBuf ? [cacheOptionsBuf] : []),"
     }
   ]
 }
