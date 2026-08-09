@@ -940,6 +940,86 @@ function buildClientMetadata(token, deviceSeed, userJwt) {
  * varints, and a large max_newlines is a no-op), so "a working capture" was never
  * evidence for the mapping — only the schema is.
  */
+// ─── tool_choice / parallel_tool_calls passthrough (#12 / #11), opt-in ──────
+//
+// OpenAI clients send tool_choice ('auto' | 'none' | 'required' | 'any' |
+// {type:'function', function:{name}}) and parallel_tool_calls. Today the repo can
+// only CLASSIFY tool_choice for cache-keying and prompt-emulation decisions
+// (handlers/chat.js:347) — it never reaches the upstream, so 'required' cannot be
+// honoured natively and a forced tool name is a request we silently downgrade.
+//
+// Third-party .proto reimplementations report:
+//   #12 tool_choice → ChatToolChoice { option_name = 1, tool_name = 2 }
+//   #11 disable_parallel_tool_calls (bool)
+//
+// UNCONFIRMED COORDINATES. These are DECLARATION ORDER in someone else's .proto,
+// not a wire capture, and prost allows tag gaps — so declaration order is not a tag
+// number. This is the same epistemic position as the billing tags and #13 above, and
+// it gets the same treatment: default-OFF, and the comment says so rather than
+// implying the mapping is known. The option_name STRINGS are a second unknown: the
+// upstream vocabulary is not observed either, so the map is operator-overridable.
+//
+// Enable with DEVIN_CONNECT_TOOL_CHOICE=1. Off → neither field is emitted and the
+// request is unchanged. An operator who has a capture can also re-point the tags via
+// DEVIN_CONNECT_TOOL_CHOICE_TAGS="choice=12,parallel=11".
+const TOOL_CHOICE_DEFAULT_TAGS = Object.freeze({ choice: 12, parallel: 11 });
+
+export function isToolChoicePassthroughEnabled(env = process.env) {
+  return String(env.DEVIN_CONNECT_TOOL_CHOICE ?? '').trim() === '1';
+}
+
+/** Operator-overridable tag map. Invalid entries are skipped, never fatal. */
+export function getToolChoiceTags(env = process.env) {
+  const raw = String(env.DEVIN_CONNECT_TOOL_CHOICE_TAGS ?? '').trim();
+  if (!raw) return TOOL_CHOICE_DEFAULT_TAGS;
+  const out = { ...TOOL_CHOICE_DEFAULT_TAGS };
+  for (const pair of raw.split(',')) {
+    const [k, v] = pair.split('=').map((s) => s.trim());
+    const n = Number.parseInt(v, 10);
+    if ((k === 'choice' || k === 'parallel') && Number.isInteger(n) && n > 0) out[k] = n;
+  }
+  return Object.freeze(out);
+}
+
+/**
+ * Normalize an OpenAI tool_choice into {optionName, toolName}, or null.
+ *
+ * Returns null for 'auto' as well as for absent input: 'auto' IS the upstream
+ * default, so emitting it would add a field that changes nothing while widening the
+ * unconfirmed surface. Only a non-default intent is worth sending.
+ */
+export function normalizeToolChoice(toolChoice) {
+  if (toolChoice == null) return null;
+  if (typeof toolChoice === 'string') {
+    const v = toolChoice.trim().toLowerCase();
+    if (v === 'none') return { optionName: 'none', toolName: null };
+    // 'any' is Anthropic's spelling of OpenAI's 'required'; both mean "call ≥1".
+    if (v === 'required' || v === 'any') return { optionName: 'required', toolName: null };
+    return null; // 'auto' or anything unrecognized
+  }
+  const name = toolChoice?.function?.name ?? toolChoice?.name;
+  if (typeof name === 'string' && name.trim()) {
+    return { optionName: 'function', toolName: name.trim() };
+  }
+  return null;
+}
+
+/**
+ * ChatToolChoice sub-message (#12 payload), or null when there is nothing to say.
+ *
+ * @param {string|object} toolChoice  the caller's OpenAI-shaped tool_choice
+ * @param {object} [env]
+ * @returns {Buffer|null}
+ */
+export function buildToolChoice(toolChoice, env = process.env) {
+  if (!isToolChoicePassthroughEnabled(env)) return null;
+  const norm = normalizeToolChoice(toolChoice);
+  if (!norm) return null;
+  const parts = [writeStringField(1, norm.optionName)];
+  if (norm.toolName) parts.push(writeStringField(2, norm.toolName));
+  return Buffer.concat(parts);
+}
+
 // ─── Explicit prompt caching (#13), opt-in ──────────────────────────────────
 //
 // WHAT IS MEASURED (repo history, paid Teams account):
@@ -1038,7 +1118,7 @@ function buildCompletionConfig({ maxTokens, temperature, topK, topP, contextWind
  * @param {object}   [params.completion]  CompletionConfig overrides
  * @returns {Buffer} raw protobuf (un-enveloped)
  */
-export function buildGetChatMessageRequest({ token, messages, model, sessionId, completion, tools, nativeToolCall = false, deviceSeed, userJwt, env = process.env, sessionModelConfig, continuityTrail } = {}) {
+export function buildGetChatMessageRequest({ token, messages, model, sessionId, completion, tools, nativeToolCall = false, deviceSeed, userJwt, toolChoice, parallelToolCalls, env = process.env, sessionModelConfig, continuityTrail } = {}) {
   if (!token) throw new Error('DEVIN_CONNECT: missing session token');
   if (!model) throw new Error('DEVIN_CONNECT: missing model selector');
 
@@ -1194,6 +1274,12 @@ export function buildGetChatMessageRequest({ token, messages, model, sessionId, 
 
   // Null unless DEVIN_CONNECT_PROMPT_CACHE=1 and the prompt is worth caching.
   const cacheOptionsBuf = buildSystemPromptCacheOptions(systemPrompt, env);
+  // Both null unless DEVIN_CONNECT_TOOL_CHOICE=1. `disableParallel` is only emitted
+  // when the caller explicitly said parallel_tool_calls:false — protobuf omits a
+  // false bool anyway, so sending it for the default (true) would be a no-op field.
+  const toolChoiceBuf = buildToolChoice(toolChoice, env);
+  const toolChoiceTags = getToolChoiceTags(env);
+  const disableParallel = isToolChoicePassthroughEnabled(env) && parallelToolCalls === false;
 
   const parts = [
     writeMessageField(1, buildClientMetadata(token, deviceSeed, userJwt)),
@@ -1203,6 +1289,9 @@ export function buildGetChatMessageRequest({ token, messages, model, sessionId, 
   parts.push(
     writeVarintField(7, 5),
     writeMessageField(8, buildCompletionConfig(completion)),
+    // #11 disable_parallel_tool_calls / #12 tool_choice — opt-in, unconfirmed tags.
+    ...(disableParallel ? [writeVarintField(toolChoiceTags.parallel, 1)] : []),
+    ...(toolChoiceBuf ? [writeMessageField(toolChoiceTags.choice, toolChoiceBuf)] : []),
     // #13 system_prompt_cache_options — opt-in, see buildSystemPromptCacheOptions.
     ...(cacheOptionsBuf ? [writeMessageField(13, cacheOptionsBuf)] : []),
     writeMessageField(15, modelConfigBuf),
