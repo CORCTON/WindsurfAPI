@@ -968,7 +968,25 @@ export function isToolChoicePassthroughEnabled(env = process.env) {
   return String(env.DEVIN_CONNECT_TOOL_CHOICE ?? '').trim() === '1';
 }
 
-/** Operator-overridable tag map. Invalid entries are skipped, never fatal. */
+// Top-level tags GetChatMessageRequest already occupies. An override that lands on
+// one of these does not "win" — protobuf permits a repeated appearance of a
+// non-repeated field and decoders take the LAST, so pointing `choice` at #1 emits a
+// second #1 next to the 800-byte ClientMetadata and lets a 10-byte tool_choice
+// overwrite the metadata the upstream authenticates on. Silent, and it looks like an
+// auth failure rather than a config typo. Measured: with choice=1 the request carried
+// TWO #1 fields (814 and 10 bytes).
+//
+// #11/#12/#13 are absent from this set on purpose — they are the (unconfirmed)
+// coordinates this feature and the prompt-cache switch are here to occupy.
+const REQUEST_OCCUPIED_TAGS = Object.freeze(new Set([1, 2, 3, 7, 8, 15, 16, 20, 21, 22]));
+
+/**
+ * Operator-overridable tag map. Invalid entries are skipped, never fatal.
+ *
+ * "Invalid" includes an override that collides with a field the request already
+ * emits: keeping the default is strictly better than corrupting the message, and the
+ * skip is logged so the typo is discoverable instead of silent.
+ */
 export function getToolChoiceTags(env = process.env) {
   const raw = String(env.DEVIN_CONNECT_TOOL_CHOICE_TAGS ?? '').trim();
   if (!raw) return TOOL_CHOICE_DEFAULT_TAGS;
@@ -976,7 +994,22 @@ export function getToolChoiceTags(env = process.env) {
   for (const pair of raw.split(',')) {
     const [k, v] = pair.split('=').map((s) => s.trim());
     const n = Number.parseInt(v, 10);
-    if ((k === 'choice' || k === 'parallel') && Number.isInteger(n) && n > 0) out[k] = n;
+    if (k !== 'choice' && k !== 'parallel') continue;
+    if (!Number.isInteger(n) || n <= 0) continue;
+    if (REQUEST_OCCUPIED_TAGS.has(n)) {
+      log.warn(`DEVIN_CONNECT_TOOL_CHOICE_TAGS: ${k}=${n} collides with an existing request field; keeping default ${out[k]}`);
+      continue;
+    }
+    // Both keys pointing at one tag is the same collision, one step removed.
+    if (k === 'parallel' && n === out.choice) {
+      log.warn(`DEVIN_CONNECT_TOOL_CHOICE_TAGS: parallel=${n} collides with choice; keeping default ${out.parallel}`);
+      continue;
+    }
+    out[k] = n;
+  }
+  if (out.choice === out.parallel) {
+    log.warn(`DEVIN_CONNECT_TOOL_CHOICE_TAGS: choice and parallel both ${out.choice}; reverting both to defaults`);
+    return TOOL_CHOICE_DEFAULT_TAGS;
   }
   return Object.freeze(out);
 }

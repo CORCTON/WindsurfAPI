@@ -2,7 +2,7 @@
   "tests": [
     "test/tool-choice-passthrough.test.js"
   ],
-  "expectBaselinePass": 18,
+  "expectBaselinePass": 22,
   "mutations": [
     {
       "name": "the switch accepts any truthy-ish value instead of exactly '1' — the Number()/falsy rewrite that silently flipped sibling knobs in #241/#242, here putting TWO unconfirmed proto tags on the wire for an operator who set the variable to '0' or 'false'",
@@ -37,8 +37,20 @@
     {
       "name": "an invalid operator tag override is accepted instead of skipped — a typo like choice=notanumber yields NaN as a field number and corrupts the request encoding",
       "file": "src/devin-connect.js",
-      "anchor": "    if ((k === 'choice' || k === 'parallel') && Number.isInteger(n) && n > 0) out[k] = n;",
-      "replacement": "    if (k === 'choice' || k === 'parallel') out[k] = n;"
+      "anchor": "    if (k !== 'choice' && k !== 'parallel') continue;\n    if (!Number.isInteger(n) || n <= 0) continue;",
+      "replacement": "    if (k !== 'choice' && k !== 'parallel') continue;"
+    },
+    {
+      "name": "the occupied-tag collision guard is dropped — pointing choice at #1 emits a SECOND #1 beside the ~800-byte ClientMetadata, and since decoders take the last occurrence of a non-repeated field, a 10-byte tool_choice overwrites the metadata the upstream authenticates on (surfaces as an auth failure, not a config typo)",
+      "file": "src/devin-connect.js",
+      "anchor": "    if (REQUEST_OCCUPIED_TAGS.has(n)) {",
+      "replacement": "    if (false) {"
+    },
+    {
+      "name": "choice and parallel are allowed to coincide — the two new fields land on one tag and one silently overwrites the other",
+      "file": "src/devin-connect.js",
+      "anchor": "    if (k === 'parallel' && n === out.choice) {",
+      "replacement": "    if (false) {"
     }
   ]
 }

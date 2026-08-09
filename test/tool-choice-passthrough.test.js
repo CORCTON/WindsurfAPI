@@ -117,6 +117,52 @@ describe('getToolChoiceTags — operator override', () => {
     const t = getToolChoiceTags({ DEVIN_CONNECT_TOOL_CHOICE_TAGS: 'choice=0,parallel=-3' });
     assert.deepEqual({ ...t }, { choice: 12, parallel: 11 });
   });
+
+  it('refuses an override that collides with a field the request already emits', () => {
+    // Found by attacking this feature after it shipped. protobuf permits a repeated
+    // appearance of a non-repeated field and decoders take the LAST, so pointing
+    // `choice` at #1 emitted a second #1 beside the ~800-byte ClientMetadata and let a
+    // 10-byte tool_choice overwrite the metadata the upstream AUTHENTICATES on. It
+    // surfaced as an auth failure, not as a config typo.
+    for (const tag of [1, 2, 3, 7, 8, 15, 16, 20, 21, 22]) {
+      const t = getToolChoiceTags({ DEVIN_CONNECT_TOOL_CHOICE_TAGS: `choice=${tag}` });
+      assert.equal(t.choice, 12, `choice=${tag} collides with an occupied field and must be refused`);
+    }
+  });
+
+  it('refuses choice and parallel pointing at the same tag', () => {
+    // The same collision one step removed: two fields on one tag is still one
+    // overwriting the other. The second declaration is dropped and its default kept,
+    // so the invariant that matters — the two tags never coincide — holds.
+    const t = getToolChoiceTags({ DEVIN_CONNECT_TOOL_CHOICE_TAGS: 'choice=30,parallel=30' });
+    assert.equal(t.choice === t.parallel, false, 'the two tags must never coincide');
+    assert.equal(t.choice, 30, 'the first, non-colliding declaration still applies');
+    assert.equal(t.parallel, 11, 'the colliding one keeps its default');
+  });
+
+  it('never lets the two tags coincide, whichever order they are declared', () => {
+    for (const raw of ['choice=30,parallel=30', 'parallel=30,choice=30', 'parallel=40,choice=40']) {
+      const t = getToolChoiceTags({ DEVIN_CONNECT_TOOL_CHOICE_TAGS: raw });
+      assert.notEqual(t.choice, t.parallel, `"${raw}" produced coinciding tags`);
+    }
+  });
+});
+
+describe('wire: a colliding override cannot duplicate an occupied field', () => {
+  it('emits exactly one #1 (ClientMetadata) even when choice is pointed at 1', () => {
+    const proto = buildGetChatMessageRequest({
+      token: 'devin-session-token$a.b.c',
+      model: 'm',
+      messages: [{ role: 'user', content: 'x' }],
+      env: { ...ON, DEVIN_CONNECT_TOOL_CHOICE_TAGS: 'choice=1' },
+      toolChoice: 'required',
+      deviceSeed: 'stable',
+    });
+    const ones = parseFields(proto).filter((f) => f.field === 1);
+    assert.equal(ones.length, 1, 'a second #1 would overwrite the auth metadata');
+    // And the surviving #1 is the real metadata, not a 10-byte tool_choice.
+    assert.ok(ones[0].value.length > 100, 'the surviving #1 must be ClientMetadata');
+  });
 });
 
 describe('request wire', () => {
