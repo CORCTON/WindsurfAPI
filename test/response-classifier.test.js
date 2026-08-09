@@ -79,4 +79,15 @@ describe('ThinkTextClassifier', () => {
     assert.deepEqual(c.feed(''), { text: '', thinking: '' });
     assert.equal(c.flush(), '');
   });
+
+  it('handles an arbitrarily deep chain of think blocks without a stack overflow', () => {
+    // Regression: the original implementation routed the remainder of each closed
+    // block back through _feedThink/_feedUndecided recursion, so N stacked blocks in
+    // ONE delta grew N stack frames. Measured before the fix: 20000 blocks threw
+    // RangeError. The chain must now be classified iteratively, reasoning intact.
+    const depth = 20000;
+    const { text, thinking } = runAll([(OPEN + 'a' + CLOSE).repeat(depth)]);
+    assert.equal(text, '');
+    assert.equal(thinking, 'a'.repeat(depth));
+  });
 });
