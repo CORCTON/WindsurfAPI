@@ -6310,6 +6310,34 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             if (rerouteTail) emitContent(rerouteTail);
           }
 
+          // #250 failure path, part 2 (adversarial review 2026-08-10): a CLOSED
+          // think span that was already rerouted did NOT sit in the classifier —
+          // it sat in accThinking (emulateTools buffers there to keep the Anthropic
+          // block sequence clean). flush() above never touches it, so on a stream
+          // failure that reasoning was silently dropped. Worse, an all-thinking
+          // turn (no text) left emittedClientPayload false and the client got an
+          // empty turn + raw error frame. Release accThinking here, choosing the
+          // channel by the same rule the success tail uses: a client that cannot
+          // see the reasoning channel gets it as text (accText), so nothing is lost.
+          if (accThinking) {
+            const bufferedThinking = accThinking;
+            accThinking = '';
+            const thinkingAsText = shouldFallbackThinkingToText({
+              routingModelKey: modelKey, wantThinking: !!deps.wantThinking,
+              accText, accThinking: bufferedThinking, hasToolCalls: collectedToolCalls.length > 0,
+            });
+            if (thinkingAsText) {
+              if (accText) accText += '\n';
+              accText += bufferedThinking;
+              emitContent(bufferedThinking);
+            } else {
+              // accThinking was non-empty so nothing was streamed yet — emitting
+              // here is not a duplicate. accumulate:false because accThinking is
+              // already reset and this would otherwise re-buffer + re-noteReasoning.
+              emitThinking(bufferedThinking, { accumulate: false });
+            }
+          }
+
           if (emittedClientPayload) {
             // We already streamed real assistant content. Injecting
             // "[Error: ...]" as a content delta here would corrupt the

@@ -4,7 +4,7 @@
     "test/response-classifier.test.js",
     "test/default-on-switch-registry.test.js"
   ],
-  "expectBaselinePass": 26,
+  "expectBaselinePass": 28,
   "mutations": [
     {
       "name": "the Cascade interception point goes dead — the classifier is never fed, so leading think-tagged content streams straight to the client exactly as it did before the fix. This is #250 itself re-introduced on the path that carries the traffic",
@@ -29,6 +29,12 @@
       "file": "src/response-classifier.js",
       "anchor": "    const oi = this.pending.indexOf(THINK_OPEN);\n    if (oi >= 0) {",
       "replacement": "    if (this.pending.length > 8192) return this._commitText();\n    const oi = this.pending.indexOf(THINK_OPEN);\n    if (oi >= 0) {"
+    },
+    {
+      "name": "the accThinking release on the failure path is dropped — a closed rerouted span buffered for emulateTools is silently lost when the stream errors, and an all-thinking turn closes with a raw error frame and no stop",
+      "file": "src/handlers/chat.js",
+      "anchor": "          if (accThinking) {\n            const bufferedThinking = accThinking;",
+      "replacement": "          if (false && accThinking) {\n            const bufferedThinking = accThinking;"
     }
   ]
 }

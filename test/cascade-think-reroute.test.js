@@ -326,6 +326,56 @@ describe('#250 Cascade path: leading think-tagged content is rerouted to reasoni
       'the partial-then-error tail must still close the stream cleanly — a '
       + 'ReferenceError here would swallow the terminal frame');
   });
+
+  // ── emulateTools + failure: the accThinking hole ──────────────────────────
+  //
+  // Adversarial review (2026-08-10) found both of these. The test above only
+  // covers an UNTERMINATED span, which the classifier still holds in `pending`
+  // and flush() releases. A CLOSED span in emulateTools mode is a different
+  // path: it was already rerouted OUT of the classifier and buffered into
+  // accThinking (emulateTools defers reasoning so a reasoning_content delta
+  // cannot precede a tail tool_call — "Content block not found" in Claude Code).
+  // flush() never touches accThinking, so on a stream failure that reasoning
+  // was silently dropped. Cascade + emulateTools is the README's Claude Code
+  // config, so this is the live shape, not an edge case.
+  const TOOLS = [{
+    type: 'function',
+    function: { name: 'noop', description: 'd', parameters: { type: 'object', properties: {} } },
+  }];
+
+  it('emulateTools + failure: a CLOSED rerouted span is not dropped from accThinking', async () => {
+    seed('reroute-emulate-error');
+    const raw = await runStream([
+      { text: OPEN + 'reasoning that came as content' + CLOSE + 'answer here', thinking: '' },
+    ], { body: { tools: TOOLS }, throwAfter: true });
+
+    // gemini-2.5-flash is non-reasoning, so shouldFallbackThinkingToText promotes
+    // the buffered reasoning back to visible text rather than dropping it.
+    const all = wireContent(raw) + wireReasoning(raw);
+    assert.match(all, /reasoning that came as content/,
+      'buffered reasoning must survive the failure path — pre-fix it vanished '
+      + 'because only thinkClassifier.flush() ran and accThinking was never released');
+    assert.match(wireContent(raw), /answer here/, 'the post-marker answer must still arrive');
+  });
+
+  it('emulateTools + failure on an ALL-thinking turn still closes with a stop', async () => {
+    // The worse half: when the whole turn was a rerouted think block, nothing was
+    // ever emitted, so emittedClientPayload stayed false and the client got an
+    // empty assistant turn plus a raw {"error":...} frame with NO finish_reason.
+    seed('reroute-emulate-error-all');
+    const raw = await runStream([
+      { text: OPEN + 'pure reasoning, no answer' + CLOSE, thinking: '' },
+    ], { body: { tools: TOOLS }, throwAfter: true });
+
+    const all = wireContent(raw) + wireReasoning(raw);
+    assert.match(all, /pure reasoning, no answer/,
+      'an all-thinking turn must still deliver its bytes on the failure path');
+    assert.ok(/"finish_reason":"stop"/.test(raw),
+      'releasing accThinking must set emittedClientPayload so the partial-delivered '
+      + 'branch closes cleanly instead of emitting a raw error object');
+    assert.ok(!/"error"\s*:/.test(raw),
+      'a turn that produced content must not be closed with a raw error frame');
+  });
 });
 
 describe('isCascadeThinkRerouteEnabled', () => {
