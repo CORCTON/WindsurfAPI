@@ -12,6 +12,11 @@ function parseEvents(raw) {
     .split('\n\n')
     .filter(Boolean)
     .filter(frame => !frame.startsWith(':'))
+    // The trailing `data: [DONE]` sentinel carries no `event:` line and is not JSON, so
+    // it is dropped here rather than parsed. Dropped by exact match, not by swallowing
+    // parse errors: a genuinely malformed frame must still fail this helper loudly.
+    // What the sentinel itself guarantees is pinned in responses-stream-done-sentinel.test.js.
+    .filter(frame => frame !== 'data: [DONE]')
     .map(frame => {
       const lines = frame.split('\n');
       const event = lines.find(line => line.startsWith('event: '))?.slice(7);
