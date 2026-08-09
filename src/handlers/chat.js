@@ -63,7 +63,7 @@ import { newTraceId, traceClientRequest, traceRouting, traceClientResponse, trac
 import { sanitizeText, sanitizeToolCall, PathSanitizeStream } from '../sanitize.js';
 import { systemFingerprint } from '../system-fingerprint.js';
 import { registerSseController } from '../sse-registry.js';
-import { createStreamReasoningDedup } from '../reasoning-dedup.js';
+import { createStreamReasoningDedup, isReasoningDedupEnabled } from '../reasoning-dedup.js';
 import {
   recordNativeBridgeAccountGateReject,
   recordNativeBridgeAccountGateSkip,
@@ -5331,7 +5331,10 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
       // T4 dedup: incremental reasoning/content prefix comparison. Holds only
       // while content byte-matches a prefix of the streamed reasoning; the
       // moment it diverges everything is released. See src/reasoning-dedup.js.
-      const reasoningDedup = createStreamReasoningDedup({ wantThinking: !!deps.wantThinking });
+      // WINDSURFAPI_REASONING_DEDUP=0 disables it (see reasoning-dedup.js).
+      const reasoningDedup = isReasoningDedupEnabled()
+        ? createStreamReasoningDedup({ wantThinking: !!deps.wantThinking })
+        : null;
 
       const emitContent = (clean) => {
         if (!clean) return;
@@ -5344,17 +5347,24 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
         // T4 (incremental) — hold only while content byte-matches a prefix of
         // the accumulated reasoning; the moment it diverges, everything held
         // so far plus this chunk is released (see src/reasoning-dedup.js).
-        const { emit, hold } = reasoningDedup.feed(clean);
-        if (hold || !emit) return;
+        if (reasoningDedup) {
+          const { emit, hold } = reasoningDedup.feed(clean);
+          if (hold || !emit) return;
+          send({ id, object: 'chat.completion.chunk', created, model,
+            choices: [{ index: 0, delta: { content: emit }, finish_reason: null }] });
+          emittedClientPayload = true;
+          return;
+        }
+        // dedup off — pass through untouched
         emittedClientPayload = true;
         send({ id, object: 'chat.completion.chunk', created, model,
-          choices: [{ index: 0, delta: { content: emit }, finish_reason: null }] });
+          choices: [{ index: 0, delta: { content: clean }, finish_reason: null }] });
       };
       const emitThinking = (clean, { accumulate = true } = {}) => {
         if (!clean) return;
         if (accumulate) {
           accThinking += clean;
-          reasoningDedup.noteReasoning(clean);
+          reasoningDedup?.noteReasoning(clean);
         }
         emittedClientPayload = true;
         send({ id, object: 'chat.completion.chunk', created, model,
@@ -5938,7 +5948,7 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             // verbatim duplicate of the streamed reasoning. Client-visible
             // only — accText/accThinking keep the full view for the logic
             // below (fallback, narrative scan, cascade history).
-            const settled = reasoningDedup.settle();
+            const settled = reasoningDedup?.settle() ?? { emit: '', suppressed: false };
             if (settled.emit) {
               emittedClientPayload = true;
               send({ id, object: 'chat.completion.chunk', created, model,
@@ -6196,7 +6206,7 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             // (release(), not settle() — nothing is suppressed here), so a
             // client that does not render the reasoning channel still gets
             // the duplicate tail instead of silence.
-            const heldTail = reasoningDedup.release();
+            const heldTail = reasoningDedup?.release() ?? '';
             if (heldTail) {
               send(chunk({ id, created, model,
                 choices: [{ index: 0, delta: { content: heldTail }, finish_reason: null }] }));

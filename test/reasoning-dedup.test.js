@@ -17,7 +17,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { createStreamReasoningDedup } from '../src/reasoning-dedup.js';
+import { createStreamReasoningDedup, isReasoningDedupEnabled } from '../src/reasoning-dedup.js';
 
 describe('reasoning-dedup (incremental)', () => {
   it('diverges on the FIRST content chunk — one non-prefix chunk is emitted immediately, not held', () => {
@@ -164,5 +164,80 @@ describe('reasoning-dedup (incremental)', () => {
     // Divergence latched: even a matching chunk passes through now.
     assert.deepEqual(d.feed('a'), { emit: 'a', hold: false });
     assert.deepEqual(d.settle(), { emit: '', suppressed: false });
+  });
+});
+
+// The off-switch. This is the only default-ON behaviour change in the
+// session-fidelity batch and its failure shape is content loss, so an operator
+// must be able to disable it without a redeploy.
+describe('isReasoningDedupEnabled — off-switch (default ON)', () => {
+  it('defaults to ON when the variable is absent', () => {
+    assert.equal(isReasoningDedupEnabled({}), true);
+  });
+
+  it('only the exact string "0" disables it', () => {
+    assert.equal(isReasoningDedupEnabled({ WINDSURFAPI_REASONING_DEDUP: '0' }), false);
+    assert.equal(isReasoningDedupEnabled({ WINDSURFAPI_REASONING_DEDUP: '1' }), true);
+  });
+
+  it('an EMPTY value keeps it ON, not off', () => {
+    // `.env` with a bare `WINDSURFAPI_REASONING_DEDUP=` must not silently
+    // disable a default-on safety path. Number('') === 0 passing a `>= 0`
+    // check has silently disabled a knob in this repo before (#241, #242).
+    //
+    // Measured note on the guard's strength: dropping the `|| '1'` fallback is
+    // an EQUIVALENT transform, not an escaped defect — `String('')` is `''`,
+    // which already `!== '0'`. So this assertion pins the *contract* (empty
+    // means on) rather than that one expression; it would catch a rewrite to
+    // `Number(...)` or `!env.X`, which are the shapes that actually broke
+    // sibling knobs. Recorded here so the next reader does not mistake a
+    // surviving mutation on line 88 for a hole.
+    assert.equal(isReasoningDedupEnabled({ WINDSURFAPI_REASONING_DEDUP: '' }), true);
+    assert.equal(isReasoningDedupEnabled({ WINDSURFAPI_REASONING_DEDUP: '00' }), true);
+    assert.equal(isReasoningDedupEnabled({ WINDSURFAPI_REASONING_DEDUP: 'false' }), true);
+  });
+
+  it('a Number()-style rewrite would be caught (the shape that broke sibling knobs)', () => {
+    // Drives the contract the comment above names: if someone "simplifies"
+    // the check to Number()/falsy semantics, an empty or '00' value flips to
+    // disabled. Pinning it behaviourally so the refactor fails here.
+    const numberStyle = (env) => Number(env.WINDSURFAPI_REASONING_DEDUP ?? 1) !== 0;
+    assert.equal(numberStyle({ WINDSURFAPI_REASONING_DEDUP: '' }), false,
+      'Number("") === 0 — this is the trap; the real implementation must not behave this way');
+    assert.notEqual(
+      isReasoningDedupEnabled({ WINDSURFAPI_REASONING_DEDUP: '' }),
+      numberStyle({ WINDSURFAPI_REASONING_DEDUP: '' }),
+    );
+  });
+
+  // Behavioural, not a source grep: drive the two wirings chat.js builds
+  // (dedup instance vs null) and assert what reaches the wire. If the
+  // switch stopped being honoured, the first assertion fails.
+  it('OFF passes the duplicate through; ON suppresses it', () => {
+    const R = 'The answer is 42.';
+    const wire = (env) => {
+      const dedup = isReasoningDedupEnabled(env)
+        ? createStreamReasoningDedup({ wantThinking: true })
+        : null;
+      const sent = [];
+      dedup?.noteReasoning(R);
+      for (const chunk of [R.slice(0, 5), R.slice(5)]) {
+        if (dedup) {
+          const { emit, hold } = dedup.feed(chunk);
+          if (!hold && emit) sent.push(emit);
+        } else {
+          sent.push(chunk);
+        }
+      }
+      const settled = dedup?.settle() ?? { emit: '', suppressed: false };
+      if (settled.emit) sent.push(settled.emit);
+      return { text: sent.join(''), suppressed: settled.suppressed };
+    };
+
+    // Disabled: the client gets the whole answer even though it duplicates
+    // the reasoning channel — identical to a stream with no dedup at all.
+    assert.deepEqual(wire({ WINDSURFAPI_REASONING_DEDUP: '0' }), { text: R, suppressed: false });
+    // Default: suppressed, because wantThinking is true.
+    assert.deepEqual(wire({}), { text: '', suppressed: true });
   });
 });

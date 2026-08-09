@@ -77,6 +77,17 @@
 
 const HELD_CAP = 1024 * 1024;
 
+// Off-switch (default ON). This is the only default-on behaviour change in
+// the session-fidelity PR batch (everything else ships with an env gate and
+// defaults OFF), and its failure shape is content loss — so an operator must
+// be able to disable it without a redeploy. Same shape as
+// WINDSURFAPI_NEUTRALIZE_CLIENT_ID (identity-neutralize.js:83).
+//   WINDSURFAPI_REASONING_DEDUP=0  → dedup disabled, output identical to
+//     a stream with no dedup (every chunk emitted, no suppression).
+export function isReasoningDedupEnabled(env = process.env) {
+  return String(env.WINDSURFAPI_REASONING_DEDUP || '1') !== '0';
+}
+
 export function createStreamReasoningDedup({ wantThinking = false } = {}) {
   let seenReasoning = '';
   let held = '';
