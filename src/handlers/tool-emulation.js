@@ -389,9 +389,12 @@ export function pickToolDialect(modelKey, provider, route = null) {
   // <|tool_call_end|> dialect as Kimi K2 — observed in production traffic
   // 2026-08-07. Narrow to observed SKUs only: swe-1-6-slow is a distinct
   // upstream deployment (FREE_REACHABLE_SELECTORS) that still emits
-  // openai_json_xml, and future swe-* variants may differ too.
+  // openai_json_xml. swe-1-7-lightning also emits narrative calls instead
+  // of Kimi section tokens (live probe 2026-08-09); future variants may
+  // differ too.
   if (/^swe-1[.-](5|6|7)(-|$)/.test(normalizedModelKey)
-      && !normalizedModelKey.endsWith('-slow')) {
+      && !normalizedModelKey.endsWith('-slow')
+      && !normalizedModelKey.endsWith('-lightning')) {
     return 'kimi_k2';
   }
   // v2.0.62 (#115) — GPT family + Codex/Responses route uses bare-JSON

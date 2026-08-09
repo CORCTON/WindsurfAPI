@@ -30,6 +30,7 @@ describe('SWE dialect selection', () => {
       'swe-1.5', 'swe-1.5-fast', 'swe-1.6', 'swe-1.7', 'swe-1-7-medium',
     ]) assert.equal(pickToolDialect(modelKey), 'kimi_k2', modelKey);
     assert.equal(pickToolDialect('swe-1-6-slow'), 'openai_json_xml');
+    assert.equal(pickToolDialect('swe-1-7-lightning'), 'openai_json_xml');
     for (const modelKey of ['swe-1.8', 'swe-2.0', 'swe-9-future']) {
       assert.equal(pickToolDialect(modelKey), 'openai_json_xml', modelKey);
     }
@@ -94,7 +95,7 @@ describe('kimi_k2 XML compatibility fallback', () => {
   });
 });
 
-describe('kimi_k2 wrapperless SWE lightning calls', () => {
+describe('kimi_k2 wrapperless calls', () => {
   const lightningCall = (name, index, args) => `functions.${name}:${index}${JSON.stringify(args)}`;
 
   it('extracts a wrapperless call from direct text', () => {
@@ -108,8 +109,8 @@ describe('kimi_k2 wrapperless SWE lightning calls', () => {
 
   it('extracts a line-start wrapperless call after an ordinary contraction', () => {
     const input = `Here's the call:\n${lightningCall('terminal', 0, { command: 'pwd' })}`;
-    const direct = parseToolCallsFromText(input, { modelKey: 'swe-1-7-lightning' });
-    const chunked = collectStreaming(input, 'swe-1-7-lightning', 1);
+    const direct = parseToolCallsFromText(input, { modelKey: 'kimi-k2' });
+    const chunked = collectStreaming(input, 'kimi-k2', 1);
     for (const result of [direct, chunked]) {
       assert.equal(result.text, "Here's the call:\n");
       assert.deepEqual(result.toolCalls.map(({ name, argumentsJson }) => ({ name, argumentsJson })), [

@@ -231,7 +231,7 @@ describe('ToolCallStreamParser', () => {
     assert.equal(pickToolDialect('swe-1.6'), 'kimi_k2');
     assert.equal(pickToolDialect('swe-1.6-fast'), 'kimi_k2');
     assert.equal(pickToolDialect('swe-1-7'), 'kimi_k2');
-    assert.equal(pickToolDialect('swe-1-7-lightning'), 'kimi_k2');
+    assert.equal(pickToolDialect('swe-1-7-lightning'), 'openai_json_xml');
     assert.equal(pickToolDialect('swe-1-7-medium'), 'kimi_k2');
     assert.equal(pickToolDialect('swe-1-6-slow'), 'openai_json_xml');
     assert.equal(pickToolDialect('swe-1-8'), 'openai_json_xml');
