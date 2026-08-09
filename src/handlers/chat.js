@@ -3144,7 +3144,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
       if (modelCfg) connectParams.sessionModelConfig = { id: modelCfg.configId, turn: modelCfg.turn };
       const reasoningTrail = getSessionConnectReasoningTrail(callerKey || '', connectMessages);
       if (reasoningTrail) connectParams.continuityTrail = reasoningTrail;
-      log.info(`Chat[${reqId}]: DEVIN_CONNECT session reuse active → session_id=${connectSessionId}${modelCfg ? ` model_config=stable turn=${modelCfg.turn}` : ''}`);
+      log.info(`Chat[${reqId}]: DEVIN_CONNECT session reuse active → session_id=${connectSessionId}${modelCfg ? ` model_config=stable turn=${modelCfg.turn}` : ''} acct=${ccAcct?.account?.id || 'env-token'}`);
     }
     if (ccAcct) {
       connectParams.token = ccAcct.apiKey;

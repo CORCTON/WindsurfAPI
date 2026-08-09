@@ -279,8 +279,11 @@ export function buildPairHashes(callerKey, messages) {
 // ─── Resolver ──────────────────────────────────────────────────────────────
 
 /**
- * Overlap score: how many of the candidate's hashes appear as a contiguous
- * subsequence within incoming (anchored at the last stored hash).
+ * Overlap score: the contiguous run of candidate-window hashes ending at the
+ * candidate's LAST hash (a retained tail is always a SUFFIX of the committed
+ * chain — compaction cuts the head, never the tail). Anchoring at the tail is
+ * what keeps a divergent dialog that merely shares an early pair from
+ * hijacking the session: a prefix-only run scores 0 here.
  */
 function overlapScore(incoming, candidateWindow) {
   if (!candidateWindow.length || !incoming.length) return 0;
@@ -484,10 +487,21 @@ function pushReasoningTail(state, reasoning, env) {
  * resolveSessionId, but never creates a state and never touches lastSeen.
  * Returns { state, viaRoot } or null.
  */
-function findExistingState(scopeId, analysis, env) {
+// `outSeen` (optional): receives `{ count }` — how many indexed states the
+// incoming hashes TOUCHED, regardless of whether one won. The #248 root-anchor
+// fallback keys on this being 0 ("no pair evidence at all"), which is NOT the
+// same as this function returning null (a divergent dialog can touch the index,
+// score 0, and still return null — that dialog must not be re-associated
+// through its root). The #242 refactor moved this scan out of resolveSessionId,
+// so the signal is handed back rather than read from a shared local.
+function findExistingState(scopeId, analysis, env, outSeen = null) {
   const { hashes, canResolve, postBarrierRecords } = analysis;
   const ttl = getTtl(env);
   const now = Date.now();
+  // Initialised on every path: the pair scan below is skipped entirely on the
+  // root-anchor branch, and an unset count there would read as "no pair
+  // evidence" to the caller when the truth is "we never looked".
+  if (outSeen) outSeen.count = 0;
 
   if (!canResolve || hashes.length === 0) {
     // Root-anchor path: first turn (no completed pair yet) or a barrier — see the
@@ -526,6 +540,11 @@ function findExistingState(scopeId, analysis, env) {
       else if (score === bestScore && score > 0) hasTie = true;
     }
   }
+  // `seenCount` rides on the RESULT rather than replacing the null contract:
+  // three callers test `if (!found)` / `if (found)`, so returning an object on
+  // the miss path would make every miss look like a hit. The #248 root fallback
+  // needs the miss-path count too, so it is exposed via the out-param below.
+  if (outSeen) outSeen.count = seen.size;
   return (best && !hasTie) ? { state: best, viaRoot: false } : null;
 }
 
@@ -581,7 +600,9 @@ export function resolveSessionId(callerKey, messages, env = process.env) {
   const { hashes, canResolve, postBarrierRecords } = analysis;
   const now = Date.now();
 
-  const found = findExistingState(scopeId, analysis, env);
+  const ttl = getTtl(env);
+  const seenProbe = { count: 0 };
+  const found = findExistingState(scopeId, analysis, env, seenProbe);
   if (found) {
     found.state.lastSeen = now;
     if (!found.viaRoot) {
@@ -615,6 +636,40 @@ export function resolveSessionId(callerKey, messages, env = process.env) {
     if (!pairIndex.has(rootKey)) pairIndex.set(rootKey, new Set());
     pairIndex.get(rootKey).add(stateId);
     return sessionId;
+  }
+
+  // Root fallback (compaction survival). Measured on a real kimi compaction:
+  // 0 of 31 retained pairs survive byte-for-byte or canonically — the client
+  // rewrites the retained tail — BUT the dialog's first input turn survives
+  // verbatim. States are indexed by that rootKey at creation, so re-associate
+  // through it when pair evidence is gone. Several live candidates with no pair
+  // evidence = ambiguous -> assign to none (collision rule), let a new id form.
+  // Guard: only when NO incoming hash matched any stored index (seen empty) — a
+  // divergent dialog whose prefix pair still hits the index must NOT be
+  // re-associated through the root (pair evidence exists; it just scores 0).
+  if (seenProbe.count === 0) {
+  const rootKey = rootAnchorKey(scopeId, analysis);
+  if (rootKey) {
+    const rootSet = pairIndex.get(rootKey);
+    if (rootSet) {
+      const live = [];
+      for (const stateId of rootSet) {
+        const state = statesById.get(stateId);
+        if (!state) continue;
+        if (now - state.lastSeen > ttl) { evictState(stateId); continue; }
+        live.push(state);
+      }
+      if (live.length === 1) {
+        const state = live[0];
+        state.lastSeen = now;
+        const newWindow = hashes.slice(-PAIR_WINDOW_SIZE);
+        state.pairWindow = newWindow;
+        indexState(state.stateId, state);
+        state.pairRecords = postBarrierRecords.slice(-PAIR_WINDOW_SIZE);
+        return state.sessionId;
+      }
+    }
+  }
   }
 
   // No match — create new state
@@ -725,11 +780,20 @@ export function commitAfterResponse(callerKey, messagesWithResponse, env = proce
   const sessionId = crypto.randomUUID();
   const stateId = crypto.randomUUID();
   const dialogAnchor = pairWindow[0]?.slice(0, 16) || null;
-  const state = { stateId, scopeId, sessionId, pairWindow, pairRecords: postBarrierRecords.slice(-PAIR_WINDOW_SIZE), lastSeen: now, commitKey, dialogAnchor, configId: crypto.randomUUID(), turnCount: 1, reasoningTails: [] };
+  // Root-index the fork too: a forked dialog shares its opener's root anchor, so
+  // a later compacted resolve must see it as a SECOND live root candidate —
+  // otherwise the root fallback would re-associate the fork into the ORIGINAL
+  // session (hijack). The fallback's ambiguity rule (several live -> assign to
+  // none) only works when every root-sharing state is visible under the anchor.
+  const state = { stateId, scopeId, sessionId, pairWindow, pairRecords: postBarrierRecords.slice(-PAIR_WINDOW_SIZE), lastSeen: now, commitKey, dialogAnchor, rootKey, configId: crypto.randomUUID(), turnCount: 1, reasoningTails: [] };
   pushReasoningTail(state, opts.reasoning, env);
   statesById.set(stateId, state);
   commitIndex.set(commitKey, stateId);
   indexState(stateId, state);
+  if (rootKey) {
+    if (!pairIndex.has(rootKey)) pairIndex.set(rootKey, new Set());
+    pairIndex.get(rootKey).add(stateId);
+  }
   return sessionId;
 }
 
