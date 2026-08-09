@@ -21,7 +21,7 @@ import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { searchWebForAccount, addAccountByKey, removeAccount, __setWebSearchDeps } from '../src/auth.js';
 
-const KEY = 'sk-ws-web-search-exposure-test';
+const KEY = 'ws-fixture-web-search-exposure-test';
 let created = null;
 
 beforeEach(() => {
