@@ -30,6 +30,11 @@ import {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const LOGIN_SRC = readFileSync(join(__dirname, '..', 'src', 'dashboard', 'windsurf-login.js'), 'utf8');
 
+// Mirrors the module's own resolution (windsurf-login.js:199). The env override is a
+// documented supported knob, so the test must compare against the resolved value, not
+// a literal — a hardcoded '2.0.67' fails for any operator who set WINDSURF_CLIENT_VERSION.
+const EXPECTED_CLIENT_VERSION = process.env.WINDSURF_CLIENT_VERSION || '2.0.67';
+
 // Email-lockout config must stay unset so no ban interferes (default 3
 // failures / 15 min — the firebase path used below throws before recording).
 beforeEach(() => { _resetEmailLockoutForTests(); });
@@ -57,18 +62,31 @@ describe('Firebase referrer-block error mapping', () => {
       'API_KEY_HTTP_REFERRER_BLOCKED must not be treated as an auth failure');
   });
 
-  it('the firebase hop extracts the error code when only {error:{code}} is present', () => {
-    // identitytoolkit can reply with just the code (no message). A fallback of
-    // `fbRes.data.error.message || ... || 'Unknown Firebase error'` would
-    // swallow the code entirely; the extraction must read .code so the mapper
-    // sees API_KEY_HTTP_REFERRER_BLOCKED.
+  it('the firebase hop reads the structured reason, the message, and the code', () => {
+    // identitytoolkit's real referrer-block envelope is a numeric code plus a prose
+    // message, with the machine-readable code in `details[].reason`:
+    //   {error:{code:403, status:'PERMISSION_DENIED',
+    //           message:'Requests from referer <x> are blocked.',
+    //           details:[{reason:'API_KEY_HTTP_REFERRER_BLOCKED'}]}}
+    // Reading only message/code (the original version of this code) meant the mapping
+    // fired only for a shape Google never sends, and the operator got the prose string
+    // as their error "code". All three sources must be consulted, reason first.
+    //
+    // Asserted structurally rather than by grepping for a variable name: the previous
+    // version of this test pinned the literal `fbRes.data.error.message`, so a rename
+    // broke it while the behaviour was fine. Behaviour is pinned end-to-end by the
+    // transport-seam tests below; this one guards the extraction's THREE sources.
     const fbFn = LOGIN_SRC.match(/async function windsurfLoginViaFirebase\([^)]*\)\s*\{[\s\S]*?\n\}/);
     assert.ok(fbFn, 'windsurfLoginViaFirebase must exist');
     const body = fbFn[0];
-    assert.match(body, /fbRes\.data\.error\.message/,
-      'must still read the message first');
-    assert.match(body, /fbRes\.data\.error\.code/,
-      'must fall back to the error code when the message is absent');
+    assert.match(body, /details/,
+      'must read the structured details[] where Google puts the real reason');
+    assert.match(body, /\breason\b/,
+      'must read details[].reason — the machine-readable code');
+    assert.match(body, /\.message\b/,
+      'must still read the prose message');
+    assert.match(body, /\.code\b/,
+      'must fall back to the error code');
     assert.match(body, /createFriendlyAuthError\(/,
       'the error must flow through createFriendlyAuthError so the map applies');
   });
@@ -146,7 +164,11 @@ describe('Firebase referrer-block — end-to-end via transport seam', () => {
     assert.ok(jsonHops.length >= 2, `expected >=2 JSON hops, saw ${jsonHops.length}`);
     for (const { url, opts } of jsonHops) {
       assert.match(url, /windsurf\.com/);
-      assert.equal(opts.headers['x-client-version'], '2.0.67',
+      // Assert the header is PRESENT and matches the resolved client version, not a
+      // literal: WINDSURF_CLIENT_VERSION is a documented override (windsurf-login.js,
+      // and identically in windsurf.js), so hardcoding the current default made this
+      // test fail for any operator who set it — a false alarm about their config.
+      assert.equal(opts.headers['x-client-version'], EXPECTED_CLIENT_VERSION,
         `x-client-version must be sent on ${url}`);
       assert.equal(opts.headers['Origin'], 'https://windsurf.com',
         `Origin must be present on ${url}`);

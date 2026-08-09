@@ -53,13 +53,21 @@ describe('CompletionConfiguration tag map — #2 = max_tokens, #3 = max_newlines
       'max_newlines must not ride max_tokens (#2)');
   });
 
-  it('defaults keep 4096 on #2 and 128000 on #3 (not the reverse)', () => {
+  it('a defaulted call does NOT get capped below the repo output convention', () => {
+    // The regression this pins: once #2 became the ENFORCED cap, the old 4096 default
+    // would silently truncate every caller that names no max_tokens — and there are
+    // real ones (/v1/responses without max_output_tokens; chat callers passing only
+    // temperature). An earlier revision of this test asserted 4096 here, i.e. it
+    // defended the defect. 8192 is the repo-wide convention (config.js MAX_TOKENS,
+    // `|| 8192` in handlers/messages.js and handlers/gemini.js).
     const fields = parseFields(buildCompletionConfig({}));
-    assert.equal(getField(fields, 2, 0).value, 4096, 'DEFAULT_MAX_TOKENS on #2');
+    assert.equal(getField(fields, 2, 0).value, 8192, 'wire default cap on #2');
     assert.equal(getField(fields, 3, 0).value, 128000, 'DEFAULT_CONTEXT_WINDOW on #3');
+    assert.notEqual(getField(fields, 2, 0).value, 4096,
+      'a defaulted call must not ship the old dead-constant cap as a real limit');
   });
 
-  it('a caller cap of 256 is enforceable: 4096 no longer leaks into #2', () => {
+  it('a caller cap of 256 is enforceable and overrides the wire default', () => {
     // Pre-fix, #2 was always the context window, so the encoded max_tokens was
     // 128000 regardless of what the caller asked for.
     const fields = parseFields(buildCompletionConfig({ maxTokens: 256 }));

@@ -106,6 +106,15 @@ const SOURCE = Object.freeze({ USER: 1, ASSISTANT: 2, TOOL_RESULT: 4 });
 // #2 = max_tokens, #3 = max_newlines (schema-confirmed); see buildCompletionConfig.
 const DEFAULT_CONTEXT_WINDOW = 128000;
 const DEFAULT_MAX_TOKENS = 4096;
+// What goes on the wire at #2 when the caller named no cap. Deliberately NOT
+// DEFAULT_MAX_TOKENS: since the tag fix, #2 is an ENFORCED output cap, and a defaulted
+// call must not be quietly capped below the repo's own output convention (config.js
+// MAX_TOKENS=8192, and the `|| 8192` fallbacks in handlers/messages.js + gemini.js).
+// Overridable so an operator can raise or lower it without a code change.
+const WIRE_DEFAULT_MAX_TOKENS = (() => {
+  const n = Number(process.env.DEVIN_CONNECT_WIRE_MAX_TOKENS);
+  return Number.isInteger(n) && n > 0 ? n : 8192;
+})();
 const DEFAULT_TEMPERATURE = 1.0;
 // Smallest temperature the upstream accepts; exactly 0 → server "internal error"
 // (live-verified). Callers asking for 0 (greedy) get clamped to this instead.
@@ -765,7 +774,22 @@ function buildCompletionConfig({ maxTokens, temperature, topK, topP, contextWind
   return Buffer.concat([
     writeVarintField(1, 1),
     // Schema ground truth: #2 = max_tokens (caller's output cap), #3 = max_newlines.
-    writeVarintField(2, maxTokens ?? DEFAULT_MAX_TOKENS),
+    //
+    // The default here is load-bearing in a way it was NOT before the tag fix. While
+    // max_tokens sat on #3 (max_newlines) the value was a no-op, so DEFAULT_MAX_TOKENS
+    // could be anything. Now #2 is the real cap and this default lands on the wire for
+    // every caller that omits max_tokens — and two of them do: /v1/responses only sets
+    // it when max_output_tokens is present (handlers/responses.js), and chat callers
+    // that pass only temperature/top_p. Sending 4096 there would silently truncate
+    // answers that used to complete, and — because resolveFinishReason compares
+    // completion_tokens against the CALLER's cap, not the encoded one — the truncation
+    // would be invisible on a defaulted call and mis-reported as 'length' on a call
+    // that happened to ask for 4096.
+    //
+    // So the default is the repo-wide output convention (config.js MAX_TOKENS, and the
+    // `|| 8192` fallbacks in handlers/messages.js and handlers/gemini.js), not the old
+    // dead constant. DEFAULT_MAX_TOKENS stays 4096 for callers that read it directly.
+    writeVarintField(2, maxTokens ?? WIRE_DEFAULT_MAX_TOKENS),
     writeVarintField(3, contextWindow ?? DEFAULT_CONTEXT_WINDOW),
     writeFixed64Field(5, f64le(temp)),
     writeVarintField(7, topK ?? DEFAULT_TOP_K),
@@ -2244,9 +2268,15 @@ export async function* streamChat({
         const finishUsage = normalizeConnectUsage(lastUsage);
         yield {
           type: 'finish',
-          // Truncation is inferred from completion_tokens hitting the caller's cap,
-          // NOT from the un-calibrated enum — see resolveFinishReason.
-          reason: resolveFinishReason(lastFinish, finishUsage, completion?.maxTokens, env),
+          // Truncation is inferred from completion_tokens hitting the cap that was
+          // actually ENCODED, NOT from the un-calibrated enum — see resolveFinishReason.
+          //
+          // It must be the effective cap, not `completion?.maxTokens`: since the #2/#3
+          // tag fix the wire carries WIRE_DEFAULT_MAX_TOKENS whenever the caller named
+          // no cap, so reading the caller's (absent) value here would leave every
+          // defaulted call's truncation undetectable — the stream would stop at the
+          // wire cap and still report a clean 'stop'.
+          reason: resolveFinishReason(lastFinish, finishUsage, completion?.maxTokens ?? WIRE_DEFAULT_MAX_TOKENS, env),
           // Same normalization the Cascade path already applies (chat.js, #118):
           // prompt_tokens INCLUDES cache_read (cached_tokens is a SUBSET detail of
           // it, per OpenAI's shape), and total_tokens carries the full cost

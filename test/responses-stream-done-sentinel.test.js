@@ -104,12 +104,18 @@ describe('responses stream ends with the [DONE] sentinel', () => {
       `tail: ${JSON.stringify(body.slice(-160))}`);
   });
 
-  it('closes with the sentinel after response.failed too', async () => {
+  it('does NOT send the sentinel after response.failed — a relay must not read a failure as clean', async () => {
+    // Adversarial review (2026-08-09) caught the original version of this test: it
+    // asserted the sentinel WAS sent after response.failed, i.e. it enshrined the
+    // defect. `[DONE]` is what a relay scans for as "stream ended cleanly" — writing
+    // it on `response.failed`/`response.incomplete` makes the failure invisible on the
+    // wire, which is the exact hole the sentinel fix exists to plug, on the failure
+    // side. chat.js's post-error path writes an explicit error chunk before `[DONE]`;
+    // here the failure is already in the terminal event, so no sentinel.
     const body = await runResponses(ERROR);
     assert.equal(lastEvent(body), 'response.failed', 'the failure is still the last event');
-    assert.equal(body.trimEnd().endsWith('data: [DONE]'), true,
-      `a relay scanning for the sentinel must not hang on a failed stream. Tail: `
-      + JSON.stringify(body.slice(-160)));
+    assert.equal(body.trimEnd().endsWith('data: [DONE]'), false,
+      `a failed stream must not claim a clean ending. Tail: ` + JSON.stringify(body.slice(-160)));
   });
 
   it('does NOT send the sentinel when the client vanished mid-answer', async () => {

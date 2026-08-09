@@ -667,10 +667,21 @@ async function windsurfLoginViaFirebase(email, password, fingerprint, proxy) {
     // API-key restriction arrives as API_KEY_HTTP_REFERRER_BLOCKED, which the
     // friendly-error mapper (createFriendlyAuthError) resolves to a clear
     // ERR_HTTP_REFERRER_BLOCKED instead of the raw code.
-    const msg = fbRes.data.error.message
-      || fbRes.data.error.code
-      || 'Unknown Firebase error';
-    throw createFriendlyAuthError('Firebase', msg, msg);
+    // The referrer restriction does NOT arrive as `error.message`. Google's real
+    // envelope is `{error:{code:403, status:'PERMISSION_DENIED', message:'Requests
+    // from referer <x> are blocked.', details:[{reason:'API_KEY_HTTP_REFERRER_BLOCKED'}]}}`
+    // — a numeric code and a prose message, with the machine-readable reason buried in
+    // details[]. Reading only message/code (as this did) means the mapping fires only
+    // for a shape Google never sends, and the operator still gets the prose string as
+    // their error "code". So prefer the structured reason, then fall back.
+    const err = fbRes.data.error;
+    const reason = Array.isArray(err.details)
+      ? err.details.find((d) => d && typeof d.reason === 'string')?.reason
+      : null;
+    const msg = reason || err.message || err.code || 'Unknown Firebase error';
+    // Keep the prose as the human detail when the reason carried the code, so the log
+    // still says WHICH referer was rejected.
+    throw createFriendlyAuthError('Firebase', msg, err.message || msg);
   }
 
   const idToken = fbRes.data.idToken;
