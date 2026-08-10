@@ -147,7 +147,13 @@ describe('GetUserJwt short-lived credential path (auth)', () => {
     assert.equal(hasField21(without), false);
     assert.equal(hasField21(withJwt), true);
     assert.ok(withJwt.length > plain.length);
-    assert.ok(without.length === plain.length);
+    // NOT `without.length === plain.length`: that failed 3.3% of runs. The random field makes
+    // plain metadata 73, 74 or 75 bytes, so two calls differ in length on their own. What the
+    // test actually means is "an explicit null adds no field", which is a statement about the
+    // field set — compare that instead. (`withJwt.length > plain.length` above is safe: the
+    // JWT adds ~10 bytes, well clear of the 2-byte jitter.)
+    const fieldNums = (buf) => [...new Set(parseFields(buf).map((f) => f.field))].sort((a, b) => a - b);
+    assert.deepEqual(fieldNums(without), fieldNums(plain), 'explicit null must add no field');
   });
 
   it('buildRawGetChatMessageRequest threads userJwt into the embedded Metadata', async () => {
