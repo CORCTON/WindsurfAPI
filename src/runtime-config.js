@@ -148,7 +148,14 @@ const DEFAULTS = {
   // System-level prompt templates injected into Cascade proto fields.
   // Editable from Dashboard so users can tune without code changes.
   systemPrompts: {
-    toolReinforcement: 'The functions listed above are available and callable. Use them when they can help answer the request.',
+    // Keeps the explicit <tool_call> example. #252 replaced this with a generic sentence to
+    // stop it colliding with the Kimi preamble, but that same PR added
+    // conflictsWithKimiPreamble() in windsurf.js, which suppresses this string for exactly
+    // that case — and it detects the collision BY looking for `<tool_call>` here. Dropping
+    // the marker therefore made the guard a no-op (measured: never fires on the default) and
+    // took the format example away from every other dialect, which is not what #252 set out
+    // to fix. Restoring it is what makes the dialect-scoped suppression actually run.
+    toolReinforcement: 'The functions listed above are available and callable. When the user\'s request can be answered by calling a function, emit a <tool_call> block as described. Use this exact format: <tool_call>{"name":"...","arguments":{...}}</tool_call>',
     communicationWithTools: 'You are accessed via API. When asked about your identity, describe your actual underlying model name and provider accurately. STRICTLY respond in the exact same language the user used in their latest message (Chinese → Chinese, English → English, Japanese → Japanese; never switch mid-conversation). Use the functions above when relevant.',
     communicationNoTools: 'You are accessed via API. When asked about your identity, describe your actual underlying model name and provider accurately. Answer directly. STRICTLY respond in the exact same language the user used in their latest message (Chinese → Chinese, English → English, Japanese → Japanese; never switch mid-conversation).',
   },

@@ -30,7 +30,7 @@ import {
 import {
   parseFields, getField, getAllFields, writeMessageField, writeVarintField, writeStringField,
 } from '../src/proto.js';
-import { resetSystemPrompt, setSystemPrompts } from '../src/runtime-config.js';
+import { getSystemPrompts, resetSystemPrompt, setSystemPrompts } from '../src/runtime-config.js';
 
 const fnTool = (name) => ({ type: 'function', function: { name, parameters: { type: 'object' } } });
 
@@ -565,6 +565,45 @@ describe('buildSendCascadeMessageRequest — additional_steps on field 9', () =>
     } finally {
       resetSystemPrompt('toolReinforcement');
     }
+  });
+
+  // The test above INJECTS a reinforcement containing `<tool_call>`, so it proves the
+  // suppression works — but not that it ever runs. Detection keys off that marker being
+  // present, so if the shipped default stops carrying it the suppression silently becomes a
+  // no-op and the test above still passes. #252 did exactly that: it added the dialect-scoped
+  // suppression AND replaced the default with a generic sentence, and the two cancelled out.
+  // Measured after the merge: conflictsWithKimiPreamble never fired on the default config.
+  //
+  // Net effect was the opposite of the PR's intent — the collision went away because the
+  // marker was gone everywhere, which also stripped the format example from every non-Kimi
+  // dialect. Pin the precondition so the mechanism cannot be hollowed out again.
+  it('the shipped default carries the marker the Kimi suppression keys off', () => {
+    resetSystemPrompt('toolReinforcement');
+    const { toolReinforcement } = getSystemPrompts();
+    assert.match(
+      toolReinforcement,
+      /<\s*tool_call\s*>/i,
+      'default toolReinforcement must contain <tool_call>: it is both the format example for '
+        + 'non-Kimi dialects and the trigger conflictsWithKimiPreamble() detects',
+    );
+
+    // And end-to-end: with the DEFAULT (not an injected string), a Kimi preamble must still
+    // suppress it. This is the assertion #252 needed and did not have.
+    const proto = buildSendCascadeMessageRequest(
+      'k', 'cid', 'hi', 12345, 'MODEL_TEST', 'sess',
+      { toolPreamble: '<|tool_calls_section_begin|>\nAvailable tools:\n<|tool_calls_section_end|>' },
+    );
+    const top = parseFields(proto);
+    const cfg = parseFields(getField(top, 5, 2).value);
+    const planner = parseFields(getField(cfg, 1, 2).value);
+    const conversational = parseFields(getField(planner, 2, 2).value);
+    const text = getField(parseFields(getField(conversational, 12, 2).value), 2, 2).value.toString('utf8');
+    assert.match(text, /<\|tool_calls_section_begin\|>/, 'the Kimi preamble itself must survive');
+    assert.doesNotMatch(
+      text,
+      /<\s*tool_call\s*>/i,
+      'the XML reinforcement must be suppressed under a Kimi preamble, using the real default',
+    );
   });
 
   it('includes each step as repeated field 9', () => {
