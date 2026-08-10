@@ -132,15 +132,17 @@ describe('GetUserJwt short-lived credential path (auth)', () => {
 
   it('metadata builder attaches user_jwt on field 21 only when provided', async () => {
     const { buildMetadata } = await import('../src/windsurf.js');
+    const { parseFields, getAllFields } = await import('../src/proto.js');
     const plain = buildMetadata('key-1', undefined, 'sess');
     const withJwt = buildMetadata('key-1', undefined, 'sess', 'jwt.one');
     const without = buildMetadata('key-1', undefined, 'sess', null);
 
-    // Field 21 (wire tag = 21<<3|2 = 170 = 0xaa) must appear only with a JWT.
-    const hasField21 = (buf) => {
-      for (let i = 0; i < buf.length; i++) if (buf[i] === 0xaa && buf[i + 1] !== undefined) return true;
-      return false;
-    };
+    // Field 21 must appear only with a JWT. This used to scan for a raw 0xaa byte (the wire
+    // tag 21<<3|2 = 170), which failed ~4.3% of runs: Metadata carries a random field, and
+    // any byte of any field's VALUE can be 0xaa. A tag byte is only a tag at a field
+    // boundary, so presence has to come from parsing — the same "assert the field is absent,
+    // never compare bytes" rule this repo already learned about wire-stability assertions.
+    const hasField21 = (buf) => getAllFields(parseFields(buf), 21).length > 0;
     assert.equal(hasField21(plain), false);
     assert.equal(hasField21(without), false);
     assert.equal(hasField21(withJwt), true);
