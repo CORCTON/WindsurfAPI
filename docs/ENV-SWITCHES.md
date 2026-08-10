@@ -64,6 +64,7 @@ README 的表格列常用变量，[.env.example](../.env.example) 是完整清�
 |---|---|---|
 | `WINDSURFAPI_TRACE` | 关 | 是否写 trace（`trace.js`，`\|\| ''` 后 `=== '1'`）。注意它**不门控** `WINDSURFAPI_TRACE_DIR` —— `traceRoot()` 无条件读目录变量，只是没开 trace 时不往里写。 |
 | `WINDSURFAPI_PROTO_TRACE_DIR` | `/data/proto-trace` | proto trace 落盘目录（`\|\| '/data/proto-trace'`）。注意这是**绝对路径**默认值，和 `WINDSURFAPI_TRACE_DIR`（默认 `<cwd>/.trace`）不是一套。 |
+| `WINDSURFAPI_PROTO_TRACE_STRINGS` | 关 | 把 proto 字段的**字符串内容**写进 trace（`proto-trace.js:814`，`=== '1'`）。关闭时只落 sha256，不落原文。开启后走 `redactPreview()` 脱敏：命名密钥（`devin-session-token`/`api_key`/`idToken`/`refreshToken` 等）、邮箱、任何 32+ 字符的高熵串都替换成 `<redacted>`，再截断到 240 字符。**即便如此，开启后 trace 里会有真实 prompt 片段**，排查完就关。 |
 | `WINDSURFAPI_PROTO_TRACE_ERROR_STRINGS` | 关 | 出错时额外输出字符串内容（`=== '1'`）。和 `PROTO_TRACE_STRINGS` 一样走脱敏。 |
 | `WINDSURFAPI_DUMP_SYSTEM_PROMPT` | 关 | 把最终发给上游的 system prompt 打出来（`windsurf.js`，`=== '1'`）。**会输出完整 prompt 内容**，排查完记得关。 |
 | `WINDSURFAPI_PROBE_CANARY` | 关 | 发探针金丝雀请求（`=== '1'`）。校准脚本用。 |
