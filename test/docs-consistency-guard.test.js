@@ -348,10 +348,43 @@ describe('docs: version claims match the repository', () => {
       'g',
     );
     const PREFIXES = ['DEVIN_CONNECT_', 'WINDSURFAPI_', 'CASCADE_'];
-    const stripComments = (s) =>
-      s
-        .replace(/\/\*[\s\S]*?\*\//g, '')
-        .replace(/^(.*)$/gm, (line) => line.replace(/\/\/.*$/, ''));
+    // Comments must go before the sweep, but a naive /\/\*[\s\S]*?\*\//g DOES NOT WORK here
+    // and shipped broken once. Two files in src/ contain a REGEX LITERAL that holds `*/`
+    // (e.g. /\*\//), so `*/` occurrences outnumber `/*` — 9 vs 7 in identity-neutralize.js.
+    // The lazy match then closes on a `*/` that lives inside a regex, mispairs from there on,
+    // and deletes real code. Measured cost: WINDSURFAPI_NEUTRALIZE_CC_AGGRESSIVE and
+    // DEVIN_CONNECT_CRED_KEY (a CREDENTIAL switch) were invisible to this guard while it
+    // reported green, and the same bug in the census script is why ENV-SWITCHES.md claimed to
+    // cover 83 switches while its table listed 81.
+    //
+    // Line-oriented stripping avoids the problem: a `/* … */` block that opens and closes on
+    // one line is removed, a block-comment body is dropped by tracking depth line by line,
+    // and a line that merely CONTAINS `*/` inside a string or regex cannot swallow the file
+    // because state only ever advances one line at a time.
+    const stripComments = (s) => {
+      const out = [];
+      let inBlock = false;
+      for (const raw of s.split('\n')) {
+        let line = raw;
+        if (inBlock) {
+          const close = line.indexOf('*/');
+          if (close === -1) { out.push(''); continue; }
+          line = line.slice(close + 2);
+          inBlock = false;
+        }
+        // Remove self-contained /* … */ spans on this line.
+        line = line.replace(/\/\*.*?\*\//g, '');
+        // An unterminated /* opens a block — but only when it is not inside a // comment.
+        const open = line.indexOf('/*');
+        const lineComment = line.indexOf('//');
+        if (open !== -1 && (lineComment === -1 || open < lineComment)) {
+          inBlock = true;
+          line = line.slice(0, open);
+        }
+        out.push(line.replace(/\/\/.*$/, ''));
+      }
+      return out.join('\n');
+    };
 
     const srcDir = join(ROOT, 'src');
     const jsFiles = [];
@@ -477,5 +510,89 @@ describe('docs: version claims match the repository', () => {
       }
     }
     assert.deepEqual(problems, [], `stale version claims in live docs:\n  ${problems.join('\n  ')}`);
+  });
+});
+
+describe('docs: in-repo anchor links resolve to a real heading', () => {
+  // A `#anchor` that does not match any heading is silently inert on GitHub — the page loads
+  // and simply does not scroll, so a wrong anchor reads as a working link. Every nav bar added
+  // to a README is a cluster of these, and the first version of the one at the top of
+  // README.md was wrong: GitHub folds ` / ` in "Claude Code / Cline / Cursor 怎么用" into a
+  // SINGLE hyphen, and the hand-written link had two. Nothing caught it because a broken
+  // anchor is not a broken link.
+  //
+  // Scope is deliberately narrow: only same-file (`#x`) and in-repo (`path.md#x`) targets.
+  // External URLs are someone else's document, and HTML `id=` attributes are matched too
+  // because index.html-style docs anchor that way.
+  // Mirrors github-slugger, which is the algorithm GitHub actually uses. Verified against it
+  // directly: `## 🚀 Just want to run it` becomes `-just-want-to-run-it` — WITH a leading
+  // hyphen, because the emoji is removed and the space it left behind still becomes one. An
+  // earlier version of this helper trimmed first and produced `just-want-to-run-it`, which
+  // made the guard report four dead anchors that were in fact correct. Do not "simplify" the
+  // trim order back.
+  // Checked case-by-case against github-slugger (the package GitHub's own pipeline uses):
+  // 17/17 agreement including emoji headings, CJK, `A  double  space`, and trailing spaces.
+  // No trim() and no `\s+` collapsing — both are the tempting "cleanups" that break it:
+  // `## 🚀 Just want to run it` must slug to `-just-want-to-run-it`, WITH the leading hyphen,
+  // because the emoji is dropped and the space it left still becomes one. An earlier version
+  // trimmed first and reported four correct anchors as dead.
+  const slug = (heading) =>
+    heading
+      .toLowerCase()
+      // Strip markdown emphasis/code marks that do not survive into the anchor.
+      .replace(/[`*_~]/g, '')
+      // GitHub drops punctuation and emoji but keeps letters, digits, spaces, hyphens, CJK.
+      .replace(/[^\p{L}\p{N}\s-]/gu, '')
+      .replace(/\s/g, '-');
+
+  const headingsOf = (text) => {
+    const out = new Set();
+    let inFence = false;
+    for (const line of text.split('\n')) {
+      if (/^\s*```/.test(line)) { inFence = !inFence; continue; }
+      if (inFence) continue;
+      const h = line.match(/^#{1,6}\s+(.*)$/);
+      if (h) out.add(slug(h[1]));
+      for (const m of line.matchAll(/\sid=["']([^"']+)["']/g)) out.add(m[1].toLowerCase());
+      for (const m of line.matchAll(/<a\s+name=["']([^"']+)["']/g)) out.add(m[1].toLowerCase());
+    }
+    return out;
+  };
+
+  it('every #anchor in a tracked markdown file points at a heading that exists', () => {
+    const headingCache = new Map();
+    const headingsFor = (abs) => {
+      if (!headingCache.has(abs)) {
+        headingCache.set(abs, existsSync(abs) ? headingsOf(read(abs)) : null);
+      }
+      return headingCache.get(abs);
+    };
+
+    const problems = [];
+    for (const abs of mdFiles()) {
+      let body = read(abs);
+      body = body.replace(/^```[\s\S]*?^```/gm, '').replace(/`[^`\n]*`/g, '');
+      // BOTH link syntaxes. Nav bars are centred with <p align>, so their links are raw HTML
+      // `<a href="#x">`, not markdown — and the first version of this guard matched only
+      // markdown, which made it blind to the exact bug that motivated it (it reported green
+      // on a re-introduced double-hyphen anchor). A guard that cannot see the failure it was
+      // written for is indistinguishable from one that passes.
+      const targets = [
+        ...[...body.matchAll(/\[[^\]]*\]\(([^)\s]*)#([^)\s]+)\)/g)].map((m) => [m[1], m[2]]),
+        ...[...body.matchAll(/<a\s[^>]*href=["']([^"'#]*)#([^"']+)["']/gi)].map((m) => [m[1], m[2]]),
+      ];
+      for (const [path, rawAnchor] of targets) {
+        if (/^https?:/i.test(path)) continue;
+        const anchor = decodeURIComponent(rawAnchor).toLowerCase();
+        const targetAbs = path ? join(dirname(abs), path) : abs;
+        if (!/\.(md|html)$/i.test(targetAbs)) continue;
+        const heads = headingsFor(targetAbs);
+        if (heads === null) continue; // a missing FILE is the other guard's job
+        if (!heads.has(anchor)) {
+          problems.push(`${rel(abs)}: #${anchor} → ${path || '(same file)'} has no such heading`);
+        }
+      }
+    }
+    assert.deepEqual(problems, [], `dead in-repo anchors:\n  ${problems.join('\n  ')}`);
   });
 });
