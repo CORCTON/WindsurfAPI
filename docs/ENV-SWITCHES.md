@@ -71,6 +71,19 @@ README 的表格列常用变量，[.env.example](../.env.example) 是完整清�
 | `WINDSURFAPI_SKIP_LS_CLEANUP` | 关（= 会清理） | **名字是反的**：`!== '1'` 时执行清理，所以设 `1` 才是「跳过」（`index.js`）。自更新后残留的 LS 会占着池端口累积，默认清理。同一台机器跑多个 WindsurfAPI 时才需要设 `1`。 |
 | `WINDSURFAPI_RESTART_SUPERVISED` | 关（= 自动探测） | **强制**声明自己跑在守护进程下（`restart.js`，命中时返回 `kind: 'override'`）。平时不需要设 —— systemd 自己会导出 `INVOCATION_ID`，代码据此自动识别。只在自动探测判错时用它兜底。 |
 
-## 待补
+## 模型与工具行为微调
 
-余下 8 个（单模型行为微调）下一批。
+针对具体模型或具体客户端的窄开关。除末两个有数值默认外，其余默认关。
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `WINDSURFAPI_FORCE_TOOL_DIALECT` | 空（= 按模型族判断） | 强制指定工具方言。**只接受这四个值**：`glm47` / `openai_json_xml` / `kimi_k2` / `gpt_native`（`handlers/tool-emulation.js` 的白名单正则），写别的会被忽略而不是报错。比 `FORCE_GPT_NATIVE_DIALECT` 精确。 |
+| `WINDSURFAPI_DISABLE_SONNET_TOOL_REUSE` | 关 | 关掉 Sonnet 的工具复用（`=== '1'`）。怀疑复用导致串工具时用。 |
+| `WINDSURFAPI_OPUS47_THINKING_UIDS` | 关 | Opus 4.7 用 thinking 专用的模型 uid（`=== '1'`）。 |
+| `WINDSURFAPI_FABRICATE_REJECT` | 关 | 让上游拒绝时构造一个可读的拒绝响应而不是原样透传（`handlers/chat.js`，`=== '1'`）。 |
+| `WINDSURFAPI_NEUTRALIZE_CLINE_OBJECTIVE` | 空（= 关） | 中和 Cline 客户端的 objective 段（`\|\| ''`）。 |
+| `WINDSURFAPI_SHOW_DISABLED_SPECIAL_AGENT_MODELS` | 关 | 在模型列表里也显示上游标记为 disabled 的 special agent 模型（`models.js`，`=== '1'`）。默认隐藏 —— 列出来客户端也调不通。 |
+| `WINDSURFAPI_WEAK_MODEL_TOOL_LIMIT` | `8` | 弱模型最多带几个工具定义（`handlers/tool-emulation.js`，非有限值或 ≤0 回落 8）。工具多了弱模型会选错。 |
+| `DEVIN_CONNECT_RELOGIN_MAX_CONCURRENT` | `2` | 同时最多几个账号并发重登（`auth.js`，`>= 1` 才生效否则回落 2，且会 `Math.floor`）。调大会更快恢复但更容易撞上游限流。 |
+
+至此 35 个全部收录。
