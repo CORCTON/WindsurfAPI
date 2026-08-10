@@ -322,16 +322,26 @@ describe('docs: version claims match the repository', () => {
     //
     // The previous rationale for skipping this direction was that a sweep returns hundreds of
     // false positives. That is true of an unanchored scan for string literals, but not of this
-    // one: restricted to the three real prefixes, matching only the four access forms this
-    // codebase actually uses, and with comments stripped, the sweep is exact. Comments must go
-    // first — a switch discussed in a `//` note next to its own read site would otherwise count
-    // itself as documented.
+    // one: restricted to the three real prefixes, matching only the access forms this codebase
+    // actually uses, and with comments stripped, the sweep is exact. Comments must go first —
+    // a switch discussed in a `//` note next to its own read site would otherwise count itself
+    // as documented.
+    //
+    // The fifth form was added when PR #249 landed and immediately slipped past the first four:
+    //   export const LEAK_TRACE_ENV = 'WINDSURFAPI_LEAK_TRACE';
+    //   return String(env[LEAK_TRACE_ENV] ?? '').trim() === '1';
+    // The read site names a CONSTANT, so no pattern anchored to `env[...]` with a literal can
+    // see the switch. This one was documented anyway, so the guard stayed green while its
+    // census silently under-counted — the exact failure the guard exists to prevent, arriving
+    // through the door it does not watch. Matching the DECLARATION keeps the sweep static: the
+    // name is still a literal in src/, just one hop from the read.
     const ACCESS = new RegExp(
       [
         /(?:process\.)?env\.([A-Z][A-Z0-9_]{2,})/, //            env.FOO
         /(?:process\.)?env\[\s*['"]([A-Z][A-Z0-9_]{2,})['"]/, // env['FOO']
         /positiveIntEnv\(\s*['"]([A-Z][A-Z0-9_]{2,})['"]/, //    positiveIntEnv('FOO', 30_000)
         /\benv:\s*['"]([A-Z][A-Z0-9_]{2,})['"]/, //              { env: 'FOO', def: … } registry
+        /\bconst\s+[A-Za-z_$][\w$]*\s*=\s*['"]([A-Z][A-Z0-9_]{2,})['"]/, // const X = 'FOO'
       ]
         .map((r) => r.source)
         .join('|'),
