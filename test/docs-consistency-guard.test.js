@@ -313,6 +313,78 @@ describe('docs: version claims match the repository', () => {
     assert.deepEqual(problems, [], `env vars written about in prose but absent from .env.example:\n  ${problems.join('\n  ')}`);
   });
 
+  it('every switch read in src/ is findable in some reader-facing doc', () => {
+    // The OTHER direction from the assertion above, and the one that actually broke. The
+    // handoff recorded "86 switches, all 86 documented". Both halves were wrong: 156 exist and
+    // 47 had no mention in any reader-facing doc — including all five wire coordinates added
+    // that same round. The claim was self-confirming because the count came from a bare
+    // `grep 'env\.'`, which misses the very reads that were undocumented.
+    //
+    // The previous rationale for skipping this direction was that a sweep returns hundreds of
+    // false positives. That is true of an unanchored scan for string literals, but not of this
+    // one: restricted to the three real prefixes, matching only the four access forms this
+    // codebase actually uses, and with comments stripped, the sweep is exact. Comments must go
+    // first — a switch discussed in a `//` note next to its own read site would otherwise count
+    // itself as documented.
+    const ACCESS = new RegExp(
+      [
+        /(?:process\.)?env\.([A-Z][A-Z0-9_]{2,})/, //            env.FOO
+        /(?:process\.)?env\[\s*['"]([A-Z][A-Z0-9_]{2,})['"]/, // env['FOO']
+        /positiveIntEnv\(\s*['"]([A-Z][A-Z0-9_]{2,})['"]/, //    positiveIntEnv('FOO', 30_000)
+        /\benv:\s*['"]([A-Z][A-Z0-9_]{2,})['"]/, //              { env: 'FOO', def: … } registry
+      ]
+        .map((r) => r.source)
+        .join('|'),
+      'g',
+    );
+    const PREFIXES = ['DEVIN_CONNECT_', 'WINDSURFAPI_', 'CASCADE_'];
+    const stripComments = (s) =>
+      s
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/^(.*)$/gm, (line) => line.replace(/\/\/.*$/, ''));
+
+    const srcDir = join(ROOT, 'src');
+    const jsFiles = [];
+    const walkJs = (dir) => {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        const p = join(dir, e.name);
+        if (e.isDirectory()) walkJs(p);
+        else if (e.name.endsWith('.js')) jsFiles.push(p);
+      }
+    };
+    walkJs(srcDir);
+
+    const read_ = new Map();
+    for (const f of jsFiles) {
+      for (const m of stripComments(readFileSync(f, 'utf8')).matchAll(ACCESS)) {
+        const name = m.slice(1).find(Boolean);
+        if (PREFIXES.some((p) => name.startsWith(p)) && !read_.has(name)) {
+          read_.set(name, relative(ROOT, f));
+        }
+      }
+    }
+    assert.ok(
+      read_.size > 100,
+      `probe check: only ${read_.size} switches extracted from src/ — the sweep is broken, not the docs`,
+    );
+
+    const docs = ['.env.example', 'README.md', 'README.en.md', join('docs', 'ENV-SWITCHES.md')]
+      .map((rel_) => read(join(ROOT, rel_)))
+      .join('\n');
+    // Word-boundary match in both directions, so WINDSURFAPI_TRACE is not "documented" by a
+    // line that only mentions WINDSURFAPI_TRACE_DIR. Prefix collisions are why the historical
+    // counts inflated; the same trap applies to coverage.
+    const undocumented = [...read_]
+      .filter(([name]) => !new RegExp(`(?<![A-Z0-9_])${name}(?![A-Z0-9_])`).test(docs))
+      .map(([name, where]) => `${name} (read in ${where})`)
+      .sort();
+    assert.deepEqual(
+      undocumented,
+      [],
+      `switches read in src/ but absent from every reader-facing doc:\n  ${undocumented.join('\n  ')}`,
+    );
+  });
+
   // SELF-TEST. The two assertions above scan real files, so when the corpus is clean they pass
   // whether the detection works or not — the exact shape of a test that cannot fail. And a
   // guard cannot be mutation-verified against itself: weakening it makes no other test go red,
