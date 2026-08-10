@@ -1,5 +1,31 @@
 # 贡献指南 / Contributing
 
+<p align="center">
+  <a href="#简体中文">简体中文</a> ·
+  <a href="#english">English</a> ·
+  <a href="docs/AUDIT-LEDGER.md">审计台账</a> ·
+  <a href="SECURITY.md">安全问题走这里</a>
+</p>
+
+```mermaid
+flowchart TD
+    S{"你想做什么?<br/>what are you doing?"}
+    S -->|"修 bug / fix a bug"| PR["直接提 PR<br/>小改不用先开 issue"]
+    S -->|"加功能 / new feature"| ISS["先开 issue 讨论<br/>免得方向不对被打回"]
+    S -->|"改 README / docs"| PR
+    S -->|"安全漏洞 / vulnerability"| SEC["别开 public issue<br/>见 SECURITY.md"]
+
+    PR --> G1["零 npm 依赖 —— 不要 npm install 新包"]
+    G1 --> G2["commit: type(scope): 小写祈使句<br/>绝不加任何 AI 署名尾注"]
+    G2 --> G3["改协议/鉴权/解码器前<br/>先读 AUDIT-LEDGER 的 🛡 标记"]
+    G3 --> G4["CI 会跑全量;权威口径是<br/>npm run test:release"]
+
+    classDef warn fill:#d1242f22,stroke:#d1242f
+    classDef act fill:#1f6feb22,stroke:#1f6feb
+    class SEC warn
+    class PR,ISS,G1,G2,G3,G4 act
+```
+
 感谢想贡献代码 / Thanks for wanting to contribute.
 
 ## 简体中文

@@ -12,6 +12,25 @@
 > records aimed at whoever maintains the project next. The three tables below are the short
 > paths in. If you only want the gateway running, you need nothing under "Take it over".
 
+```mermaid
+flowchart TD
+    Q{"What do you need?"}
+    Q -->|"run it"| RUN["Main README<br/>快速开始 / Quick start"]
+    Q -->|"tune it"| OPS["ENV-SWITCHES.md<br/>84 source-only switches"]
+    Q -->|"ship DEVIN_CONNECT"| CUT["DEVIN-CONNECT-CUTOVER.md<br/>prod is ON, code default is OFF"]
+    Q -->|"understand it"| ARCH["review.html<br/>whole-system map"]
+    Q -->|"know what was probed"| LED["AUDIT-LEDGER.md<br/>16 rounds, append-only"]
+    Q -->|"maintain it"| HO["HANDOFF-*.md<br/>1 live head + 9 archived"]
+    Q -->|"what changed"| REL["releases/<br/>172 notes, v2.0.6 → v3.9.21"]
+
+    classDef user fill:#1f6feb22,stroke:#1f6feb
+    classDef maint fill:#8957e522,stroke:#8957e5
+    class RUN,OPS,CUT,REL user
+    class ARCH,LED,HO maint
+```
+
+<sub>蓝 = 用户向 · 紫 = 维护者向 / blue = for users, purple = for maintainers</sub>
+
 ## 🚀 Just want to run it
 
 | Goal | Go here |
@@ -24,7 +43,7 @@
 
 | Goal | Go here |
 |---|---|
-| Tune behaviour without touching code | **[ENV-SWITCHES.md](ENV-SWITCHES.md)** — the 83 switches that exist only in source. Read its header first: it explains how to count them correctly, because the obvious `grep` undercounts by 70 |
+| Tune behaviour without touching code | **[ENV-SWITCHES.md](ENV-SWITCHES.md)** — the 84 switches that exist only in source. Read its header first: it explains how to count them correctly, because the obvious `grep` undercounts by 70 |
 | Take `DEVIN_CONNECT` to production | **[DEVIN-CONNECT-CUTOVER.md](DEVIN-CONNECT-CUTOVER.md)** — production runs with this ON while the code default is OFF, so this is not optional reading |
 | Localise the dashboard | [dashboard-i18n.md](dashboard-i18n.md) |
 | See what changed in a version | [releases/](releases/) — one file per version, v2.0.6 → present |

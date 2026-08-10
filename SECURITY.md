@@ -1,5 +1,32 @@
 # Security Policy / 安全漏洞披露
 
+<p align="center">
+  <a href="https://github.com/dwgx/WindsurfAPI/security/advisories/new"><img src="https://img.shields.io/badge/report-Security%20Advisory-d1242f?style=flat-square&logo=github" alt="Report via Security Advisory"></a>
+  <img src="https://img.shields.io/badge/first%20response-72h-1f6feb?style=flat-square" alt="First response within 72 hours">
+</p>
+
+> **TL;DR** — 别开 public issue。用
+> [Security Advisory](https://github.com/dwgx/WindsurfAPI/security/advisories/new)（推荐）
+> 或邮件 `dwgx1337@gmail.com`，标题前缀 `[WindsurfAPI Security]`。72 小时内回复。
+>
+> **Do not open a public issue.** Use a Security Advisory (preferred) or the email above.
+
+```mermaid
+flowchart TD
+    F["发现问题 / Found something"] --> Q{"能否被外部触发?<br/>externally triggerable?"}
+    Q -->|"否 / no"| SCAN["扫描器报告但无实证影响<br/>→ 普通 issue<br/>scanner output, no demonstrated impact"]
+    Q -->|"是 / yes"| W{"影响什么?<br/>what does it reach?"}
+    W -->|"认证 / 凭证 / RCE / SSRF"| ADV["Security Advisory<br/>私下上报 · private"]
+    W -->|"注入 XSS / command / prompt"| ADV
+    W -->|"Dashboard API"| ADV
+    W -->|"上游限流绕过<br/>upstream rate limit"| OUT["范围外 —— 属账号管理<br/>out of scope"]
+
+    classDef danger fill:#d1242f22,stroke:#d1242f,stroke-width:2px
+    classDef ok fill:#1a7f3722,stroke:#1a7f37
+    class ADV danger
+    class SCAN,OUT ok
+```
+
 ## English
 
 If you discover a security vulnerability in WindsurfAPI, **please do not open a public GitHub issue**.

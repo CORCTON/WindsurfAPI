@@ -24,6 +24,20 @@
 | 当前 | **v3.9.21**(2026-08-08) |
 | 运行时依赖 | **0** —— 从第一个版本保持到现在 |
 
+```mermaid
+flowchart LR
+    A["v2.0.x<br/>118 个 tag<br/><br/>OpenAI 兼容层成型"]
+    B["v3.0 – v3.8<br/><br/>Anthropic / Gemini 前端<br/>Dashboard 与账号池"]
+    C["v3.9.0 – v3.9.16<br/><br/>DEVIN_CONNECT 直连<br/>native tool bridge"]
+    D["v3.9.17 – v3.9.21<br/><br/>工具方言 · reasoning 边界<br/>四条出口路径逐条对齐"]
+    A --> B --> C --> D
+
+    classDef past fill:#8957e522,stroke:#8957e5
+    classDef now fill:#1f6feb22,stroke:#1f6feb,stroke-width:2px
+    class A,B,C past
+    class D now
+```
+
 ## 最近的版本
 
 下面是 3.9.x 全系。更早的版本请直接翻 [`docs/releases/`](docs/releases/)。
