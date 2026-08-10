@@ -1,6 +1,45 @@
 # WindsurfAPI Docs
 
-## Taking this project over? Read these three, in this order
+<p align="center">
+  <a href="#-just-want-to-run-it">Run it</a> ·
+  <a href="#-operating-it">Operate it</a> ·
+  <a href="#-understand-the-internals">Internals</a> ·
+  <a href="#-taking-this-project-over-read-these-three-in-this-order">Take it over</a> ·
+  <a href="../README.md">← Main README</a>
+</p>
+
+> **Which door is yours?** This directory holds 192 tracked files, most of them append-only
+> records aimed at whoever maintains the project next. The three tables below are the short
+> paths in. If you only want the gateway running, you need nothing under "Take it over".
+
+## 🚀 Just want to run it
+
+| Goal | Go here |
+|---|---|
+| Install and send a first request | **[Main README → 快速开始](../README.md#快速开始)** |
+| Point Claude Code / Cline / Cursor at it | [Main README → 客户端接入](../README.md#claude-code--cline--cursor-怎么用) |
+| See which models are available | [Main README → 模型清单](../README.md) — the `/v1/models` endpoint is authoritative |
+
+## 🔧 Operating it
+
+| Goal | Go here |
+|---|---|
+| Tune behaviour without touching code | **[ENV-SWITCHES.md](ENV-SWITCHES.md)** — the 83 switches that exist only in source. Read its header first: it explains how to count them correctly, because the obvious `grep` undercounts by 70 |
+| Take `DEVIN_CONNECT` to production | **[DEVIN-CONNECT-CUTOVER.md](DEVIN-CONNECT-CUTOVER.md)** — production runs with this ON while the code default is OFF, so this is not optional reading |
+| Localise the dashboard | [dashboard-i18n.md](dashboard-i18n.md) |
+| See what changed in a version | [releases/](releases/) — one file per version, v2.0.6 → present |
+
+## 🔬 Understand the internals
+
+| Goal | Go here |
+|---|---|
+| Get the whole map in one page | **[Architecture Review](review.html)** — startup → routes → protocol bridge → account/LS pools → dashboard → security boundaries |
+| Know which subsystems were actually probed, and what the conclusion was | **[AUDIT-LEDGER.md](AUDIT-LEDGER.md)** — start with its `怎么读这份文件` section; the file is appended per round and is not organised by topic |
+| Understand reasoning/content dedup | [reasoning-dedup.md](reasoning-dedup.md) |
+
+---
+
+## 🛠 Taking this project over? Read these three, in this order
 
 | # | File | Why |
 |---|---|---|
