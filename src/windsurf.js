@@ -395,6 +395,12 @@ export function buildSendCascadeMessageRequest(apiKey, cascadeId, text, modelEnu
   return Buffer.concat(parts);
 }
 
+function conflictsWithKimiPreamble(toolPreamble, reinforcement) {
+  return typeof toolPreamble === 'string'
+    && toolPreamble.includes('<|tool_calls_section_begin|>')
+    && /<\s*tool_call\s*>/i.test(reinforcement || '');
+}
+
 function buildCascadeConfig(modelEnum, modelUid, { toolPreamble, forceDefault, nativeMode, nativeAllowlist, nativeEnvironment } = {}) {
   // CascadeConversationalPlannerConfig.planner_mode (field 4) uses
   // codeium_common.ConversationalPlannerMode:
@@ -455,7 +461,9 @@ function buildCascadeConfig(modelEnum, modelUid, { toolPreamble, forceDefault, n
     // Primary (and only) delivery: additional_instructions_section
     // (field 12, OVERRIDE). Always rendered, even in NO_TOOL planner mode.
     const sp = getSystemPrompts();
-    const reinforcement = '\n\n' + sp.toolReinforcement;
+    const reinforcement = conflictsWithKimiPreamble(toolPreamble, sp.toolReinforcement)
+      ? ''
+      : '\n\n' + sp.toolReinforcement;
     const fullSection = toolPreamble + reinforcement;
     const additionalSection = Buffer.concat([
       writeVarintField(1, 1),             // SECTION_OVERRIDE_MODE_OVERRIDE

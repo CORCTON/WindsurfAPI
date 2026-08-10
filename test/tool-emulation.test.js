@@ -221,6 +221,24 @@ describe('ToolCallStreamParser', () => {
     }
   });
 
+  it('routes observed SWE SKUs to Kimi K2 without claiming future variants', () => {
+    // SWE-1.5 / SWE-1.6 / SWE-1.7 observed variants share the section-token
+    // tool-call format as Kimi K2. The slow deployment and unknown future
+    // variants must retain the safe default dialect.
+    assert.equal(pickToolDialect('swe-1.5'), 'kimi_k2');
+    assert.equal(pickToolDialect('swe-1.5-fast'), 'kimi_k2');
+    assert.equal(pickToolDialect('swe-1.5-thinking'), 'kimi_k2');
+    assert.equal(pickToolDialect('swe-1.6'), 'kimi_k2');
+    assert.equal(pickToolDialect('swe-1.6-fast'), 'kimi_k2');
+    assert.equal(pickToolDialect('swe-1-7'), 'kimi_k2');
+    assert.equal(pickToolDialect('swe-1-7-lightning'), 'openai_json_xml');
+    assert.equal(pickToolDialect('swe-1-7-medium'), 'kimi_k2');
+    assert.equal(pickToolDialect('swe-1-6-slow'), 'openai_json_xml');
+    assert.equal(pickToolDialect('swe-1-8'), 'openai_json_xml');
+    assert.equal(pickToolDialect('swe-2-0'), 'openai_json_xml');
+    assert.equal(pickToolDialect('swe-1-7-future-slow'), 'openai_json_xml');
+  });
+
   it('emits text before and after tool calls', () => {
     const parser = new ToolCallStreamParser();
     const r = parser.feed(
@@ -387,8 +405,9 @@ describe('buildToolPreamble (injection-guard safety)', () => {
   it('uses Kimi section-token protocol in proto preamble', () => {
     const kimi = buildToolPreambleForProto(manyTools, 'auto', '', 'kimi-k2-thinking');
     assert.ok(kimi.includes('<|tool_calls_section_begin|>'));
-    assert.ok(kimi.includes('<|tool_call_begin|>'));
+    assert.ok(kimi.includes('<|tool_call_begin|>functions.FUNCTION_NAME:INDEX'));
     assert.ok(kimi.includes('<|tool_call_end|>'));
+    assert.ok(kimi.includes('## Return of functions.FUNCTION_NAME:INDEX'));
   });
 
   it('adds Bash and Read argument fidelity rules only to the proto preamble', () => {
@@ -830,9 +849,43 @@ describe('normalizeMessagesForCascade (preamble placement regression)', () => {
       { modelKey: 'kimi-k2-thinking', provider: 'moonshot' },
     );
     const asst = out.find(m => m.role === 'assistant');
-    assert.ok(asst.content.includes('<|tool_call_begin|>Read:'));
+    assert.ok(asst.content.includes('<|tool_call_begin|>functions.Read:0'));
     assert.ok(asst.content.includes('<|tool_call_argument_begin|>'));
     assert.ok(asst.content.includes('<|tool_calls_section_end|>'));
+  });
+
+  it('pairs Kimi/SWE history calls and results with canonical function IDs', () => {
+    // Production regression: Hermes stores opaque OpenAI IDs (call_…), but
+    // Kimi's history template pairs each result with functions.<name>:<index>.
+    // Serializing the call as `todo:0` and the result as `call_…` made SWE
+    // repeatedly recreate the same plan because it could not see completion.
+    const out = normalizeMessagesForCascade(
+      [
+        { role: 'user', content: 'inspect the project' },
+        { role: 'assistant', content: '', tool_calls: [
+          { id: 'call_todo', type: 'function', function: { name: 'todo', arguments: '{"todos":[]}' } },
+          { id: 'call_terminal', type: 'function', function: { name: 'terminal', arguments: '{"command":"pwd"}' } },
+        ] },
+        { role: 'tool', tool_call_id: 'call_todo', content: 'todo updated' },
+        { role: 'tool', tool_call_id: 'call_terminal', content: '/workspace' },
+      ],
+      tools,
+      { modelKey: 'swe-1-7-medium' },
+    );
+    const assistant = out.find(m => m.role === 'assistant');
+    assert.equal(
+      (assistant.content.match(/<\|tool_calls_section_begin\|>/g) || []).length,
+      1,
+      'one assistant tool-call turn must remain one native Kimi section',
+    );
+    assert.match(assistant.content, /<\|tool_call_begin\|>functions\.todo:0<\|tool_call_argument_begin\|>/);
+    assert.match(assistant.content, /<\|tool_call_begin\|>functions\.terminal:1<\|tool_call_argument_begin\|>/);
+    const results = out.filter(m => m.role === 'user' && String(m.content).startsWith('## Return of '));
+    assert.deepEqual(results.map(m => m.content), [
+      '## Return of functions.todo:0\ntodo updated\n\n## Return of functions.terminal:1\n/workspace',
+    ]);
+    assert.ok(!results.some(m => m.content.includes('<tool_result')),
+      'Kimi/SWE history must not wrap native results in foreign XML');
   });
 
   it('keeps OpenAI JSON-XML serializer for Anthropic/OpenAI/Gemini history', () => {

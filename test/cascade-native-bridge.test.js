@@ -30,6 +30,7 @@ import {
 import {
   parseFields, getField, getAllFields, writeMessageField, writeVarintField, writeStringField,
 } from '../src/proto.js';
+import { resetSystemPrompt, setSystemPrompts } from '../src/runtime-config.js';
 
 const fnTool = (name) => ({ type: 'function', function: { name, parameters: { type: 'object' } } });
 
@@ -545,6 +546,27 @@ describe('parseTrajectorySteps — native step recognition', () => {
 });
 
 describe('buildSendCascadeMessageRequest — additional_steps on field 9', () => {
+  it('omits XML reinforcement from a Kimi preamble', () => {
+    setSystemPrompts({ toolReinforcement: 'Use this exact format: <tool_call>{"name":"...","arguments":{...}}</tool_call>' });
+    try {
+      const proto = buildSendCascadeMessageRequest(
+        'k', 'cid', 'hi', 12345, 'MODEL_TEST', 'sess',
+        { toolPreamble: '<|tool_calls_section_begin|>\nAvailable tools:\n<|tool_calls_section_end|>' },
+      );
+      const top = parseFields(proto);
+      const cfg = parseFields(getField(top, 5, 2).value);
+      const planner = parseFields(getField(cfg, 1, 2).value);
+      const conversational = parseFields(getField(planner, 2, 2).value);
+      const section = parseFields(getField(conversational, 12, 2).value);
+      const text = getField(section, 2, 2).value.toString('utf8');
+
+      assert.match(text, /<\|tool_calls_section_begin\|>/);
+      assert.doesNotMatch(text, /Use this exact format:\s*<tool_call>/i);
+    } finally {
+      resetSystemPrompt('toolReinforcement');
+    }
+  });
+
   it('includes each step as repeated field 9', () => {
     const stepA = buildAdditionalStep('view_file', { absolute_path_uri: 'file:///a', content: 'A' });
     const stepB = buildAdditionalStep('run_command', { command_line: 'ls', full_output: 'a\n' });
