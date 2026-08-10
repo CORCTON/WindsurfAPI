@@ -1,24 +1,46 @@
-<!-- 感谢贡献 / Thanks for contributing -->
+<!-- 感谢贡献 / Thanks for contributing.
+     完整规则见 CONTRIBUTING.md;这里只列每个 PR 都要回答的。
+     Full rules in CONTRIBUTING.md; this is just what every PR needs to answer. -->
 
 ## 改了什么 / What changed
 
-<!-- 一两句话说明 / One or two sentences -->
+<!-- 一两句话。行为有变化的话,说清"之前怎样、现在怎样"。
+     One or two sentences. If behaviour changes, state before → after. -->
 
 ## 为什么 / Why
 
-<!-- 修哪个 bug 加哪个功能 关联 issue #xx / Which bug / feature / issue does this address? -->
+<!-- 修哪个 bug、加哪个功能,关联 issue #xx。
+     如果是从别处（外部报告、扫描器、AI 分析）拿到的结论,请说明你**验证了哪些、没验证哪些** ——
+     本仓库处理过多份"作者自陈未核实"的清单,其中若干条的成因是错的。
+     If this came from an external report or analysis, say which parts you verified yourself. -->
 
 ## 测试 / Testing
 
-<!-- 怎么验证改对了 / How did you verify it works?
-     例子 / examples:
-     - curl -X POST localhost:3003/v1/chat/completions -d '...' 返回了正确的 ...
-     - dashboard 面板手动点了 ...
-     - 没跑自动测试（项目暂无测试套件） -->
+<!-- 项目有完整测试套件（当前 3900+ 断言）。请贴实际跑过的命令和结果。
+     The project HAS a full suite (3900+ assertions today). Paste what you actually ran.
+
+     export PATH=~/.local/share/mise/installs/node/24/bin:$PATH   # Node 24 必需 / required
+     npm run test:release          # 权威口径 / the authoritative gate
+     node --import ./test/setup-env.mjs --test --test-force-exit test/你的.test.js
+
+     Node 22 会让一条 absolute-deadline 测试挂起并连带取消约 80 个 —— 那不是你的 bug。
+     Node 22 hangs one deadline test and cancels ~80 others; not your bug. -->
 
 ## Checklist
 
 - [ ] 代码风格和现有文件一致 / Code style matches existing files
-- [ ] 没有引入 npm 依赖 / No new npm dependencies (project is zero-dep)
-- [ ] 涉及 LS binary 协议改动时 在 PR 描述里注明字段号来源 / If touching LS protocol, document field-number source in the PR description
-- [ ] 涉及 dashboard UI 用 App.confirm / App.prompt 不用浏览器原生 alert/confirm / Uses App.confirm / App.prompt, not native dialogs (if dashboard)
+- [ ] **没有引入 npm 运行时依赖** / No new npm runtime dependencies (project is zero-dep)
+- [ ] **测试跑过了,贴了结果** / Tests run, output pasted above
+- [ ] 新行为有测试,且**断言行为而不是 grep 源码文本** / New behaviour has tests that assert
+      behaviour, not source text (the latter breaks on rename and misses real regressions)
+- [ ] 新开关**默认关**;若默认开,已加进 `test/default-on-switch-registry.test.js` 台账
+      / New switches default OFF; a default-ON switch is registered in the ledger test
+- [ ] 加了开关就同步了文档 —— `.env.example`、`README.md`、`README.en.md`、
+      `docs/ENV-SWITCHES.md`,守卫测试会逐个查
+      / Switch documented in all four places (a guard test enforces this)
+- [ ] 涉及 wire 协议改动时,注明字段号**来源**;未经实测的坐标默认关并在注释里直说不确定
+      / For wire changes, cite the field-number source; unmeasured tags ship OFF and say so
+- [ ] 涉及 dashboard UI 用 `App.confirm` / `App.prompt`,不用浏览器原生 alert/confirm
+      / Dashboard UI uses App.confirm / App.prompt, not native dialogs
+- [ ] commit message **没有任何 AI 署名尾注**（`Co-Authored-By`、`Generated with` 等）
+      / No AI attribution trailers in commit messages

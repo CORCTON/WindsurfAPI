@@ -1,0 +1,105 @@
+name: 🤖 模型不可用 / 看不到某个模型 · Model missing or unavailable
+description: "某个模型在 /v1/models 里没有、报 model_not_entitled、或在 Windsurf/Devin 里能用但这里不能"
+title: "[Model] "
+labels: ["model-availability", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        这是本仓库**最常见**的一类报告（177 个历史 issue 里约 1/4）,所以单独做了这个表单。
+        大多数情况下**不是 bug**,而是上游 entitlement 的结果 —— 下面三步能自己判断:
+
+        1. **模型清单来自上游,不是本地文件。** 看不到某个新模型,通常是上游还没把它放给
+           这个账号,不是本地清单旧了。换句话说:**升级本项目不会让模型出现。**
+        2. **报 `model_not_entitled` 时,错误响应里的 `available_in_pool` 字段**会列出
+           账号池当前真正能用的模型 —— 先看那个字段。
+        3. **免费账号的档位有限。** 大致是 `gemini-2.5-flash`、`glm-4.7/5/5.1`、
+           `kimi-k2` 系列、`qwen-3` 这些;Claude 全系 + GPT 全系 + Opus / Max / Thinking
+           高阶需要 Pro entitlement。
+
+        ---
+
+        This is the single most common report here (~1/4 of 177 historical issues) and usually
+        **not a bug**: the model list comes from upstream entitlements, so upgrading this
+        project will not make a model appear.
+
+  - type: input
+    id: model
+    attributes:
+      label: 模型名 / Model name
+      description: 完整的 model id,照抄你请求里发的那个 / The exact id you send
+      placeholder: "claude-opus-4-8 / swe-1.7 / gemini-3.5-flash"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: symptom
+    attributes:
+      label: 症状 / Symptom
+      options:
+        - /v1/models 里根本没有它 / not listed at all
+        - 列出来了但调用报 model_not_entitled
+        - 调用返回空响应 / empty response
+        - Windsurf IDE 或 Devin CLI 里能用,这里不能 / works in the official client, not here
+        - 能用但行为明显不同（降智 / 不调工具）/ works but behaves differently
+        - 其他 / Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: available-in-pool
+    attributes:
+      label: "`available_in_pool` 的内容 / Contents of available_in_pool"
+      description: >-
+        报 `model_not_entitled` 时错误响应里会带这个字段。贴出来 —— 它直接说明账号池
+        当前有什么。如果症状不是 model_not_entitled,写"不适用"。
+        Paste it; it states what the pool actually has. Write N/A if not applicable.
+      render: json
+    validations:
+      required: false
+
+  - type: dropdown
+    id: entitlement
+    attributes:
+      label: 账号档位 / Account tier
+      description: 不确定就看 dashboard 里该账号的 entitled 清单 / Check the dashboard if unsure
+      options:
+        - 免费 / Free
+        - Pro
+        - Teams / Enterprise
+        - 混合账号池 / Mixed pool
+        - 不知道 / Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: official-client
+    attributes:
+      label: 官方客户端里能用吗 / Does it work in the official client?
+      description: >-
+        **这一条最关键。** 同一个账号在 Windsurf IDE / Devin CLI 里能不能用这个模型?
+        能用 → 可能是本项目的映射问题,值得查。不能用 → 是 entitlement,本项目无能为力。
+        This is the decisive question: if the official client cannot use it either, the
+        limit is upstream entitlement and nothing here can change it.
+      placeholder: "Windsurf IDE 里能选到并正常回复 / 官方客户端里也看不到 / 没试过"
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本 / Version
+      placeholder: "v3.9.21 或 commit 07e928e"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志 / Logs
+      description: >-
+        启动时的模型同步日志 + 一次失败请求的完整错误。**贴之前删掉 API key、token、
+        邮箱。** Strip credentials before pasting.
+      render: shell
+    validations:
+      required: false

@@ -3,6 +3,29 @@ description: 建议一个新功能 / Suggest a new feature
 title: "[Feature] "
 labels: ["enhancement", "needs-triage"]
 body:
+  - type: markdown
+    attributes:
+      value: |
+        **提之前两件事能省下双方时间：**
+
+        1. **可能已经有开关了。** 158 个环境开关里有 84 个只存在于源码,
+           [docs/ENV-SWITCHES.md](https://github.com/dwgx/WindsurfAPI/blob/master/docs/ENV-SWITCHES.md)
+           列了每一个的默认值和取值位置。行为微调类的需求多半已经能配。
+        2. **本项目零 npm 运行时依赖,而且这条不打算破。** 需要引入新依赖的方案基本会被拒,
+           除非能用 Node 内置模块实现。
+
+        涉及**上游模型能力**（某个模型支持什么）的请求,请附模型名 + 证据来源 ——
+        这类事实只能实测,不能推断。
+
+        ---
+
+        **Two things save us both time:**
+
+        1. **A switch may already exist** — 84 of the 158 env switches live only in source;
+           see the doc linked above before asking for a knob.
+        2. **Zero npm runtime dependencies is a hard constraint** — proposals needing a new
+           dependency are usually declined unless doable with Node built-ins.
+
   - type: textarea
     id: idea
     attributes:

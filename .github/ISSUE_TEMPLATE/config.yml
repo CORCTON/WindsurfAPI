@@ -1,2 +1,36 @@
+# Keep blank issues on: the templates cover the common shapes, but a genuine report that
+# fits none of them should not be turned away by a form.
 blank_issues_enabled: true
-contact_links: []
+
+# These render as buttons ABOVE the template list, so they are the first thing a reporter
+# sees. Ordered by how often the answer is already written down somewhere.
+#
+# Every URL here is absolute and was checked with curl (200). Do NOT use `../blob/master/x`
+# in this directory: relative links resolve against /issues/, so they 404 — that was a real
+# dead link in bug.yml, verified 404 before the fix. Discussions is deliberately absent:
+# the repo does not have it enabled (also verified — 404).
+contact_links:
+  - name: 🔐 安全漏洞 / Security vulnerability
+    url: https://github.com/dwgx/WindsurfAPI/security/advisories/new
+    about: >-
+      别开 public issue —— issue 会被搜索引擎索引,公开 PoC 等于给攻击者送弹药。
+      走私下披露,72 小时内回复。Do not open a public issue; report privately here.
+
+  - name: 🚑 先按症状自查,大部分问题这里有答案 / Troubleshoot by symptom first
+    url: https://github.com/dwgx/WindsurfAPI#出问题了先看这里
+    about: >-
+      连不上 / 401 / 工具不调用 / 丢上下文 / 账号全挂 —— README 有按症状分流的决策树。
+      两条最常踩的:改 .env 的 timeout 不管用(那个超时不在这一层)、一开就
+      "所有账号 rate-limited"(多半是 IP 级冷却,不是账号也不是代理坏了)。
+
+  - name: ⚙️ 想调行为?先翻环境开关 / Looking for a config knob?
+    url: https://github.com/dwgx/WindsurfAPI/blob/master/docs/ENV-SWITCHES.md
+    about: >-
+      158 个开关里有 84 个只存在于源码,这份文档列了每一个的默认值和取值位置。
+      提功能请求前先确认没有现成开关。84 of the 158 switches exist only in source.
+
+  - name: 📓 想知道某个行为为什么这么设计 / Why does it behave this way?
+    url: https://github.com/dwgx/WindsurfAPI/blob/master/docs/AUDIT-LEDGER.md
+    about: >-
+      审计台账,十六轮追加:每条修复的判据、被推翻过的结论、哪些面还没扫过。
+      带 🛡 标记的是改动前必读的不变量。The audit ledger — evidence, not conclusions.

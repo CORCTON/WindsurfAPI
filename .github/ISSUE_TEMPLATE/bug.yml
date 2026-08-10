@@ -8,15 +8,32 @@ body:
       value: |
         感谢报告 bug 反馈问题越详细越容易修复 / Thanks for reporting. The more detail you provide, the faster it can be fixed.
 
-        **安全漏洞请走私下披露：** [SECURITY.md](../blob/master/SECURITY.md) — 不要在这里发 PoC。
-        **Security issues go private:** see [SECURITY.md](../blob/master/SECURITY.md) — do not post PoCs here.
+        **安全漏洞请走私下披露：** [SECURITY.md](https://github.com/dwgx/WindsurfAPI/blob/master/SECURITY.md) — 不要在这里发 PoC。
+        **Security issues go private:** see [SECURITY.md](https://github.com/dwgx/WindsurfAPI/blob/master/SECURITY.md) — do not post PoCs here.
 
   - type: input
     id: version
     attributes:
       label: 版本 / Version
       description: 访问 `http://你的IP:PORT/health` 查看 commit 字段 / Check `/health` endpoint for commit SHA
-      placeholder: "commit 5d12adf 或 v1.3.0"
+      placeholder: "commit 5d12adf 或 v3.9.21"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: backend
+    attributes:
+      label: 走的哪条后端 / Which backend egress?
+      description: >-
+        这是排查的第一个分岔口 —— 两条路的代码几乎不重叠,搞错了整份日志都对不上。
+        不确定就选"不知道",日志里会有 `backend=` 字样。
+        This is the first fork in triage; the two paths barely share code.
+      options:
+        - Cascade (默认 / default — 需要 language_server 二进制)
+        - DEVIN_CONNECT=1 (纯 HTTP 直连 Devin 云端 / pure-HTTP, no LS binary)
+        - DEVIN_ONLY=1 (本地 devin CLI 子进程 / local CLI subprocess)
+        - WINDSURFAPI_SPECIAL_AGENT_BACKEND (special-agent)
+        - 不知道 / Not sure
     validations:
       required: true
 
@@ -63,7 +80,11 @@ body:
       options:
         - /v1/chat/completions
         - /v1/messages
-        - /v1/responses
+        - /v1/responses (POST)
+        - /v1/responses/{id} (GET / DELETE)
+        - /v1beta/models/*:generateContent (Gemini)
+        - /v1beta/models/*:streamGenerateContent (Gemini 流式 / streaming)
+        - /v1/models
         - Dashboard / dashboard API
         - install-ls.sh / LS update
         - 其他 / Other
