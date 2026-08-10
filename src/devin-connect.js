@@ -756,7 +756,7 @@ function encodeToolDef(tool, tags) {
 // the cache with a credential belonging to the PREVIOUS account, which then rides
 // the next tenant's request. The failure is silent and cross-account, so the guard
 // is not optional.
-const _userJwtCache = new Map(); // `${token} ${host}` → { jwt, expMs, epoch }
+const _userJwtCache = new Map(); // `${token}\0${host}` → { jwt, expMs, epoch }
 const _userJwtInflight = new Map(); // same key → Promise<string|null>
 let _userJwtEpoch = 0;
 
