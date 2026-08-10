@@ -24,6 +24,45 @@ const RULES = [
     id: 'credentialed-email-example',
     regex: /[A-Za-z0-9._%+-]+@(?!example\.(?:com|org|net)\b)[A-Za-z0-9.-]+\.[A-Za-z]{2,}["']?\s*,\s*["']?password["']?\s*:/gi,
   },
+  // ── Rules below added after audit round 13 measured what the four above MISS ──
+  //
+  // The gap they closed: `literal-credential-assignment` requires the secret to be a
+  // quoted run of [A-Za-z0-9_./+=-]. That class has no `$`. This repo's OWN native
+  // session-token format is `devin-session-token$<JWT>` — so a bare JWT was caught while
+  // the exact string the code actually passes around was NOT. Verified before the fix:
+  // a file containing `token: "devin-session-token$eyJ...".` scanned clean, exit 0.
+  //
+  // These match credential STRUCTURE, not field name. Field-name matching was tried and
+  // rejected: `\b(idToken|apiKey|sessionToken|...)\b\s*[:=]\s*"..."` flagged 12 files of
+  // legitimate synthetic fixtures. Same trap as the switch-registry regex that reported
+  // DASHBOARD_PASSWORD as a switch — loosening until it matches is not the answer.
+  {
+    // A JWT is three base64url segments and the first two decode to `{"`. No synthetic
+    // fixture in this tree has that shape (measured: 0 hits across 696 tracked files),
+    // so this needs no allow-list. Covers devin-session-token$<JWT>, Firebase idToken,
+    // and any bearer/access token, wherever it appears and whatever the field is called.
+    id: 'jwt-literal',
+    regex: /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g,
+  },
+  {
+    // Session token whose payload is opaque rather than a JWT. Requires mixed case AND a
+    // digit so that readable placeholders (`devin-session-token$definitely-not-in-pool`,
+    // already in test/sticky-queue-on-pin.test.js) stay legal while real high-entropy
+    // values do not.
+    id: 'session-token-literal',
+    regex: /devin-session-token\$(?=[^"'\s]*[0-9])(?=[^"'\s]*[a-z])(?=[^"'\s]*[A-Z])[A-Za-z0-9._~+/-]{20,}/g,
+  },
+  {
+    // Firebase refresh token. Fixed vendor prefix, so no entropy heuristic needed.
+    id: 'firebase-refresh-token',
+    regex: /\bAMf-[A-Za-z0-9_-]{20,}/g,
+  },
+  {
+    // The bulk-import account format (`email----password`). The existing
+    // `credentialed-email-example` rule only sees the JSON `{email, password:}` spelling.
+    id: 'account-credential-pair',
+    regex: /[A-Za-z0-9._%+-]+@(?!example\.(?:com|org|net)\b)[A-Za-z0-9.-]+\.[A-Za-z]{2,}----\S{8,}/g,
+  },
 ];
 
 const IGNORED_PATHS = new Set([
