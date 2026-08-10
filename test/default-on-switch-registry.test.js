@@ -134,6 +134,42 @@ const LEDGER = {
   },
   WINDSURFAPI_REASONING_DEDUP: { tested: true },
   WINDSURFAPI_STRICT_MODEL: { tested: true },
+  // The six below are the runtime-config.js table-driven batch, invisible to the first four
+  // discovery patterns because the switch name appears as a STRING in a declaration rather
+  // than an `env.NAME` access. All six shipped default-on and unregistered.
+  //
+  // Four have genuine off-path coverage — driven to a disabling value with a behavioural
+  // assertion. Note the tests reach them through the runtime-config FIELD name, not the env
+  // var name, which is why a search for the env var suggests they are untested:
+  //   BREAKER          (breakerEnabled)  devin-connect-breaker.test.js — 'WINDSURFAPI_BREAKER=0
+  //                    disables escalation entirely': four reportError() rounds, asserts no
+  //                    backoff cooldown lands.
+  //   DEGRADED_SERVE   (degradedServe)   devin-connect-breaker.test.js 'L2 — degraded-serve
+  //                    fallback': OFF ⇒ fully-throttled pool returns null → 429, ON ⇒ serves
+  //                    the account flagged `_degraded`.
+  //   QUOTA_COOLDOWN   (cooldownEnabled) quota-tunable-hotswap.test.js
+  //   SPEND_ON_DEMAND  (spendOnDemand)   quota-tunable-hotswap.test.js, incl. env '0'
+  WINDSURFAPI_BREAKER: { tested: true },
+  WINDSURFAPI_DEGRADED_SERVE: { tested: true },
+  WINDSURFAPI_QUOTA_COOLDOWN: { tested: true },
+  WINDSURFAPI_SPEND_ON_DEMAND: { tested: true },
+  // The remaining two are real gaps, recorded as gaps rather than papered over. Both are
+  // asserted to DEFAULT to true (breaker-tunable-hotswap.test.js) — that is an on-path
+  // assertion, and it is exactly the kind of coverage this ledger exists to distinguish
+  // from an off-path one.
+  WINDSURFAPI_LAST_ACCOUNT_EXEMPT: {
+    waived:
+      'off-path untested. Disabling it lets the breaker withdraw the SOLE remaining account, '
+      + 'i.e. total outage — the failure mode is severe but it needs a pool driven to one '
+      + 'account with an escalating breaker, and connect-error-blame.test.js notes the '
+      + 'inverse (a peer must exist or this switch masks the eviction). Known gap.',
+  },
+  WINDSURFAPI_NEW_ACCOUNT_BASELINE: {
+    waived:
+      'off-path untested. Off means new accounts skip baseline establishment; the observable '
+      + 'difference is in later quota attribution rather than an immediate branch, so there '
+      + 'is no cheap behavioural seam. Known gap.',
+  },
 };
 
 // Shapes that mean "default ON, set to exactly '0' to disable".
@@ -164,6 +200,21 @@ const DEFAULT_ON_PATTERNS = [
   // switch default-ON is that ONLY an explicit off value changes behaviour, so match
   // the off-comparison itself — that is the invariant, not the fallback literal.
   /(?:process\.)?env\.([A-Z][A-Z0-9_]+)\s*===\s*'0'/g,
+  // The fourth blind spot, and the first where the switch name never appears as a
+  // property access at all. runtime-config.js declares its tunables in a table:
+  //   breakerEnabled: { env: 'WINDSURFAPI_BREAKER', kind: 'bool', def: true },
+  // Every pattern above requires a literal `env.NAME` adjacent to '0' or '1'. Here the
+  // name is a STRING, and the default is the boolean `true` rather than a '1' — so all
+  // four missed the same five live default-on switches (WINDSURFAPI_BREAKER,
+  // _SPEND_ON_DEMAND, _LAST_ACCOUNT_EXEMPT, _NEW_ACCOUNT_BASELINE, _QUOTA_COOLDOWN),
+  // and the completeness check stayed green while they shipped. Two of them matter:
+  // BREAKER off means bad accounts are never withdrawn, SPEND_ON_DEMAND spends money.
+  //
+  // `kind: 'bool'` is required in the match, so int/float knobs (def: 3) are not
+  // mistaken for switches — a numeric default is not an on/off state. Key order is
+  // fixed by the table's own formatting, which the doc guard keeps aligned; a reorder
+  // would drop the entry from discovery, so the assertion below pins the count.
+  /\{\s*env:\s*'([A-Z][A-Z0-9_]+)'\s*,\s*kind:\s*'bool'\s*,\s*def:\s*true\s*\}/g,
 ];
 
 function readTree(dir) {
@@ -191,10 +242,48 @@ const testSources = readdirSync(TEST_DIR)
   .filter((f) => f.endsWith('.js'))
   .map((f) => readFileSync(join(TEST_DIR, f), 'utf8'));
 
-// Does any test set this knob to '0'? Covers X: '0', X = '0', X=0 and unquoted forms.
+// The table-driven switches in runtime-config.js are reachable two ways: the env var, and
+// the runtime-config FIELD it maps to (setBreakerTunables({ degradedServe: false })). Their
+// off-path tests use the field, because that is the hot-swap API operators actually hit —
+// so a search for the env var alone concludes "untested" for switches that are covered.
+// That conclusion was drawn once in this repo and nearly cost a duplicate test file.
+//
+// The mapping is READ FROM THE TABLE, never hand-listed: a hand-written alias map is one
+// more thing that rots when a field is renamed, and it would rot silently here (an entry
+// going stale makes a real test invisible, which reads as "add another test").
+const FIELD_ALIASES = (() => {
+  const out = new Map();
+  const table = readTree(SRC_DIR)
+    .filter(([p]) => p.endsWith('runtime-config.js'))
+    .map(([, s]) => s)
+    .join('\n');
+  for (const m of table.matchAll(
+    /([a-zA-Z][a-zA-Z0-9]*)\s*:\s*\{\s*env:\s*'([A-Z][A-Z0-9_]+)'/g,
+  )) {
+    out.set(m[2], m[1]);
+  }
+  // An empty or shrunken map does not fail anything on its own — it just makes real off-path
+  // tests invisible again, i.e. it re-creates the bug this alias lookup fixes, silently and
+  // in the safe-looking direction. Pin it.
+  assert.ok(
+    out.size >= 20,
+    `runtime-config env→field aliases parsed: ${out.size} (expected ~23). The table's shape `
+      + 'changed and the lookup went stale — off-path tests reached via the field name are '
+      + 'now invisible to this ledger.',
+  );
+  return out;
+})();
+
+// Does any test set this knob to a disabling value? Covers X: '0', X = '0', X=0 and unquoted
+// forms for the env var, plus `field: false` / `field: 0` for the table-driven aliases.
 function hasOffPathTest(knob) {
-  const re = new RegExp(`${knob}["']?\\s*[:=]\\s*["']?0["']?`);
-  return testSources.some((src) => re.test(src));
+  const names = [knob];
+  const field = FIELD_ALIASES.get(knob);
+  if (field) names.push(field);
+  return names.some((n) => {
+    const re = new RegExp(`${n}["']?\\s*[:=]\\s*["']?(?:0|false)["']?`);
+    return testSources.some((src) => re.test(src));
+  });
 }
 
 describe('default-on switch registry', () => {
