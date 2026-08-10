@@ -29,28 +29,49 @@ Turns [Windsurf](https://windsurf.com) (formerly Codeium, now Devin Desktop)'s A
 
 <sub>Keywords: Windsurf reverse proxy · Devin API · Claude Code proxy · Cursor mirror · free Claude/GPT/Gemini · Codeium API · OpenAI-compatible endpoint · self-hosted LLM gateway</sub>
 
+<p align="center">
+  <a href="#what-is-it-doing">How it works</a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#how-to-use-with-claude-code--cline--cursor">Client setup</a> ·
+  <a href="docs/ENV-SWITCHES.md">Env switches</a> ·
+  <a href="docs/">All docs</a> ·
+  <a href="README.md">中文</a>
+</p>
+
 ## What is it doing?
 
 ```mermaid
 flowchart LR
-    subgraph Clients
-        A[OpenAI SDK<br>curl / Frontend]
-        B[Claude Code<br>Cline<br>Cursor]
+    subgraph clients["Your clients"]
+        A["OpenAI SDK<br/>curl / frontend"]
+        B["Claude Code<br/>Cline · Cursor"]
+        C["Gemini SDK"]
     end
 
-    subgraph WindsurfAPI["WindsurfAPI (Node.js)"]
-        C[HTTP Service<br>Port 3003]
-        D[Account Pool<br>Round-Robin<br>Rate Limit<br>Failover]
+    subgraph gw["WindsurfAPI (this service · port 3003)"]
+        direction TB
+        R["Protocol translation<br/>OpenAI ↔ Anthropic ↔ Gemini"]
+        P["Account pool<br/>round-robin · rate-limit isolation · failover · breaker"]
+        N["Identity neutralisation<br/>strips the upstream Windsurf identity"]
+        R --- P
+        R --- N
     end
 
-    E["Language Server<br>(Windsurf binary)"]
-    F[Windsurf Cloud<br>server.self-serve.windsurf.com]
+    LS["Language Server<br/>(Windsurf binary)"]
+    UP["Windsurf cloud<br/>server.self-serve.windsurf.com"]
+    DC["Devin cloud<br/>(DEVIN_CONNECT path)"]
 
-    A -->|"/v1/chat/completions"<br>OpenAI JSON + SSE| C
-    B -->|"/v1/messages"<br>Anthropic SSE| C
-    C <-->|gRPC| E
-    E <-->|HTTPS| F
-    D -.-> C
+    A -- "/v1/chat/completions" --> R
+    B -- "/v1/messages" --> R
+    C -- "/v1beta/models/*" --> R
+    R -- "gRPC" --> LS
+    LS -- "HTTPS" --> UP
+    R -. "HTTPS (optional direct)" .-> DC
+
+    classDef gwStyle fill:#1f6feb22,stroke:#1f6feb,stroke-width:2px
+    classDef upStyle fill:#8957e522,stroke:#8957e5
+    class gw gwStyle
+    class UP,DC upStyle
 ```
 
 **What it does**:

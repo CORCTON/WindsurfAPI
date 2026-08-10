@@ -29,7 +29,53 @@
 
 <sub>关键词：Windsurf 逆向 · Devin 代理 · Claude Code 中转 · Cursor 镜像 · AI 中转 API · OpenAI 兼容接口 · 免费 Claude/GPT/Gemini · 大模型反代 · Codeium 逆向</sub>
 
+<p align="center">
+  <a href="#它到底在干嘛">原理</a> ·
+  <a href="#快速开始">5 分钟跑起来</a> ·
+  <a href="#claude-code--cline--cursor-怎么用">客户端接入</a> ·
+  <a href="docs/ENV-SWITCHES.md">环境开关</a> ·
+  <a href="docs/">全部文档</a> ·
+  <a href="README.en.md">English</a>
+</p>
+
 ## 它到底在干嘛
+
+```mermaid
+flowchart LR
+    subgraph clients["你的客户端"]
+        A["OpenAI SDK<br/>curl / 前端"]
+        B["Claude Code<br/>Cline · Cursor"]
+        C["Gemini SDK"]
+    end
+
+    subgraph gw["WindsurfAPI（本服务 · 端口 3003）"]
+        direction TB
+        R["协议翻译层<br/>OpenAI ↔ Anthropic ↔ Gemini"]
+        P["账号池<br/>轮询 · 限流隔离 · 故障转移 · 熔断"]
+        N["身份中和<br/>剥掉上游 Windsurf 身份"]
+        R --- P
+        R --- N
+    end
+
+    LS["Language Server<br/>（Windsurf 二进制）"]
+    UP["Windsurf 云端<br/>server.self-serve.windsurf.com"]
+    DC["Devin 云端<br/>（DEVIN_CONNECT 路径）"]
+
+    A -- "/v1/chat/completions" --> R
+    B -- "/v1/messages" --> R
+    C -- "/v1beta/models/*" --> R
+    R -- "gRPC" --> LS
+    LS -- "HTTPS" --> UP
+    R -. "HTTPS（可选直连）" .-> DC
+
+    classDef gwStyle fill:#1f6feb22,stroke:#1f6feb,stroke-width:2px
+    classDef upStyle fill:#8957e522,stroke:#8957e5
+    class gw gwStyle
+    class UP,DC upStyle
+```
+
+<details>
+<summary>纯文本版（不支持 mermaid 的环境）</summary>
 
 ```
      ┌─────────────┐   /v1/chat/completions   ┌────────────┐
@@ -47,6 +93,8 @@
                                                 速率限制隔离
                                                 故障转移
 ```
+
+</details>
 
 **它做了什么**：
 1. 一个 HTTP 服务（端口 3003）同时暴露 OpenAI 和 Anthropic 两套 API
@@ -246,6 +294,69 @@ curl http://localhost:3003/v1/messages \
   -d '{"model":"claude-opus-4.6","max_tokens":100,"messages":[{"role":"user","content":"你好"}]}'
 ```
 
+### Gemini 格式（Google GenAI SDK 直接连）
+
+Gemini 原生客户端不发 `Authorization: Bearer`，它用 `x-goog-api-key` 头或 `?key=`
+查询参数 —— 两种都收，所以官方 SDK 不用改代码就能连。
+
+```python
+from google import genai
+client = genai.Client(
+    api_key="你设的API_KEY",
+    http_options={"base_url": "http://你的IP:3003"},
+)
+r = client.models.generate_content(model="claude-sonnet-4.6", contents="你好")
+print(r.text)
+```
+
+```bash
+# 非流式
+curl "http://localhost:3003/v1beta/models/claude-sonnet-4.6:generateContent" \
+  -H "x-goog-api-key: 你的key" \
+  -H 'content-type: application/json' \
+  -d '{"contents":[{"role":"user","parts":[{"text":"你好"}]}]}'
+
+# 流式（?alt=sse 才是 SSE，不带就是 JSON 数组分片）
+curl -N "http://localhost:3003/v1beta/models/claude-sonnet-4.6:streamGenerateContent?alt=sse" \
+  -H "x-goog-api-key: 你的key" \
+  -H 'content-type: application/json' \
+  -d '{"contents":[{"role":"user","parts":[{"text":"数到三"}]}]}'
+```
+
+### OpenAI Responses 格式（带服务端会话状态）
+
+`/v1/responses` 除了 POST，还有 `GET /v1/responses/{id}` 和 `DELETE /v1/responses/{id}`。
+链式调用靠 `previous_response_id`，服务端替你保存上一轮 —— 这样第二轮不用重发历史。
+
+```bash
+# 第一轮：拿到 response id
+curl http://localhost:3003/v1/responses \
+  -H "Authorization: Bearer 你的key" \
+  -H 'content-type: application/json' \
+  -d '{"model":"claude-sonnet-4.6","input":"记住数字 42","store":true}'
+
+# 第二轮：只发新问题，历史由服务端接上
+curl http://localhost:3003/v1/responses \
+  -H "Authorization: Bearer 你的key" \
+  -H 'content-type: application/json' \
+  -d '{"model":"claude-sonnet-4.6","input":"我让你记的数字是几?",
+       "previous_response_id":"resp_把上一轮返回的id填这里","store":true}'
+
+# 取回 / 删除
+curl http://localhost:3003/v1/responses/resp_xxx -H "Authorization: Bearer 你的key"
+curl -X DELETE http://localhost:3003/v1/responses/resp_xxx -H "Authorization: Bearer 你的key"
+```
+
+> 存储**默认开**（`RESPONSE_STORE_ENABLED=0` 关掉）。容量上限也可调：
+> `RESPONSE_STORE_TTL_MS`（空闲超时,默认 1 小时）、`RESPONSE_STORE_MAX_AGE_MS`（绝对保留
+> 上限,默认 24 小时）、`RESPONSE_STORE_MAX`（条数,默认 2000）、
+> `RESPONSE_STORE_MAX_MESSAGES`（单会话消息数,默认 400）、`RESPONSE_STORE_MAX_BYTES`
+> （总字节预算,默认 128m,支持 b/k/kb/m/mb/g/gb）。
+>
+> **租户隔离靠的是 response id 的 90 bit 熵,不是客户端自称的作用域** —— 共享同一个
+> API key 时,两个调用方发相同的 `user` 会推导出逐字节相同的 callerKey,所以别把 id
+> 当成除"难猜"以外的任何保证。
+
 ### Cline / Cursor / Aider
 
 在客户端配置里 **Custom OpenAI Compatible**：
@@ -443,6 +554,51 @@ firewall-cmd --add-port=3003/tcp --permanent && firewall-cmd --reload
 ```
 
 云服务器记得去安全组开 3003。
+
+## 出问题了先看这里
+
+按**症状**找,不用通读下面的问答。这是协议转换网关,所以排查的第一步永远是
+**分清是哪一层坏了** —— 客户端、本网关、还是上游。
+
+```mermaid
+flowchart TD
+    S{"症状?"} --> A["请求根本没到<br/>连接被拒 / 超时"]
+    S --> B["返回 401 / 403"]
+    S --> C["有回复,但工具不调用"]
+    S --> D["有回复,但内容不对<br/>丢上下文 / 混入思考过程"]
+    S --> E["账号全挂<br/>rate-limited / unavailable"]
+
+    A --> A1["1. 服务活着吗<br/>curl :3003/v1/models"]
+    A1 --> A2["2. 防火墙放了 3003 吗<br/>见「防火墙」一节"]
+    A2 --> A3["3. 超时别只调 .env<br/>看「context deadline」那条"]
+
+    B --> B1["两层 key 别搞混:<br/>调用方 key ≠ 上游账号"]
+    B1 --> B2["Gemini 客户端用<br/>x-goog-api-key 或 ?key="]
+
+    C --> C1["先看日志里的 ToolRoute[...]<br/>它会列出被过滤/降级的原因"]
+    C1 --> C2["再看是不是 server-side 工具<br/>翻译层会丢弃未实现的那类"]
+
+    D --> D1["丢上下文 → 是否该用<br/>/v1/responses 链式"]
+    D1 --> D2["混入思考 → 开 LEAK_TRACE<br/>抓边界日志"]
+
+    E --> E1["先分清是账号被限<br/>还是 IP 级冷却"]
+    E1 --> E2["看「All accounts<br/>temporarily rate-limited」那条"]
+
+    classDef sym fill:#8957e522,stroke:#8957e5
+    classDef act fill:#1f6feb22,stroke:#1f6feb
+    class A,B,C,D,E sym
+    class A1,A2,A3,B1,B2,C1,C2,D1,D2,E1,E2 act
+```
+
+**两条最容易踩的**：
+
+| 现象 | 真实原因 |
+|---|---|
+| 改大 `.env` 里的 timeout 但 `context deadline exceeded` 还在 | 那个超时不在这一层。见下面同名问答 |
+| 一开就"所有账号 rate-limited",怀疑代理坏了 | 大概率是 IP 级冷却,不是账号问题也不是代理问题 |
+
+排查请求链路时,**发真实请求看响应,别只读代码** —— 这是协议转换网关,两层
+key、四条出口路径,读代码容易推错。
 
 ## 常见问题
 
