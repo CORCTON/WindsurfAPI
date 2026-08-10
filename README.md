@@ -315,6 +315,7 @@ curl http://localhost:3003/v1/messages \
 | `DEVIN_CONNECT_IMAGE_TAG` | 空（= 关） | **DEVIN_CONNECT 上的图片总开关。** 不设则图片在到达上游之前就被丢掉，客户端发了图也拿不到关于图的回答、且日志里没有任何提示。已验证值是 `10`，见下节 |
 
 完整清单在 [.env.example](.env.example) —— 上表只列常用的。
+只存在于源码里、两处都没收录的开关见 [docs/ENV-SWITCHES.md](docs/ENV-SWITCHES.md)。
 
 ## 图片 / 视觉怎么开
 
