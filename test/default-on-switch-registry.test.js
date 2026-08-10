@@ -44,6 +44,12 @@ const TEST_DIR = join(process.cwd(), 'test');
 // ── the ledger ──────────────────────────────────────────────────────────────
 // Keep alphabetical. `tested` claims a test drives the OFF path; the test below
 // verifies that claim rather than trusting it.
+// Switches that ARE default-on but whose spelling the patterns below cannot see, so
+// they are registered by hand. Keep this as small as possible: every name here is a
+// place where the automatic guard does not reach. A separate test asserts each is still
+// referenced in src/, so an entry cannot outlive its code.
+const HAND_REGISTERED = new Set(['DEVIN_CONNECT_RETRY_ON_EMPTY']);
+
 const LEDGER = {
   DEVIN_CLI_USE_ACCOUNT_POOL: { tested: true },
   DROUGHT_RESTRICT_PREMIUM: { tested: true },
@@ -52,6 +58,31 @@ const LEDGER = {
       + 'NOT revived, which needs a real child process; covered by lsp-capacity-matrix at '
       + 'the layer above.',
   },
+  // NOT discoverable by any pattern here, registered by hand. It reads the env into a
+  // local and tests THAT against four off spellings:
+  //   const v = String(env.DEVIN_CONNECT_RETRY_ON_EMPTY ?? '').trim().toLowerCase();
+  //   return v !== '0' && v !== 'off' && v !== 'false' && v !== 'no';
+  // Matching this shape needs dataflow, not a regex. A regex loose enough to chase it
+  // is the one that reported env.DASHBOARD_PASSWORD as a switch. The honest position:
+  // the patterns catch the common spellings, this ledger is still the source of truth,
+  // and an unusual spelling must be added by the author. Off path IS tested
+  // (devin-connect-openai.test.js, retry-rescue-budget-split.test.js).
+  DEVIN_CONNECT_RETRY_ON_EMPTY: { tested: true },
+  // ── Found only after the `=== '0'` pattern was added ──
+  // These have no `'1'` literal at all: they are default-ON purely because only an
+  // explicit '0' turns them off, which is why every earlier pattern missed them.
+  CASCADE_COMPACT_CLAUDE_SYSTEM: {
+    waived: 'off routes the Claude system prompt through the full neutralizer instead of '
+      + 'the compact path (client.js:207). No test drives it — newly visible, not newly '
+      + 'created. Worth one; recorded rather than quietly skipped.',
+  },
+  CASCADE_REUSE_HASH_SYSTEM: {
+    waived: 'off stops hashing the system prompt into the reuse key (returns \'\'), which '
+      + 'only changes cache-key granularity, not output. No test drives it.',
+  },
+  WINDSURFAPI_LS_PER_PROXY_USER: { tested: true },
+  WINDSURFAPI_NLU_RECOVERY: { tested: true },
+  WINDSURFAPI_VARIANT_FALLBACK_ON_RATE_LIMIT: { tested: true },
   // Both found only after this file's discovery patterns were widened to accept `??`.
   RESPONSE_CACHE_ENABLED: {
     waived: 'off means "do not serve a cached response". No test drives it — the switch '
@@ -125,6 +156,14 @@ const DEFAULT_ON_PATTERNS = [
   // matched `env.DASHBOARD_PASSWORD || ''` by running past the end of its expression
   // to a `'1'` elsewhere on the line, reporting a credential as a default-on switch.
   /(?:process\.)?env\.([A-Z][A-Z0-9_]+)\s*(?:\|\||\?\?)\s*(?:(?:process\.)?env\.[A-Z][A-Z0-9_]+\s*(?:\|\||\?\?)\s*)*'1'/g,
+  // `env.X === '0'` is ALSO default-ON: "off only when explicitly '0'" means unset is
+  // on, with no `'1'` literal anywhere to anchor on. Anchoring the patterns above on
+  // the fallback still missed three live switches written this way —
+  // CASCADE_COMPACT_CLAUDE_SYSTEM, CASCADE_REUSE_HASH_SYSTEM (both early returns) and
+  // DEVIN_CONNECT_RETRY_ON_EMPTY (`?? ''` then a multi-value off test). What makes a
+  // switch default-ON is that ONLY an explicit off value changes behaviour, so match
+  // the off-comparison itself — that is the invariant, not the fallback literal.
+  /(?:process\.)?env\.([A-Z][A-Z0-9_]+)\s*===\s*'0'/g,
 ];
 
 function readTree(dir) {
@@ -160,6 +199,7 @@ function hasOffPathTest(knob) {
 
 describe('default-on switch registry', () => {
   const discovered = discoverDefaultOnSwitches();
+  const srcText = readTree(SRC_DIR).map(([, s]) => s).join('\n');
 
   it('every default-on switch found in src/ is present in the ledger', () => {
     const missing = [...discovered].filter((k) => !(k in LEDGER)).sort();
@@ -172,9 +212,30 @@ describe('default-on switch registry', () => {
   it('the ledger has no stale entries', () => {
     // A knob that stopped being default-on (removed, or flipped to default-off) should
     // leave the ledger, or the ledger becomes decoration that outlives the code.
-    const stale = Object.keys(LEDGER).filter((k) => !discovered.has(k)).sort();
+    //
+    // HAND_REGISTERED is the narrow exception: a switch that IS default-on but whose
+    // spelling no regex here can see (see DEVIN_CONNECT_RETRY_ON_EMPTY's note). Without
+    // this set, registering such a switch makes it look stale, and the only ways out are
+    // to leave a real switch unregistered or to loosen the patterns until they produce
+    // false positives. Both are worse. Every name here must still be present in src/ —
+    // asserted below — so the entry cannot outlive the code it documents.
+    const stale = Object.keys(LEDGER)
+      .filter((k) => !discovered.has(k) && !HAND_REGISTERED.has(k))
+      .sort();
     assert.deepEqual(stale, [],
       `ledger names switches that are no longer default-on in src/: ${stale.join(', ')}`);
+  });
+
+  it('every hand-registered switch is still referenced in src/', () => {
+    // The exemption above skips pattern discovery, so this is what stops a
+    // hand-registered entry from outliving its code: the name must still appear
+    // somewhere in src/. Cheaper than dataflow, and enough to catch a deletion.
+    const vanished = [...HAND_REGISTERED]
+      .filter((k) => !srcText.includes(k))
+      .sort();
+    assert.deepEqual(vanished, [],
+      'hand-registered switches no longer present in src/ — delete the ledger entry: '
+      + `${vanished.join(', ')}`);
   });
 
   it('every switch claiming tested:true really has a test that sets it to 0', () => {
