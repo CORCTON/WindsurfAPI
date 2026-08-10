@@ -1734,8 +1734,10 @@ export function removeAccount(id) {
 //   - RPM-exhausted (would compound the very rate limit we're bleeding from)
 //   - excludeKeys (already tried this request)
 // Among the transient-cooled survivors we pick the SHORTEST remaining cooldown —
-// the one closest to self-healing, most likely to succeed right now. Default OFF
-// (degradedServeEnabled) so behaviour is byte-identical until an operator opts in.
+// the one closest to self-healing, most likely to succeed right now. Default ON since
+// ea1332e (`degradedServe` def:true) — it shipped default-off for a byte-identical rollout,
+// then was flipped deliberately to break the 429 lockout loop. Opt out with
+// WINDSURFAPI_DEGRADED_SERVE=0 to get a hard 429 back.
 function pickDegradedFallback(now, excludeKeys, modelKey, connectSelector) {
   let best = null;
   let bestUntil = Infinity;
