@@ -1261,7 +1261,10 @@ export async function addAccountByEmail(email, password) {
   if (existingByEmail) {
     const apiKeyChanged = account.apiKey !== result.apiKey;
     account.apiKey = result.apiKey;
-    if (apiKeyChanged) invalidateModelCatalogForAccount(account.id);
+    if (apiKeyChanged) {
+      invalidateModelCatalogForAccount(account.id);
+      bumpUserJwtEpoch();
+    }
     if (account.status === 'error') account.status = 'active';
     account.errorCount = 0;
   }
@@ -1459,6 +1462,17 @@ export function setAccountTier(id, tier) {
   return true;
 }
 
+// Invalidate any cached short-lived user JWT minted for the pool. The mint
+// cache lives in windsurf-api.js; the epoch is bumped on every key rotation /
+// account removal so a mint racing a logout cannot repopulate a stale JWT.
+// Fire-and-forget dynamic import — auth.js cannot statically depend on
+// windsurf-api.js (windsurf-api.js → config.js → runtime-config.js → auth.js
+// would cycle), and this already follows the module's existing lazy-import
+// pattern for windsurf-api.js in the model-catalog sync path.
+function bumpUserJwtEpoch() {
+  import('./windsurf-api.js').then(m => m.__bumpUserJwtCacheEpoch()).catch(() => {});
+}
+
 export function setAccountTokens(id, { apiKey, refreshToken, idToken } = {}) {
   const account = accounts.find(a => a.id === id);
   if (!account) return false;
@@ -1468,6 +1482,7 @@ export function setAccountTokens(id, { apiKey, refreshToken, idToken } = {}) {
   if (idToken != null) account.idToken = idToken;
   if (apiKeyChanged) {
     invalidateModelCatalogForAccount(account.id);
+    bumpUserJwtEpoch();
     trySyncModelCatalog();
   }
   saveAccounts();
@@ -1587,7 +1602,10 @@ export async function reLoginAccount(id, { force = false } = {}) {
       if (!result?.apiKey) throw new Error('login returned no apiKey');
       const apiKeyChanged = account.apiKey !== result.apiKey;
       account.apiKey = result.apiKey;
-      if (apiKeyChanged) invalidateModelCatalogForAccount(account.id);
+      if (apiKeyChanged) {
+        invalidateModelCatalogForAccount(account.id);
+        bumpUserJwtEpoch();
+      }
       if (result.refreshToken) account.refreshToken = result.refreshToken;
       account.status = 'active';
       account.errorCount = 0;
@@ -1673,6 +1691,7 @@ export function removeAccount(id) {
   const account = accounts[idx];
   accounts.splice(idx, 1);
   invalidateModelCatalogForAccount(id);
+  bumpUserJwtEpoch();
   // The account itself is gone — drop the "had a filter" marker too, unlike a key
   // rotation or status flip where the same account is still under the same upstream
   // restriction.

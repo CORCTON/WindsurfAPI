@@ -19,6 +19,7 @@
  *   uint64 request_id        = 9;
  *   string session_id        = 10;
  *   string extension_name    = 12;
+ *   string user_jwt          = 21;   // short-lived GetUserJwt cred (env-gated, default OFF)
  * }
  *
  * RawGetChatMessageRequest {
@@ -63,7 +64,7 @@ import {
   writeBoolField, parseFields, getField, getAllFields,
 } from './proto.js';
 import { getSystemPrompts } from './runtime-config.js';
-
+import { isUserJwtEnabled } from './windsurf-api.js';
 function readUrlLegacySummaryFallbackEnabled() {
   return process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE_READ_URL_LEGACY_SUMMARY === '1';
 }
@@ -95,8 +96,8 @@ const _os = platform() === 'darwin' ? 'macos' : platform() === 'win32' ? 'window
 const _hw = arch() === 'arm64' ? 'arm64' : 'x86_64';
 const DEFAULT_CLIENT_VERSION = process.env.WINDSURF_CLIENT_VERSION || '2.0.67';
 
-export function buildMetadata(apiKey, version = DEFAULT_CLIENT_VERSION, sessionId = null) {
-  return Buffer.concat([
+export function buildMetadata(apiKey, version = DEFAULT_CLIENT_VERSION, sessionId = null, userJwt = null) {
+  const parts = [
     writeStringField(1, 'windsurf'),          // ide_name
     writeStringField(2, version),             // extension_version
     writeStringField(3, apiKey),              // api_key
@@ -107,7 +108,14 @@ export function buildMetadata(apiKey, version = DEFAULT_CLIENT_VERSION, sessionI
     writeVarintField(9, Math.floor(Math.random() * 2**48)),  // request_id
     writeStringField(10, sessionId || randomUUID()), // session_id
     writeStringField(12, 'windsurf'),          // extension_name
-  ]);
+  ];
+  // Metadata.user_jwt = 21. Only populated when the caller fetched a
+  // short-lived JWT (WINDSURFAPI_USER_JWT=1, default OFF) — attaching it
+  // otherwise would change the wire every request ships for no reason.
+  if (userJwt) {
+    parts.push(writeStringField(21, userJwt));
+  }
+  return Buffer.concat(parts);
 }
 
 // ─── ChatMessage (for RawGetChatMessage) ───────────────────
@@ -151,14 +159,14 @@ function buildChatMessage(content, source, conversationId) {
  * @param {number} modelEnum - Windsurf model enum value
  * @param {string} [modelName] - Model name string (optional)
  */
-export function buildRawGetChatMessageRequest(apiKey, messages, modelEnum, modelName, sessionId = null) {
+export function buildRawGetChatMessageRequest(apiKey, messages, modelEnum, modelName, sessionId = null, userJwt = null) {
   const parts = [];
   const conversationId = randomUUID();
 
   // Field 1: Metadata — pass through the caller's session id so the
   // legacy Raw channel uses the same per-LS session as Cascade instead
   // of a fresh UUID per request (anti-fingerprint).
-  parts.push(writeMessageField(1, buildMetadata(apiKey, undefined, sessionId)));
+  parts.push(writeMessageField(1, buildMetadata(apiKey, undefined, sessionId, userJwt)));
 
   // Field 2: repeated ChatMessage (skip system, handled separately).
   // Windsurf's legacy RawGetChatMessage backend rejects role=tool and
@@ -328,7 +336,7 @@ export function buildStartCascadeRequest(apiKey, sessionId) {
  *          tool X with result Y" into the trajectory before the planner
  *          sees the next user turn. See src/cascade-native-bridge.js.
  */
-export function buildSendCascadeMessageRequest(apiKey, cascadeId, text, modelEnum, modelUid, sessionId, { toolPreamble, images, additionalSteps, nativeMode, nativeAllowlist, nativeEnvironment } = {}) {
+export function buildSendCascadeMessageRequest(apiKey, cascadeId, text, modelEnum, modelUid, sessionId, { toolPreamble, images, additionalSteps, nativeMode, nativeAllowlist, nativeEnvironment } = {}, userJwt = null) {
   const parts = [];
 
   // Field 1: cascade_id
@@ -338,7 +346,7 @@ export function buildSendCascadeMessageRequest(apiKey, cascadeId, text, modelEnu
   parts.push(writeMessageField(2, writeStringField(1, text)));
 
   // Field 3: metadata
-  parts.push(writeMessageField(3, buildMetadata(apiKey, undefined, sessionId)));
+  parts.push(writeMessageField(3, buildMetadata(apiKey, undefined, sessionId, userJwt)));
 
   // Field 5: cascade_config
   // DEFAULT mode enables vision but also activates Cascade's built-in tools

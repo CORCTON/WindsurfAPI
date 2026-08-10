@@ -1,0 +1,20 @@
+{
+  "tests": [
+    "test/getuserjwt.test.js"
+  ],
+  "expectBaselinePass": 10,
+  "mutations": [
+    {
+      "name": "the epoch guard is removed from the mint path: a GetUserJwt mint racing a logout/rotation caches and hands out a stale JWT. This is the monotonic-cacheEpoch invalidation the gap explicitly called for — without it, a logout followed by an in-flight mint repopulates a credential for the dead session",
+      "file": "src/windsurf-api.js",
+      "anchor": "        if (epochAtStart !== _cacheEpoch) {\n          throw new Error('GetUserJwt: cache epoch changed during mint (logout raced)');\n        }",
+      "replacement": "        if (false && epochAtStart !== _cacheEpoch) {\n          throw new Error('GetUserJwt: cache epoch changed during mint (logout raced)');\n        }"
+    },
+    {
+      "name": "the user_jwt gate inverts: Metadata field 21 is attached only when NO jwt is provided (and withheld when one is). The wire never carries the JWT even with WINDSURFAPI_USER_JWT=1 — the credential the feature exists to send never ships, and the no-jwt wire becomes non-identical to the old shape",
+      "file": "src/windsurf.js",
+      "anchor": "  if (userJwt) {\n    parts.push(writeStringField(21, userJwt));\n  }",
+      "replacement": "  if (!userJwt) {\n    parts.push(writeStringField(21, userJwt));\n  }"
+    }
+  ]
+}

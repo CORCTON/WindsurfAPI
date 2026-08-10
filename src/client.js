@@ -33,6 +33,12 @@ import {
 
 const LS_SERVICE = '/exa.language_server_pb.LanguageServerService';
 
+// Host the GetUserJwt RPC is minted against. The chat RPCs go through the
+// local LS, whose metadata is forwarded upstream — the JWT must be signed for
+// the same auth server the LS talks to. Keep it in sync with SERVER_HOSTS[0]
+// in windsurf-api.js (they were verified identical in the four-proto study).
+const SERVER_JWT_HOST = 'server.codeium.com';
+
 function acquireLsUseOrThrow(port) {
   const entry = beginLsUse(port);
   if (entry) return entry;
@@ -424,6 +430,19 @@ export class WindsurfClient {
     this.csrfToken = csrfToken;
   }
 
+  // ─── Short-lived user JWT (env-gated) ────────────────────
+  //
+  // GetUserJwt mints a ~24min HS256 credential that rsvedant/
+  // opencode-windsurf-auth treats as REQUIRED on chat RPCs. Gated by
+  // WINDSURFAPI_USER_JWT=1 (default OFF). The fetch is lazy + cached in
+  // windsurf-api.js; any failure resolves to null so the chat RPC still
+  // goes out with the pre-JWT wire shape (changing the wire is opt-in).
+  async _fetchUserJwtForChat() {
+    const { isUserJwtEnabled, getUserJwt } = await import('./windsurf-api.js');
+    if (!isUserJwtEnabled()) return null;
+    return getUserJwt(this.apiKey, SERVER_JWT_HOST, null);
+  }
+
   // ─── Legacy: RawGetChatMessage (streaming) ───────────────
 
   /**
@@ -435,7 +454,7 @@ export class WindsurfClient {
    * @param {string} [modelName] - Optional model name
    * @param {object} opts - { onChunk, onEnd, onError }
    */
-  rawGetChatMessage(messages, modelEnum, modelName, opts = {}) {
+  async rawGetChatMessage(messages, modelEnum, modelName, opts = {}) {
     acquireLsUseOrThrow(this.port);
     try {
       const { onChunk, onEnd, onError } = opts;
@@ -448,7 +467,13 @@ export class WindsurfClient {
       const lsEntry = getLsEntryByPort(this.port);
       if (lsEntry && !lsEntry.sessionId) lsEntry.sessionId = randomUUID();
       const sessionId = lsEntry?.sessionId;
-      const proto = buildRawGetChatMessageRequest(this.apiKey, messages, modelEnum, modelName, sessionId);
+      // GetUserJwt is gated by WINDSURFAPI_USER_JWT=1 (default OFF). The
+      // fetch is best-effort: a mint failure must NOT fail the chat RPC —
+      // the JWT is an optional credential enhancement, and failing the
+      // request on it would turn an env-opt-in into a new outage path.
+      let userJwt = opts.userJwt ?? null;
+      if (!userJwt) userJwt = await this._fetchUserJwtForChat().catch(() => null);
+      const proto = buildRawGetChatMessageRequest(this.apiKey, messages, modelEnum, modelName, sessionId, userJwt);
       const body = grpcFrame(proto);
 
       log.debug(`RawGetChatMessage: enum=${modelEnum} msgs=${messages.length}`);
@@ -783,13 +808,16 @@ export class WindsurfClient {
       // (fresh sessionId + panel init) + fresh StartCascade, with a
       // small backoff to let the LS settle.
       const sendMessage = async () => {
+        // Same best-effort JWT as the legacy channel (env-gated, default OFF);
+        // a mint failure must not fail the cascade message.
+        const userJwt = await this._fetchUserJwtForChat().catch(() => null);
         const sendProto = buildSendCascadeMessageRequest(this.apiKey, cascadeId, text, modelEnum, modelUid, sessionId, {
           toolPreamble, images,
           nativeMode: !!nativeMode,
           nativeAllowlist: nativeAllowlist || null,
           nativeEnvironment: nativeEnvironment || '',
           additionalSteps: additionalSteps || null,
-        });
+        }, userJwt);
         await grpcUnary(
           this.port, this.csrfToken, `${LS_SERVICE}/SendUserCascadeMessage`, grpcFrame(sendProto)
         );

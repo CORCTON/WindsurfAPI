@@ -13,6 +13,8 @@
  *   - getUserStatus(apiKey, proxy)        — plan info, quotas, credit balance
  *   - getCascadeModelConfigs(apiKey, proxy) — live model catalog (82+ models)
  *   - checkMessageRateLimit(apiKey, proxy)  — pre-flight rate limit check
+ *   - getUserJwt(apiKey, host, proxy)     — short-lived user JWT (env-gated,
+ *     rides in Metadata.user_jwt on chat RPCs via src/windsurf.js)
  */
 
 import http from 'http';
@@ -29,6 +31,36 @@ const USER_STATUS_PATH = '/exa.seat_management_pb.SeatManagementService/GetUserS
 const MODEL_CONFIGS_PATH = '/exa.api_server_pb.ApiServerService/GetCascadeModelConfigs';
 const RATE_LIMIT_PATH = '/exa.api_server_pb.ApiServerService/CheckUserMessageRateLimit';
 const WEB_SEARCH_PATH = '/exa.api_server_pb.ApiServerService/GetWebSearchResults';
+// exa.auth_pb.AuthService/GetUserJwt → GetUserJwtResponse { user_jwt = 1,
+// custom_api_server_url = 2 }. Cross-validated across four independent .protos
+// (windsurf-grpc, widevin, Antigravity-Tools-LS, OmniRoute); rsvedant/
+// opencode-windsurf-auth treats the JWT as REQUIRED on chat RPCs and rides it
+// in Metadata.user_jwt = 21. ~24 min TTL, HS256-signed. Gate: env-only, default
+// OFF — attaching user_jwt changes the wire every chat RPC sends, and we have no
+// live capture proving the Windsurf backend needs or tolerates it.
+const USER_JWT_PATH = '/exa.auth_pb.AuthService/GetUserJwt';
+const USER_JWT_TTL_MS = 24 * 60 * 1000;
+// TTL floor lets tests (which fake time via cacheEpoch) and clock jitter force
+// a re-mint without waiting out a full window; the JWT is not persisted.
+const USER_JWT_MIN_TTL_MS = 5 * 60 * 1000;
+
+// Env switch: enable minting + attaching the short-lived user JWT. Default OFF
+// (byte-identical wire until an operator opts in). Read through a function so
+// tests can flip it and callers share one source of truth.
+export function isUserJwtEnabled(env = process.env) {
+  return String(env.WINDSURFAPI_USER_JWT || '') === '1';
+}
+
+// Monotonic epoch: bumped on every sign-out / key rotation. A mint that races a
+// logout can't re-populate a stale JWT — the epoch guard below rejects the
+// result of any mint that started before the bump. Mirrors rsvedant's cache
+// design (per-(apiKey,host) in-flight dedup + cacheEpoch).
+let _cacheEpoch = 0;
+const _jwtCache = new Map();   // `${apiKey}@${host}` → { jwt, expiresAt, epoch }
+const _jwtInflight = new Map(); // `${apiKey}@${host}` → Promise
+
+/** Test seam: advance the epoch (logout/rotation path in auth.js calls this). */
+export function __bumpUserJwtCacheEpoch() { _cacheEpoch++; }
 
 import { isSocks, createSocksTunnel } from './socks.js';
 
@@ -122,6 +154,100 @@ function postJson(host, path, body, proxy) {
       req.end();
     } catch (err) { reject(err); }
   });
+}
+
+/**
+ * Mint (and cache) the short-lived user JWT for `apiKey` from the given host.
+ *
+ * Returns the JWT string. Callers that will send it MUST first check
+ * isUserJwtEnabled() — this function does the network round-trip regardless, so
+ * the hot path must not call it when the feature is off.
+ *
+ * Cache shape (mirrors rsvedant/opencode-windsurf-auth):
+ *   - per-(apiKey,host) entries, so a multi-host pool doesn't share one JWT
+ *     minted against the wrong host;
+ *   - in-flight dedup: concurrent callers for the same (apiKey,host) share one
+ *     upstream RPC instead of stampeding GetUserJwt;
+ *   - monotonic cacheEpoch: auth.js bumps the epoch on every logout / key
+ *     rotation, so a mint racing a logout cannot repopulate a stale JWT. The
+ *     epoch guard lives INSIDE the shared mint promise, so every awaiter (the
+ *     owner and any concurrent joiner) sees the same rejection rather than the
+ *     owner alone — a joiner that returned a stale token would defeat the guard.
+ *
+ * The TTL is shortened to USER_JWT_MIN_TTL_MS when it would expire sooner, so
+ * a process that observes clock skew re-mints rather than trusting a token that
+ * may already be expired upstream.
+ *
+ * @param {string} apiKey
+ * @param {string} host
+ * @param {object} [proxy]
+ * @returns {Promise<string>}
+ */
+export async function getUserJwt(apiKey, host, proxy = null) {
+  const key = `${apiKey}@${host}`;
+  const now = Date.now();
+  const cached = _jwtCache.get(key);
+  if (cached && cached.epoch === _cacheEpoch && cached.expiresAt > now) {
+    return cached.jwt;
+  }
+  if (_jwtInflight.has(key)) {
+    // A mint is already running for this (apiKey,host) — share its guarded
+    // result instead of stampeding GetUserJwt. On failure, fall through and
+    // start a fresh mint below.
+    try { return await _jwtInflight.get(key); } catch { /* retry fresh */ }
+  }
+  const epochAtStart = _cacheEpoch;
+  const mint = (async () => {
+    const body = { metadata: buildMetadata(apiKey) };
+    let lastErr = null;
+    for (const px of proxy ? [proxy, null] : [null]) {
+      try {
+        const res = await postJson(host, USER_JWT_PATH, body, px);
+        if (res.status >= 400) {
+          lastErr = new Error(`GetUserJwt ${host} → ${res.status}: ${res.raw.slice(0, 160)}`);
+          continue;
+        }
+        const jwt = res.data?.userJwt || res.data?.user_jwt;
+        if (typeof jwt !== 'string' || !jwt) {
+          lastErr = new Error(`GetUserJwt ${host}: response missing user_jwt`);
+          continue;
+        }
+        // A logout/rotation that raced this mint must not re-populate the cache
+        // with a stale JWT nor hand one to any awaiter — reject outright.
+        if (epochAtStart !== _cacheEpoch) {
+          throw new Error('GetUserJwt: cache epoch changed during mint (logout raced)');
+        }
+        const mintedAt = Date.now();
+        const ttl = Math.max(USER_JWT_MIN_TTL_MS, Math.min(USER_JWT_TTL_MS, Number(res.data?.ttlMs) || USER_JWT_TTL_MS));
+        _jwtCache.set(key, { jwt, expiresAt: mintedAt + ttl, epoch: _cacheEpoch });
+        return jwt;
+      } catch (e) {
+        lastErr = e;
+        if (px && isProxyError(e)) break; // bad tunnel — go straight to direct
+      }
+    }
+    throw lastErr || new Error('GetUserJwt: all hosts failed');
+  })();
+  _jwtInflight.set(key, mint);
+  try {
+    return await mint;
+  } finally {
+    // Only the owner reaches here (joiners early-returned above); remove the
+    // in-flight marker so a later caller can mint a fresh one.
+    if (_jwtInflight.get(key) === mint) _jwtInflight.delete(key);
+  }
+}
+
+/** Test seam: reset the cache + epoch so tests can start clean. */
+export function __resetUserJwtCache() {
+  _jwtCache.clear();
+  _jwtInflight.clear();
+  _cacheEpoch = 0;
+}
+
+/** Test seam: current cache size (dedup/invalidation assertions). */
+export function __userJwtCacheStats() {
+  return { entries: _jwtCache.size, inflight: _jwtInflight.size, epoch: _cacheEpoch };
 }
 
 function normalizeWebSearchResults(data) {
