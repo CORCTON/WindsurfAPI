@@ -1,7 +1,7 @@
 # 环境变量参考（补 .env.example 未收录的部分）
 
 README 的表格列常用变量，[.env.example](../.env.example) 是完整清单 —— 两者合计覆盖
-74 个。本文补齐**剩下 83 个只存在于源码里**的开关：注释很全，但运营翻不到。
+74 个。本文补齐**剩下 84 个只存在于源码里**的开关：注释很全，但运营翻不到。
 
 数开关**别用裸 `grep 'env\.'`**，有两个坑：一是 `WINDSURFAPI_TRACE` 这类名字是
 `WINDSURFAPI_TRACE_DIR` 的前缀，正则不加边界会重复计数；二是**相当一部分读取点
@@ -19,15 +19,30 @@ PAT=re.compile(r"""(?:(?:process\.)?env\.([A-Z][A-Z0-9_]{2,})
                  |positiveIntEnv\(\s*['"]([A-Z][A-Z0-9_]{2,})['"]
                  |\benv:\s*['"]([A-Z][A-Z0-9_]{2,})['"]
                  |\bconst\s+[A-Za-z_$][\w$]*\s*=\s*['"]([A-Z][A-Z0-9_]{2,})['"])""",re.X)
-def strip(s):
-    s=re.sub(r'/\*.*?\*/','',s,flags=re.S)          # 注释里的名字不算读取点
-    return '\n'.join(re.sub(r'//.*$','',l) for l in s.split('\n'))
+def strip(s):                                       # 注释里的名字不算读取点
+    # 不能用 re.sub(r'/\*.*?\*/', '', s, flags=re.S) —— 本仓库有两个文件的
+    # **正则字面量里含 `*/`**（如 /\*\//），于是 `*/` 比 `/*` 多（identity-neutralize.js
+    # 是 9 比 7）。惰性匹配会在正则内部的 `*/` 处收尾，从那之后全部错配，把真代码删掉。
+    # 实测代价：WINDSURFAPI_NEUTRALIZE_CC_AGGRESSIVE 和 DEVIN_CONNECT_CRED_KEY
+    #（一个凭证开关）对统计和守卫双双隐形，而两者都是绿的。逐行处理即可避免。
+    out=[]; inB=False
+    for raw in s.split('\n'):
+        line=raw
+        if inB:
+            c=line.find('*/')
+            if c==-1: out.append(''); continue
+            line=line[c+2:]; inB=False
+        line=re.sub(r'/\*.*?\*/','',line)           # 单行内自闭合的块注释
+        o=line.find('/*'); lc=line.find('//')
+        if o!=-1 and (lc==-1 or o<lc): inB=True; line=line[:o]
+        out.append(re.sub(r'//.*$','',line))
+    return '\n'.join(out)
 names=set()
 for f in files:
     for m in PAT.finditer(strip(pathlib.Path(f).read_text(errors='replace'))):
         n=next(g for g in m.groups() if g)
         if n.startswith(('DEVIN_CONNECT_','WINDSURFAPI_','CASCADE_')): names.add(n)
-print(len(names))   # 157（2026-08-10，合入 PR #249 之后）
+print(len(names))   # 158（2026-08-10，合入 PR #249 之后）
 PY
 ```
 
@@ -95,6 +110,7 @@ PY
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `WINDSURFAPI_TRACE` | 关 | 是否写 trace（`trace.js`，`\|\| ''` 后 `=== '1'`）。注意它**不门控** `WINDSURFAPI_TRACE_DIR` —— `traceRoot()` 无条件读目录变量，只是没开 trace 时不往里写。 |
+| `WINDSURFAPI_TRACE_DIR` | `<cwd>/.trace` | trace 落盘根目录（`trace.js` 的 `traceRoot()`，`devin-connect.js` 写上游 wire 字节时也读同一个变量）。每个请求一个子目录，按固定 leg 名分片：`01-client-req` / `02-routing` / `03-upstream-req` / `04-upstream-res` / `05-client-res`。**上一行说过它不受 `WINDSURFAPI_TRACE` 门控**；此前只作为那条说明的一部分出现，没有自己的条目。 |
 | `WINDSURFAPI_PROTO_TRACE_DIR` | `/data/proto-trace` | proto trace 落盘目录（`\|\| '/data/proto-trace'`）。注意这是**绝对路径**默认值，和 `WINDSURFAPI_TRACE_DIR`（默认 `<cwd>/.trace`）不是一套。 |
 | `WINDSURFAPI_PROTO_TRACE_STRINGS` | 关 | 把 proto 字段的**字符串内容**写进 trace（`proto-trace.js:814`，`=== '1'`）。关闭时只落 sha256，不落原文。开启后走 `redactPreview()` 脱敏：命名密钥（`devin-session-token`/`api_key`/`idToken`/`refreshToken` 等）、邮箱、任何 32+ 字符的高熵串都替换成 `<redacted>`，再截断到 240 字符。**即便如此，开启后 trace 里会有真实 prompt 片段**，排查完就关。 |
 | `WINDSURFAPI_PROTO_TRACE_ERROR_STRINGS` | 关 | 出错时额外输出字符串内容（`=== '1'`）。和 `PROTO_TRACE_STRINGS` 一样走脱敏。 |
@@ -149,6 +165,7 @@ PY
 | `DEVIN_CONNECT_WIRE_MAX_TOKENS` | `8192` | 请求里 `max_tokens` 的默认值（`devin-connect.js`，要求正整数否则回落 8192）。和 `handlers/messages.js`、`gemini.js` 里的 `\|\| 8192` 是一套。**在模块加载时求值一次**，改它要重启。 |
 | `WINDSURFAPI_TOOL_DESC_MAX` | `500` | 工具描述的字符上限（`toolDescMax()`，要求 `>= 0` 的有限数否则回落 500）。**`0` = 不限长**，不是"全砍掉"。注释说明当前只用于长度阈值判断。 |
 | `CASCADE_1M_HISTORY_BYTES` | `900000` | 1M 上下文模型的历史字节预算（`client.js`，`positiveIntEnv`）。非 1M 模型走 `CASCADE_MAX_HISTORY_BYTES`（默认 `600000`）。 |
+| `CASCADE_MAX_HISTORY_BYTES` | `600000` | 非 1M 模型的历史字节预算（`client.js`，`positiveIntEnv`）。源码注释记着这个默认值的来历：早先是 400KB，**200KB 曾导致 30+ 轮工具调用的会话静默丢上下文**，所以调到 600KB 留出余量。调小之前先想清楚这一点。此前只作为上一行的说明文字出现，没有自己的条目。 |
 | `CASCADE_MAX_WAIT_MS` | `600000` | Cascade 单次等待上限（`client.js`）。曾出现在 2.0.74 的 release notes 里，但没进过参考文档。 |
 | `CASCADE_IDLE_GRACE_MS` | `8000` | 空闲宽限（`client.js`）。 |
 | `CASCADE_COLD_STALL_BASE_MS` | `30000` | 冷启动停顿基数（`client.js`）。 |
@@ -201,6 +218,7 @@ PY
 | 变量 | 默认 | 边界 | 说明 |
 |---|---|---|---|
 | `WINDSURFAPI_BREAKER` | **开**（`true`） | `bool` | 熔断总开关。关掉后下面所有 `BREAKER_*` 旋钮都不再起作用，坏账号也不会被摘掉。 |
+| `WINDSURFAPI_ERROR_STREAK_THRESHOLD` | `3` | 1–50 | 连续几次错误把账号摘出去（`runtime-config.js` 的 `BREAKER_TUNABLES`，表驱动）。和下一行的窗口配对：**窗口内**攒到这个次数才熔断。此前只作为下一行的说明文字出现，没有自己的条目 —— 表驱动开关容易这样漏掉，因为按 `env.NAME` 搜不到它。 |
 | `WINDSURFAPI_ERROR_WINDOW_MS` | `1800000`（30 分钟） | 1e3–8.64e7 | 错误计数的统计窗口，和 `ERROR_STREAK_THRESHOLD` 配对使用。 |
 | `WINDSURFAPI_SPEND_ON_DEMAND` | **开**（`true`） | `bool` | 是否允许按需消费。**涉及真实花钱**，和下面的 `ON_DEMAND_RESERVE_USD` 是一套。 |
 | `WINDSURFAPI_INTERNAL_ERROR_THRESHOLD` | `2` | 1–50 | 连续几次内部错误触发隔离。 |
@@ -216,8 +234,8 @@ PY
 | `WINDSURFAPI_QUOTA_COOLDOWN` | **开**（`true`） | `bool` | 配额冷却。 |
 | `WINDSURFAPI_ON_DEMAND_RESERVE_USD` | `0` | 0–100000 | 按需消费的预留额度（`float`，美元）。**涉及真实花钱，改前想清楚。** |
 
-至此三前缀开关 157 个全部有据可查：`.env.example` + README 覆盖 74 个（含 PR #249
-的 `WINDSURFAPI_LEAK_TRACE`），本文覆盖其余 83 个。这个不变式由
+至此三前缀开关 158 个全部有据可查：`.env.example` + README 覆盖 74 个（含 PR #249
+的 `WINDSURFAPI_LEAK_TRACE`），本文覆盖其余 84 个。这个不变式由
 [`test/docs-consistency-guard.test.js`](../test/docs-consistency-guard.test.js) 的
 「every switch read in src/ is findable in some reader-facing doc」守着 ——
 **加新开关不写文档会直接让测试变红**，不再依赖人记得。
