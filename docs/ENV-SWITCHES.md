@@ -43,6 +43,19 @@ README 的表格列常用变量，[.env.example](../.env.example) 是完整清�
 | `WINDSURFAPI_NATIVE_BRIDGE_STATS_KEY_LIMIT` | `200` | 统计里最多保留多少个 key（`native-bridge-stats.js`，非有限值或 ≤0 时回落 200）。 |
 | `WINDSURFAPI_NATIVE_BRIDGE_DECISION_RING_SIZE` | `25` | 决策环形缓冲保留多少条（同上，回落 25）。调大能看更长的决策历史。 |
 
+## 默认开的功能开关
+
+这五个默认**开**，所以只能往「关」的方向调。它们都是「设 `0` 才关闭」的写法 ——
+写成别的值（`false` / `off`）不生效，除 `RESPONSE_CACHE` 外都只认精确的 `'0'`。
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `WINDSURFAPI_ENV_LIFT` | **开** | 把调用方的环境上下文提升进 prompt（`handlers/chat.js`，`?? '1'` 后 `=== '0'` 关闭）。注意这个用 `?? '1'` 而不是 `\|\| '1'`，且会 trim + 转小写。 |
+| `WINDSURFAPI_LS_PER_PROXY_USER` | **开** | 每个 proxy 用户独立一个 LS 实例（`langserver.js`，`=== '0'` 关闭）。关掉会让不同用户共享 LS，省内存但失去隔离。 |
+| `WINDSURFAPI_NLU_RECOVERY` | **开** | 意图抽取失败时走恢复路径（`handlers/intent-extractor.js`，`=== '0'` 时直接返回空数组）。 |
+| `WINDSURFAPI_VARIANT_FALLBACK_ON_RATE_LIMIT` | **开** | 撞限流时自动回落到同族其它变体（`handlers/chat.js`，`=== '0'` 关闭）。关掉后限流直接报错给客户端。 |
+| `WINDSURFAPI_RESPONSE_CACHE` | **开** | 响应缓存（`cache.js`）。链式兜底：`RESPONSE_CACHE_ENABLED ?? WINDSURFAPI_RESPONSE_CACHE ?? '1'`，所以前者优先。这个认多种关闭写法（`0`/`false`/`off`/`no`）。 |
+
 ## 待补
 
-余下 21 个（容量调参、开发调试两组）分批补齐。
+余下 16 个（trace / dump 一组、单模型行为微调一组）分批补齐。
