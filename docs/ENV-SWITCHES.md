@@ -56,6 +56,21 @@ README 的表格列常用变量，[.env.example](../.env.example) 是完整清�
 | `WINDSURFAPI_VARIANT_FALLBACK_ON_RATE_LIMIT` | **开** | 撞限流时自动回落到同族其它变体（`handlers/chat.js`，`=== '0'` 关闭）。关掉后限流直接报错给客户端。 |
 | `WINDSURFAPI_RESPONSE_CACHE` | **开** | 响应缓存（`cache.js`）。链式兜底：`RESPONSE_CACHE_ENABLED ?? WINDSURFAPI_RESPONSE_CACHE ?? '1'`，所以前者优先。这个认多种关闭写法（`0`/`false`/`off`/`no`）。 |
 
+## trace / dump / 运维
+
+排查时才开。几个会往磁盘写内容，注意目录别落进打包或提交范围。
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `WINDSURFAPI_TRACE` | 关 | 是否写 trace（`trace.js`，`\|\| ''` 后 `=== '1'`）。注意它**不门控** `WINDSURFAPI_TRACE_DIR` —— `traceRoot()` 无条件读目录变量，只是没开 trace 时不往里写。 |
+| `WINDSURFAPI_PROTO_TRACE_DIR` | `/data/proto-trace` | proto trace 落盘目录（`\|\| '/data/proto-trace'`）。注意这是**绝对路径**默认值，和 `WINDSURFAPI_TRACE_DIR`（默认 `<cwd>/.trace`）不是一套。 |
+| `WINDSURFAPI_PROTO_TRACE_ERROR_STRINGS` | 关 | 出错时额外输出字符串内容（`=== '1'`）。和 `PROTO_TRACE_STRINGS` 一样走脱敏。 |
+| `WINDSURFAPI_DUMP_SYSTEM_PROMPT` | 关 | 把最终发给上游的 system prompt 打出来（`windsurf.js`，`=== '1'`）。**会输出完整 prompt 内容**，排查完记得关。 |
+| `WINDSURFAPI_PROBE_CANARY` | 关 | 发探针金丝雀请求（`=== '1'`）。校准脚本用。 |
+| `WINDSURFAPI_STABLE_DEVICE` | 空（= 每次随机） | 固定设备指纹种子（`\|\| ''`）。设成固定值可让请求可复现 —— 对比抓包时有用，**生产别设**，指纹固定会更容易被识别。 |
+| `WINDSURFAPI_SKIP_LS_CLEANUP` | 关（= 会清理） | **名字是反的**：`!== '1'` 时执行清理，所以设 `1` 才是「跳过」（`index.js`）。自更新后残留的 LS 会占着池端口累积，默认清理。同一台机器跑多个 WindsurfAPI 时才需要设 `1`。 |
+| `WINDSURFAPI_RESTART_SUPERVISED` | 关（= 自动探测） | **强制**声明自己跑在守护进程下（`restart.js`，命中时返回 `kind: 'override'`）。平时不需要设 —— systemd 自己会导出 `INVOCATION_ID`，代码据此自动识别。只在自动探测判错时用它兜底。 |
+
 ## 待补
 
-余下 16 个（trace / dump 一组、单模型行为微调一组）分批补齐。
+余下 8 个（单模型行为微调）下一批。
