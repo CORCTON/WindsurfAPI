@@ -1,7 +1,7 @@
 # 环境变量参考（补 .env.example 未收录的部分）
 
 README 的表格列常用变量，[.env.example](../.env.example) 是完整清单 —— 两者合计覆盖
-73 个。本文补齐**剩下 83 个只存在于源码里**的开关：注释很全，但运营翻不到。
+74 个。本文补齐**剩下 83 个只存在于源码里**的开关：注释很全，但运营翻不到。
 
 数开关**别用裸 `grep 'env\.'`**，有两个坑：一是 `WINDSURFAPI_TRACE` 这类名字是
 `WINDSURFAPI_TRACE_DIR` 的前缀，正则不加边界会重复计数；二是**相当一部分读取点
@@ -17,7 +17,8 @@ files=[f for f in subprocess.run(['git','ls-files','src'],capture_output=True,
 PAT=re.compile(r"""(?:(?:process\.)?env\.([A-Z][A-Z0-9_]{2,})
                  |(?:process\.)?env\[\s*['"]([A-Z][A-Z0-9_]{2,})['"]
                  |positiveIntEnv\(\s*['"]([A-Z][A-Z0-9_]{2,})['"]
-                 |\benv:\s*['"]([A-Z][A-Z0-9_]{2,})['"])""",re.X)
+                 |\benv:\s*['"]([A-Z][A-Z0-9_]{2,})['"]
+                 |\bconst\s+[A-Za-z_$][\w$]*\s*=\s*['"]([A-Z][A-Z0-9_]{2,})['"])""",re.X)
 def strip(s):
     s=re.sub(r'/\*.*?\*/','',s,flags=re.S)          # 注释里的名字不算读取点
     return '\n'.join(re.sub(r'//.*$','',l) for l in s.split('\n'))
@@ -26,9 +27,13 @@ for f in files:
     for m in PAT.finditer(strip(pathlib.Path(f).read_text(errors='replace'))):
         n=next(g for g in m.groups() if g)
         if n.startswith(('DEVIN_CONNECT_','WINDSURFAPI_','CASCADE_')): names.add(n)
-print(len(names))   # 156（2026-08-10）
+print(len(names))   # 157（2026-08-10，合入 PR #249 之后）
 PY
 ```
+
+第五种形式（`const X = 'FOO'` 然后 `env[X]`）是 PR #249 带进来的,当时前四种
+全部漏掉了它 —— 守卫绿着,统计却少算一个。所以这份清单的数字**不要手抄**,
+跑上面的脚本。
 
 每个默认值都是**逐个打开源码站点读出来的**，不是按名字推断。文档写错默认值比没文档更坏，
 所以标了取值位置，可自行核对。
@@ -211,8 +216,8 @@ PY
 | `WINDSURFAPI_QUOTA_COOLDOWN` | **开**（`true`） | `bool` | 配额冷却。 |
 | `WINDSURFAPI_ON_DEMAND_RESERVE_USD` | `0` | 0–100000 | 按需消费的预留额度（`float`，美元）。**涉及真实花钱，改前想清楚。** |
 
-至此三前缀开关 156 个全部有据可查：`.env.example` + README 覆盖 73 个，本文覆盖
-其余 83 个。这个不变式由
+至此三前缀开关 157 个全部有据可查：`.env.example` + README 覆盖 74 个（含 PR #249
+的 `WINDSURFAPI_LEAK_TRACE`），本文覆盖其余 83 个。这个不变式由
 [`test/docs-consistency-guard.test.js`](../test/docs-consistency-guard.test.js) 的
 「every switch read in src/ is findable in some reader-facing doc」守着 ——
 **加新开关不写文档会直接让测试变红**，不再依赖人记得。
