@@ -713,14 +713,18 @@ barChart(svgEl("tags"), D.tags.map(t=>({
 /* ============ 统计卡 ============ */
 {
   const stats = [
-    ["1208","总提交（4 个月）","c-accent","1205 条 commit 全量 + 合并"],["183","版本 tag","c-info","v1.4.0 → v3.9.21"],
-    ["69","PR（47 合并）","c-success","34 位外部贡献者"],["177","issue（88% 解决）","c-warn","口径：COMPLETED/总数"],
-    ["28","自伤/返工事件","c-error","8 起事故级"],["34","外部贡献者","c-info","warelik 15 个 S×7 领跑"],
-    ["40%","提交是 fix","c-accent","482/1208"],["14 分 49 秒","最短发版间隔","c-warn","v3.9.16→v3.9.17"],
-    ["81","单日峰值","c-error","08-04 · 一天五版"]
+    {v:"1208",n:"1208",l:"总提交（4 个月）",c:"c-accent",s:"1205 条 commit 全量 + 合并"},
+    {v:"183",n:"183",l:"版本 tag",c:"c-info",s:"v1.4.0 → v3.9.21"},
+    {v:"69",n:"69",l:"PR（47 合并）",c:"c-success",s:"34 位外部贡献者"},
+    {v:"177",n:"177",l:"issue（88% 解决）",c:"c-warn",s:"口径：COMPLETED/总数"},
+    {v:"28",n:"28",l:"自伤/返工事件",c:"c-error",s:"8 起事故级"},
+    {v:"34",n:"34",l:"外部贡献者",c:"c-info",s:"warelik 15 个 S×7 领跑"},
+    {v:"40%",n:"40",l:"提交是 fix",c:"c-accent",s:"482/1208"},
+    {v:"14 分 49 秒",n:"",l:"最短发版间隔",c:"c-warn",s:"v3.9.16→v3.9.17"},
+    {v:"81",n:"81",l:"单日峰值",c:"c-error",s:"08-04 · 一天五版"}
   ];
-  document.getElementById("stats").innerHTML = stats.map(([v,l,c,s],i)=>
-    `<div class="stat" style="--i:${i}"><span class="num ${c}" data-count="${v.replace(/[^0-9.]/g,'')}" data-prefix="${v.includes('%')?'':''}">${v}</span><span class="cap">${l}<small>${s||''}</small></span></div>`).join("");
+  document.getElementById("stats").innerHTML = stats.map((st,i)=>
+    `<div class="stat" style="--i:${i}"><span class="num ${st.c}" ${st.n ? `data-count="${st.n}"` : ""}>${st.v}</span><span class="cap">${st.l}<small>${st.s||''}</small></span></div>`).join("");
 }
 
 /* ============ 动画工具 ============ */
