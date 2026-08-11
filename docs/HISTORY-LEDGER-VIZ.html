@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WindsurfAPI · 全局历史账本可视化</title>
+<meta name="description" content="WindsurfAPI 项目 2026-04-09 → 2026-08-11 的全部历史：1208 个提交、183 个版本、69 个 PR、177 个 issue 的可视化总览">
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --border: #30363d;
+    --gold: #f5c518; --gold-dim: #d99e0b;
+    --text: #e6edf3; --dim: #8b949e; --green: #3fb950;
+    --red: #f85149; --blue: #58a6ff; --purple: #bc8cff;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; padding: 24px 16px 60px; }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+  header { text-align: center; padding: 28px 0 8px; }
+  header h1 { font-size: 28px; font-weight: 700; letter-spacing: 0.5px; }
+  header h1 span { color: var(--gold); }
+  header p { color: var(--dim); margin-top: 8px; font-size: 14px; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 28px 0; }
+  .stat { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; text-align: center; }
+  .stat b { display: block; font-size: 30px; color: var(--gold); font-weight: 700; }
+  .stat span { font-size: 12px; color: var(--dim); }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 20px; margin-bottom: 16px; }
+  .card h2 { font-size: 16px; margin-bottom: 4px; display: flex; align-items: center; gap: 8px; }
+  .card h2::before { content: ""; width: 4px; height: 16px; background: var(--gold); border-radius: 2px; }
+  .card .sub { color: var(--dim); font-size: 12px; margin-bottom: 14px; }
+  svg { width: 100%; height: auto; display: block; }
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: var(--dim); margin-top: 8px; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; }
+  .foot { text-align: center; color: var(--dim); font-size: 12px; margin-top: 32px; line-height: 1.8; }
+  .foot code { background: #21262d; padding: 1px 6px; border-radius: 4px; font-size: 11px; }
+  .phase { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin-top: 8px; }
+  .phase div { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; font-size: 13px; }
+  .phase b { color: var(--gold); }
+  .phase small { display: block; color: var(--dim); margin-top: 3px; font-size: 11px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>WindsurfAPI <span>全局历史账本</span></h1>
+    <p>2026-04-09 → 2026-08-11 · 4 个月 · 从单机反代脚本到 2930★ 的网关</p>
+  </header>
+
+  <div class="stats" id="stats"></div>
+
+  <div class="card">
+    <h2>月度提交节奏</h2>
+    <div class="sub">4 月成型冲刺（339）· 5 月停滞深水（98）· 6 月换轨（141）· 7-8 月高速期（328/302）</div>
+    <svg id="months" viewBox="0 0 1000 260"></svg>
+  </div>
+
+  <div class="card">
+    <h2>每周脉搏</h2>
+    <div class="sub">W17（04-21 前后）issue 洪峰 229 条 · W20-W21（5 月中旬）8 天空窗 · W32（08-04）爆发 247 条</div>
+    <svg id="weeks" viewBox="0 0 1000 300"></svg>
+  </div>
+
+  <div class="card">
+    <h2>提交类型构成</h2>
+    <div class="sub">fix 占 40% —— 这个项目修 bug 的时间比写功能多</div>
+    <svg id="kinds" viewBox="0 0 1000 260"></svg>
+  </div>
+
+  <div class="card">
+    <h2>单日峰值 Top 10</h2>
+    <div class="sub">08-04 单日 81 条：v3.9.10→v3.9.14 五连发，最短间隔 14 分钟</div>
+    <svg id="days" viewBox="0 0 1000 300"></svg>
+  </div>
+
+  <div class="card">
+    <h2>一天 24 小时</h2>
+    <div class="sub">凌晨 2 点还在提交 —— 该项目没有作息表</div>
+    <svg id="hours" viewBox="0 0 1000 180"></svg>
+  </div>
+
+  <div class="card">
+    <h2>版本节奏</h2>
+    <div class="sub">183 个 tag：4-5 月 52/52 个（每日一版），8 月 14 个（6 天 14 版）</div>
+    <svg id="tags" viewBox="0 0 1000 260"></svg>
+  </div>
+
+  <div class="card">
+    <h2>四个阶段</h2>
+    <div class="phase">
+      <div><b>成型期</b> 04-09 ~ 04-30<small>单机脚本→完整网关 · issue 洪峰 82 个 · 98% 解决率 · 单日 37-53 条</small></div>
+      <div><b>深水区</b> 05-01 ~ 06-05<small>工具兼容/上下文/粘性会话 · 中旬 8 天空窗（离线研究）· #115 六天四稿</small></div>
+      <div><b>换轨期</b> 06-05 ~ 06-30<small>Cascade bridge 爆发 → devin-connect 桥 24 小时诞生 · 探针烧账户事故</small></div>
+      <div><b>高速期</b> 07-01 ~ 08-11<small>v3.0-v3.9 密集发布 · 对抗 review 文化 · 会话保真三线 · 模型同步</small></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>自伤与返工（28 起，按时间）</h2>
+    <div class="sub">红色 = 烧钱/事故级 · 橙色 = 合并后自毁 · 灰色 = 返工自打脸 —— 全都写进了账本</div>
+    <svg id="selfharm" viewBox="0 0 1000 220"></svg>
+  </div>
+
+  <div class="foot">
+    数据源：git log 全量 1208 条 + 22 个并行采集 agent · 逐条账见 <code>docs/HISTORY-LEDGER-2026-*.md</code> · 总账 <code>docs/HISTORY-LEDGER.md</code><br>
+    零依赖纯 SVG 渲染 · 每个 hash 都可 <code>git show</code> 验证
+  </div>
+</div>
+
+<script>
+const D = {
+  months: {"2026-04":339,"2026-05":98,"2026-06":141,"2026-07":328,"2026-08":302},
+  weeks: [["W16",8],["W17",229],["W18",130],["W19",30],["W20",7],["W21",4],["W22",14],["W23",66],["W24",8],["W25",2],["W26",12],["W27",91],["W28",136],["W29",51],["W30",40],["W31",66],["W32",247],["W33",52]],
+  kinds: {"fix":482,"feat":207,"docs":126,"test":100,"chore":85,"other":62,"merge":57,"release":48,"refactor":14,"ci":9,"revert":9,"perf":6,"style":2,"build":1},
+  days: [["2026-04-24",53],["2026-04-23",51],["2026-08-10",46],["2026-08-05",45],["2026-04-21",37],["2026-07-08",34],["2026-08-03",34],["2026-08-06",34],["2026-04-29",32],["2026-07-13",27]],
+  hours: {"00":65,"01":49,"02":47,"03":56,"04":29,"05":49,"06":43,"07":51,"08":43,"09":33,"10":42,"11":43,"12":39,"13":34,"14":47,"15":41,"16":66,"17":60,"18":53,"19":71,"20":70,"21":54,"22":59,"23":64},
+  tags: {"2026-04":52,"2026-05":52,"2026-06":24,"2026-07":41,"2026-08":14},
+  selfharm: [
+    ["04-17","PR #1 撞车+致谢反转","m"],["04-21","kimi/qwen 目录三连撤","m"],["04-22","auth bypass 自己引入","h"],
+    ["04-23","三连 revert 踩中'不能改'","m"],["04-24","GRPC_PROTOCOL 生产全挂","h"],["05-02","#115 根因误判六天四稿","m"],
+    ["05-03","NLU 七连 hotfix","m"],["05-04","#129 wnfilm 回归三连","m"],["05-25","sticky 自查风暴","m"],
+    ["06-07","假上游冷却","m"],["06-29","探针烧账户（最重事故）","h"],["06-30","cutover 双 P0","h"],
+    ["06-30","alias 漂移：要 GPT 拿 SWE","h"],["07-04","jimp 违反零依赖铁律","m"],["07-04","host/key 泄漏进公开仓","h"],
+    ["07-09","v3.0.0 页面 ban 自己","h"],["07-12","gpt-5.6-sol 烧账号","h"],["07-13","Windows 热更新致命 bug","m"],
+    ["07-27","v3.9.0 当天被打穿：全自己引入","h"],["07-28","v3.9.2 只修了 1/3","m"],["07-29","检索端点 8 小时不可用","m"],
+    ["07-31","8 条自己写的假测试清理","m"],["08-04","sticky 修复当天 revert","m"],["08-04","守卫三连崩","m"],
+    ["08-07","SWE kimi 方言过度推广","m"],["08-10","#252 两处互相抵消","h"],["08-10","'86/86 收齐'被推翻","m"],
+    ["08-11","账本自己踩 sk- 扫描坑","m"]
+  ]
+};
+const GOLD="#f5c518", DIM="#8b949e", PANEL="#21262d", GREEN="#3fb950", RED="#f85149", ORANGE="#f0883e";
+
+function svgEl(id){ return document.getElementById(id); }
+
+// 通用条形图
+function barChart(svg, items, {color=GOLD, h=220, pad=30, label=null}={}){
+  const W=1000, H=h;
+  const max = Math.max(...items.map(i=>i[1]));
+  const n = items.length;
+  const bw = (W - pad*2) / n;
+  items.forEach(([name, val], i) => {
+    const bh = (val/max) * (H - 70);
+    const x = pad + i*bw + bw*0.15, y = H - 30 - bh;
+    const r = svg.createElementNS("http://www.w3.org/2000/svg","rect");
+    r.setAttribute("x",x); r.setAttribute("y",y); r.setAttribute("width",bw*0.7); r.setAttribute("height",bh);
+    r.setAttribute("rx",4); r.setAttribute("fill",color);
+    svg.appendChild(r);
+    const t = svg.createElementNS("http://www.w3.org/2000/svg","text");
+    t.setAttribute("x",x+bw*0.35); t.setAttribute("y",y-6); t.setAttribute("text-anchor","middle");
+    t.setAttribute("fill",DIM); t.setAttribute("font-size",11); t.textContent = val;
+    svg.appendChild(t);
+    const t2 = svg.createElementNS("http://www.w3.org/2000/svg","text");
+    t2.setAttribute("x",x+bw*0.35); t2.setAttribute("y",H-10); t2.setAttribute("text-anchor","middle");
+    t2.setAttribute("fill",DIM); t2.setAttribute("font-size",10); t2.textContent = name;
+    svg.appendChild(t2);
+  });
+}
+
+// 月度
+{
+  const items = Object.entries(D.months);
+  barChart(svgEl("months"), items, {h:220});
+}
+// 周
+{
+  const items = D.weeks;
+  const svg = svgEl("weeks"), W=1000, H=300, pad=30;
+  const max = Math.max(...items.map(i=>i[1]));
+  const n = items.length, bw=(W-pad*2)/n;
+  items.forEach(([name,val],i)=>{
+    const bh=(val/max)*(H-80);
+    const x=pad+i*bw+bw*0.2, y=H-40-bh;
+    const color = val>150 ? RED : val>80 ? ORANGE : val>20 ? GOLD : DIM;
+    const r = svg.createElementNS("http://www.w3.org/2000/svg","rect");
+    r.setAttribute("x",x);r.setAttribute("y",y);r.setAttribute("width",bw*0.6);r.setAttribute("height",bh);
+    r.setAttribute("rx",3);r.setAttribute("fill",color);
+    svg.appendChild(r);
+    const t = svg.createElementNS("http://www.w3.org/2000/svg","text");
+    t.setAttribute("x",x+bw*0.3);t.setAttribute("y",y-4);t.setAttribute("text-anchor","middle");
+    t.setAttribute("fill",DIM);t.setAttribute("font-size",9);t.textContent=val;
+    svg.appendChild(t);
+    if (val===2||val===4||val===7) {
+      const note = svg.createElementNS("http://www.w3.org/2000/svg","text");
+      note.setAttribute("x",x+bw*0.3);note.setAttribute("y",H-20);note.setAttribute("text-anchor","middle");
+      note.setAttribute("fill",GREEN);note.setAttribute("font-size",9);note.textContent="空窗";
+      svg.appendChild(note);
+    }
+  });
+  const t = svg.createElementNS("http://www.w3.org/2000/svg","text");
+  t.setAttribute("x",pad);t.setAttribute("y",H-58);t.setAttribute("fill",DIM);t.setAttribute("font-size",10);
+  t.textContent = "W17 洪峰 229 · W20-21 空窗（离线研究）· W32 爆发 247";
+  svg.appendChild(t);
+}
+// 类型
+{
+  const items = Object.entries(D.kinds).sort((a,b)=>b[1]-a[1]);
+  const svg = svgEl("kinds"), W=1000, H=260, pad=30;
+  const max = Math.max(...items.map(i=>i[1]));
+  const colors = {"fix":RED,"feat":GOLD,"docs":GREEN,"test":"#58a6ff","chore":DIM,"other":"#bc8cff","merge":"#8957e5","release":"#f0883e","refactor":"#39c5cf","ci":"#a5d6ff","revert":DIM,"perf":"#7ee787","style":DIM,"build":DIM};
+  items.forEach(([name,val],i)=>{
+    const bh=(val/max)*(H-70);
+    const x=pad+i*(W-pad*2)/items.length+4, y=H-30-bh;
+    const r = svg.createElementNS("http://www.w3.org/2000/svg","rect");
+    r.setAttribute("x",x);r.setAttribute("y",y);r.setAttribute("width",(W-pad*2)/items.length-8);r.setAttribute("height",bh);
+    r.setAttribute("rx",3);r.setAttribute("fill",colors[name]||DIM);
+    svg.appendChild(r);
+    const t = svg.createElementNS("http://www.w3.org/2000/svg","text");
+    t.setAttribute("x",x+(W-pad*2)/items.length/2);t.setAttribute("y",y-5);t.setAttribute("text-anchor","middle");
+    t.setAttribute("fill",DIM);t.setAttribute("font-size",10);t.textContent=val;
+    svg.appendChild(t);
+    const t2 = svg.createElementNS("http://www.w3.org/2000/svg","text");
+    t2.setAttribute("x",x+(W-pad*2)/items.length/2);t2.setAttribute("y",H-10);t2.setAttribute("text-anchor","middle");
+    t2.setAttribute("fill",DIM);t2.setAttribute("font-size",9);t2.textContent=name;
+    svg.appendChild(t2);
+  });
+}
+// 单日峰值
+{
+  const items = D.days;
+  const svg = svgEl("days"), W=1000, H=300, pad=30;
+  const max = Math.max(...items.map(i=>i[1]));
+  items.forEach(([name,val],i)=>{
+    const bh=(val/max)*(H-70);
+    const x=pad+i*(W-pad*2)/10+6, y=H-30-bh;
+    const color = name==="2026-08-04" ? RED : GOLD;
+    const r = svg.createElementNS("http://www.w3.org/2000/svg","rect");
+    r.setAttribute("x",x);r.setAttribute("y",y);r.setAttribute("width",(W-pad*2)/10-12);r.setAttribute("height",bh);
+    r.setAttribute("rx",3);r.setAttribute("fill",color);
+    svg.appendChild(r);
+    const t = svg.createElementNS("http://www.w3.org/2000/svg","text");
+    t.setAttribute("x",x+(W-pad*2)/20);t.setAttribute("y",y-5);t.setAttribute("text-anchor","middle");
+    t.setAttribute("fill",DIM);t.setAttribute("font-size",10);t.textContent=val;
+    svg.appendChild(t);
+    const t2 = svg.createElementNS("http://www.w3.org/2000/svg","text");
+    t2.setAttribute("x",x+(W-pad*2)/20);t2.setAttribute("y",H-10);t2.setAttribute("text-anchor","middle");
+    t2.setAttribute("fill",DIM);t2.setAttribute("font-size",9);t2.textContent=name.slice(5);
+    svg.appendChild(t2);
+  });
+}
+// 24小时
+{
+  const items = Object.entries(D.hours);
+  const svg = svgEl("hours"), W=1000, H=180, pad=30;
+  const max = Math.max(...items.map(i=>i[1]));
+  items.forEach(([name,val],i)=>{
+    const bh=(val/max)*(H-50);
+    const x=pad+i*(W-pad*2)/24+2, y=H-25-bh;
+    const r = svg.createElementNS("http://www.w3.org/2000/svg","rect");
+    r.setAttribute("x",x);r.setAttribute("y",y);r.setAttribute("width",(W-pad*2)/24-4);r.setAttribute("height",bh);
+    r.setAttribute("rx",2);r.setAttribute("fill",name>="00"&&name<="06" ? "#bc8cff" : GOLD);
+    svg.appendChild(r);
+    if (i%3===0){
+      const t = svg.createElementNS("http://www.w3.org/2000/svg","text");
+      t.setAttribute("x",x+(W-pad*2)/48);t.setAttribute("y",H-8);t.setAttribute("text-anchor","middle");
+      t.setAttribute("fill",DIM);t.setAttribute("font-size",9);t.textContent=name+"时";
+      svg.appendChild(t);
+    }
+  });
+}
+// 版本节奏
+{
+  const items = Object.entries(D.tags);
+  barChart(svgEl("tags"), items, {h:220});
+}
+// 自伤时间线
+{
+  const svg = svgEl("selfharm"), W=1000, H=220, pad=30;
+  const items = D.selfharm;
+  const colors = {"h":RED,"m":ORANGE};
+  items.forEach(([date,title,lv],i)=>{
+    const y = H-40 - (i%5)*22;
+    const x = pad + i*(W-pad*2)/items.length;
+    const c = svg.createElementNS("http://www.w3.org/2000/svg","circle");
+    c.setAttribute("cx",x);c.setAttribute("cy",y);c.setAttribute("r",lv==="h"?6:4);
+    c.setAttribute("fill",colors[lv]);
+    svg.appendChild(c);
+    if (lv==="h"){
+      const t = svg.createElementNS("http://www.w3.org/2000/svg","text");
+      t.setAttribute("x",x);t.setAttribute("y",y-10);t.setAttribute("text-anchor","middle");
+      t.setAttribute("fill",RED);t.setAttribute("font-size",8);t.textContent=title;
+      svg.appendChild(t);
+    }
+  });
+  const t = svg.createElementNS("http://www.w3.org/2000/svg","text");
+  t.setAttribute("x",pad);t.setAttribute("y",H-10);t.setAttribute("fill",DIM);t.setAttribute("font-size",10);
+  t.textContent = "● 事故级（烧钱/安全/生产挂）  ● 合并后自毁  ● 返工自打脸 —— 完整链条见账本";
+  svg.appendChild(t);
+}
+// 统计卡
+{
+  const stats = [
+    ["1208","总提交（4 个月）"],["183","版本 tag"],["69","PR（47 合并）"],
+    ["177","issue（88% 解决）"],["28","自伤/返工事件"],["34","外部贡献者"],
+    ["40%","提交是 fix"],["14 分钟","最短发版间隔"],["8-04","单日峰值 81 条"]
+  ];
+  document.getElementById("stats").innerHTML = stats.map(([v,l])=>
+    `<div class="stat"><b>${v}</b><span>${l}</span></div>`).join("");
+}
+</script>
+</body>
+</html>
