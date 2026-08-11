@@ -120,6 +120,11 @@ body { background: var(--paper); color: var(--ink); font-family: var(--font); fo
 [data-reveal].is-on .stat { animation: stat-in .5s var(--ease-spring) both; animation-delay: calc(var(--i) * 70ms); }
 @keyframes stat-in { from { opacity: 0; transform: translateY(18px); } }
 
+/* ============ 柱子生长动画 ============ */
+.bar { transform: scaleY(0); transform-origin: bottom; }
+[data-reveal].is-on .bar { animation: grow-up var(--bar-duration) var(--ease-spring) forwards; }
+@keyframes grow-up { to { transform: scaleY(1); } }
+
 /* ============ 章节卡片 ============ */
 .section { margin-top: 40px; }
 .card {
@@ -193,6 +198,7 @@ svg { width: 100%; height: auto; display: block; }
     transition-duration: .01ms !important;
   }
   [data-reveal] svg, .stat, .phase, .tl-node { opacity: 1 !important; transform: none !important; }
+  .bar { transform: scaleY(1) !important; }
   .bg-orb, .bg-grid { display: none; }
 }
 </style>
@@ -626,6 +632,11 @@ barChart(svgEl("months"), D.months.map(m=>({
     r.setAttribute("rx",2);r.setAttribute("fill",item.h>="00"&&item.h<="06" ? "#bc8cff" : C_ACCENT);
     r.setAttribute("class","bar"); r.style.transformOrigin = "bottom"; r.style.animationDelay = (i*25)+"ms";
     g.appendChild(r);
+    const tv = document.createElementNS(NS,"text");
+    tv.setAttribute("x",x+bw/2); tv.setAttribute("y",y-4); tv.setAttribute("text-anchor","middle");
+    tv.setAttribute("fill",DIM); tv.setAttribute("font-size",9); tv.setAttribute("font-family","var(--mono)");
+    tv.textContent = item.v;
+    g.appendChild(tv);
     bindBar(g, {
       name: item.h + " 时", meta: item.h + " 时 · " + item.v + " 条提交",
       desc: item.desc,
