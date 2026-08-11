@@ -285,7 +285,7 @@ body.clean-mode .esc-hint { color: var(--accent); border-color: rgba(217,119,87,
 .share-seg:hover { filter: brightness(1.25); }
 .rows { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
 .c-row {
-  display: grid; grid-template-columns: 28px 34px 1fr auto 90px; align-items: center; gap: 10px;
+  display: grid; grid-template-columns: 28px 42px 1fr auto 90px; grid-template-rows: auto 6px; align-items: center; column-gap: 10px;
   padding: 7px 12px; border-radius: 8px; background: var(--surface-2);
   border: 1px solid var(--border); cursor: pointer; opacity: 0;
   transition: border-color .15s, transform .15s;
@@ -295,8 +295,9 @@ body.clean-mode .esc-hint { color: var(--accent); border-color: rgba(217,119,87,
 [data-reveal].is-on .c-row { animation: stat-in .45s var(--ease-spring) both; animation-delay: calc(var(--i) * 60ms); }
 .c-rank { font-family: var(--mono); font-size: 11px; color: var(--text-dim); text-align: right; }
 .c-avatar {
-  width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
-  font-size: 12px; font-weight: 700; color: #fff;
+  width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 700; color: #fff;
+  box-shadow: inset 0 0 0 1.5px rgba(255,255,255,.14);
 }
 .c-name { font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 8px; min-width: 0; }
 .c-name .n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -643,6 +644,26 @@ const DIM = "#71717a";
 
 function svgEl(id){ return document.getElementById(id); }
 
+/* 柱体渐变 defs（同色系顶亮底暗模拟光照） */
+function ensureGradients(svg) {
+  if (!svg || svg.querySelector('defs#viz-grads')) return;
+  const defs = document.createElementNS(NS, 'defs');
+  defs.setAttribute('id', 'viz-grads');
+  const specs = [
+    ['g-bar', '#e58a68', '#b95a3e'],
+    ['g-info', '#6db3ff', '#3d7fd1'],
+    ['g-warn', '#e8b468', '#c18f42'],
+  ];
+  for (const [id, top, bottom] of specs) {
+    const lg = document.createElementNS(NS, 'linearGradient');
+    lg.setAttribute('id', id); lg.setAttribute('x1', '0'); lg.setAttribute('y1', '0'); lg.setAttribute('x2', '0'); lg.setAttribute('y2', '1');
+    const s1 = document.createElementNS(NS, 'stop'); s1.setAttribute('offset', '0'); s1.setAttribute('stop-color', top);
+    const s2 = document.createElementNS(NS, 'stop'); s2.setAttribute('offset', '1'); s2.setAttribute('stop-color', bottom);
+    lg.appendChild(s1); lg.appendChild(s2); defs.appendChild(lg);
+  }
+  svg.insertBefore(defs, svg.firstChild);
+}
+
 /* ============ 浮窗（hover 跟随 + 点击锁定） ============ */
 const tip = document.getElementById("tl-tip");
 let tipLocked = false;
@@ -674,10 +695,21 @@ function bindBar(g, ev){
 
 /* ============ 柱状图（生长动画 + 交互） ============ */
 function barChart(svg, items, {color=C_ACCENT, h=220, pad=30, barColor=null, cls="bar"}={}){
+  ensureGradients(svg);
   const W=1000, H=h;
   const max = Math.max(...items.map(i=>i.v));
   const n = items.length;
   const bw = (W - pad*2) / n;
+  for (const f of [.25, .5, .75]) {
+    const gl = document.createElementNS(NS,'line');
+    gl.setAttribute('x1',pad); gl.setAttribute('y1',H-30-(H-70)*f); gl.setAttribute('x2',W-pad); gl.setAttribute('y2',H-30-(H-70)*f);
+    gl.setAttribute('stroke','rgba(255,255,255,.045)'); gl.setAttribute('stroke-width',1);
+    svg.appendChild(gl);
+  }
+  const base = document.createElementNS(NS,'line');
+  base.setAttribute('x1',pad); base.setAttribute('y1',H-30); base.setAttribute('x2',W-pad); base.setAttribute('y2',H-30);
+  base.setAttribute('stroke','rgba(255,255,255,.14)'); base.setAttribute('stroke-width',1.5);
+  svg.appendChild(base);
   items.forEach((item, i) => {
     const bh = (item.v/max) * (H - 70);
     const x = pad + i*bw + bw*0.15, y = H - 30 - bh;
@@ -689,7 +721,11 @@ function barChart(svg, items, {color=C_ACCENT, h=220, pad=30, barColor=null, cls
     r.style.transformOrigin = "bottom";
     r.style.animationDelay = (i * 70) + "ms";
     r.style.setProperty("--i", i);
-    r.setAttribute("fill", barColor ? (typeof barColor === "function" ? barColor(item) : barColor) : color);
+    const bc = barColor ? (typeof barColor === "function" ? barColor(item) : barColor) : color;
+    if (bc === '#d97757') r.setAttribute("fill", "url(#g-bar)");
+    else if (bc === '#4c9aff') r.setAttribute("fill", "url(#g-info)");
+    else if (bc === '#d9a257') r.setAttribute("fill", "url(#g-warn)");
+    else r.setAttribute("fill", bc);
     g.appendChild(r);
     const t = document.createElementNS(NS,"text");
     t.setAttribute("x",x+bw*0.35); t.setAttribute("y",y-6); t.setAttribute("text-anchor","middle");
@@ -1005,9 +1041,10 @@ document.addEventListener('keydown', e => {
   const GID = {"warelik":54947489,"wangergou777":142420084,"andya1lan":58987282};
   const avatarOf = (login, cls) =>
     `<span class="${cls||'c-avatar'}" style="background:${avatarColor(login)};position:relative;overflow:hidden">` +
-      `<img src="${GID[login] ? 'https://avatars.githubusercontent.com/u/' + GID[login] + '?s=64' : 'https://github.com/' + login + '.png?size=64'}" ` +
-      `alt="" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover" ` +
-      `onerror="this.style.display='none'" onload="this.parentNode.textContent='';this.parentNode.appendChild(this);this.style.display='block'">` +
+      `<b style="position:relative;z-index:1;display:flex;align-items:center;justify-content:center;width:100%;height:100%;font-weight:700;color:#fff">${login[0].toUpperCase()}</b>` +
+      `<img src="${GID[login] ? 'https://avatars.githubusercontent.com/u/' + GID[login] + '?s=96' : 'https://github.com/' + login + '.png?size=96'}" ` +
+      `alt="" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:2" ` +
+      `onerror="this.style.display='none'" onload="this.style.display='block'">` +
     `</span>`;
   const maxAdd = Math.max(...ext.map(c=>c.add), 1);
   ext.slice(0, 10).forEach((c, i)=>{
@@ -1016,7 +1053,7 @@ document.addEventListener('keydown', e => {
     row.innerHTML =
       `<span class="c-rank">${i+1}</span>` + avatarOf(c.login) +
       `<span class="c-name"><span class="n">${c.login}</span><span class="grade-badge ${gradeCls(c.grade)}" title="评级：${c.grade||'未评级'}">${gradeTxt(c.grade)}</span></span>` +
-      `<div class="c-bar" style="grid-column:2/5"><i style="width:${(c.add/maxAdd*100).toFixed(1)}%;background:${gradeCls(c.grade).includes('a') ? '#4c9aff' : '#d97757'}"></i></div>` +
+      `<div class="c-bar" style="grid-column:2/5;grid-row:2"><i style="width:${(c.add/maxAdd*100).toFixed(1)}%;background:${gradeCls(c.grade).includes('a') ? '#4c9aff' : '#d97757'}"></i></div>` +
       `<span class="c-meta">${c.prs} PR · ${c.add.toLocaleString()}+</span>`;
     bindBar(row, { name: c.login, meta: c.prs + ' PR · ' + c.add.toLocaleString() + ' 行 · ' + (c.commits||'—') + ' commits', desc: c.summary || '外部贡献者。', links: [['PR 列表', 'https://github.com/dwgx/WindsurfAPI/pulls?q=author:' + c.login]] });
     rows.appendChild(row);
@@ -1055,7 +1092,7 @@ document.addEventListener('keydown', e => {
   if (!svg) return;
   const G = D_GIT;
   const NS = 'http://www.w3.org/2000/svg';
-  const LOGIN_ID = {"warelik": 54947489, "wangergou777": 142420084, "andya1lan": 58987282};
+  const LOGIN_ID = {"warelik": 54947489, "wangergou777": 142420084, "andya1lan": 58987282, "Await-d": 58165861, "Fermiz": 13313378, "Kloping": 87743020, "MatrixNeoKozak": 261791209, "RogueBinary": 46707130, "The-five-stooges": 18204304, "UntaDotMy": 42847931, "Yuuqq": 131548122, "abwuge": 81455573, "aict666": 253870639, "baily-zhang": 8436110, "brandonedley": 1334816, "chukangkang": 51869547, "clarezoe": 460084, "colin1112a": 218527967, "datfooldive": 110718021, "dd373156": 106299115, "dwgx": 143298346, "forrinzhao": 201411890, "kevin5251984": 159868618, "lauvww": 155606367, "limweb": 602579, "linqichenggg": 100070330, "lovivi": 18547278, "moduvoice": 291867022, "motto1": 116414193, "sandleft": 60204370, "smeinecke": 7316652, "suhaihui-git": 57882092, "ucloudnb666": 274767034, "wjurkowlaniec": 1134323, "youfak": 27138744};
   const AUTHOR_LOGIN = {"dwgx": "dwgx", "W ARELIK": "warelik", "warelik": "warelik", "Baily": "baily-zhang", "Stefan Meinecke": "smeinecke", "AI CT": "aict666", "aict666": "aict666", "abwuge": "abwuge", "li shuangqi": "Fermiz", "Fermiz": "Fermiz", "kosonen": "clarezoe", "clarezoe": "clarezoe", "hikki": "datfooldive", "linqicheng": "linqichenggg", "lauvww": "lauvww", "ucloudnb666": "ucloudnb666", "you922": "you922", "Song Jie": "lovivi", "lovivi": "lovivi", "The-five-stooges": "The-five-stooges", "andya1lan": "andya1lan", "wangergou777": "wangergou777", "brandonedley": "brandonedley", "MatrixNeoKozak": "MatrixNeoKozak", "wjurkowlaniec": "wjurkowlaniec", "sandleft": "sandleft", "motto1": "motto1", "youfak": "youfak", "colin1112a": "colin1112a", "dd373156": "dd373156", "forrinzhao": "forrinzhao", "kevin5251984": "kevin5251984", "RogueBinary": "RogueBinary", "Yuuqq": "Yuuqq", "UntaDotMy": "UntaDotMy", "suhaihui-git": "suhaihui-git", "Await-d": "Await-d", "chukangkang": "chukangkang", "Kloping": "Kloping", "limweb": "limweb", "moduvoice": "moduvoice", "Bad Child": "", "Wojtek Jurkowlaniec": "wjurkowlaniec", "Brandon Edley": "brandonedley", "KozakLordOfMatrix": "MatrixNeoKozak", "Andy Allan": "andya1lan"};
   const avatarUrl = login => LOGIN_ID[login]
     ? 'https://avatars.githubusercontent.com/u/' + LOGIN_ID[login] + '?s=64'
@@ -1109,21 +1146,10 @@ document.addEventListener('keydown', e => {
     letter.setAttribute('font-weight', '700'); letter.setAttribute('fill', '#fff');
     letter.textContent = login[0].toUpperCase();
     g.appendChild(letter);
-    const safe = login.replace(/[^a-zA-Z0-9]/g, '');
-    if (!avatarDefs[login]) {
-      avatarDefs[login] = true;
-      const defs = document.createElementNS(NS, 'defs');
-      const clip = document.createElementNS(NS, 'clipPath');
-      clip.setAttribute('id', 'ac-' + safe);
-      const cc = document.createElementNS(NS, 'circle');
-      cc.setAttribute('cx', x); cc.setAttribute('cy', y); cc.setAttribute('r', r);
-      clip.appendChild(cc); defs.appendChild(clip);
-      svg.insertBefore(defs, svg.firstChild);
-    }
     const img = document.createElementNS(NS, 'image');
-    img.setAttribute('x', x - r); img.setAttribute('y', y - r);
+    img.setAttribute('transform', 'translate(' + (x - r) + ',' + (y - r) + ')');
     img.setAttribute('width', r * 2); img.setAttribute('height', r * 2);
-    img.setAttribute('clip-path', 'url(#ac-' + safe + ')');
+    img.style.clipPath = 'circle(50%)';
     img.setAttribute('href', avatarUrl(login));
     img.setAttribute('opacity', '0');
     img.style.transition = 'opacity .3s';
@@ -1185,7 +1211,7 @@ document.addEventListener('keydown', e => {
     const login = loginOf(a);
     const wantAvatar = (a.k === 'merge' || a.k === 'pr' || a.k === 'head' || a.k === 'tip') && login;
     if (wantAvatar) {
-      g.appendChild(avatarEl(login, x, y, cfg.r || 7));
+      g.appendChild(avatarEl(login, x, y, cfg.r || 9));
       const ring = document.createElementNS(NS, 'circle');
       ring.setAttribute('cx', x); ring.setAttribute('cy', y); ring.setAttribute('r', (cfg.r || 7) + 3);
       ring.setAttribute('fill', 'none');
@@ -1216,7 +1242,7 @@ document.addEventListener('keydown', e => {
     const yOf = {};
     G.anchors.slice().sort((a, b) => a.t - b.t).forEach(a => {
       let y = rawY(a.t);
-      if (y - lastY < 9) y = lastY + 9;
+      if (y - lastY < 20) y = lastY + 20;
       lastY = y;
       yOf[a.h] = y;
     });
@@ -1406,7 +1432,7 @@ document.addEventListener('keydown', e => {
       const login = loginOf(a);
       const wantAvatar = (a.k === 'merge' || a.k === 'pr' || a.k === 'head' || a.k === 'tip') && login;
       if (wantAvatar) {
-        g.appendChild(avatarEl(login, x, y, 7));
+        g.appendChild(avatarEl(login, x, y, 9));
         const ring = document.createElementNS(NS, 'circle');
         ring.setAttribute('cx', x); ring.setAttribute('cy', y); ring.setAttribute('r', 10);
         ring.setAttribute('fill', 'none');
