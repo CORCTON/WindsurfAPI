@@ -333,7 +333,7 @@ function barChart(svg, items, {color=GOLD, h=220, pad=30, label=null}={}){
   const axisY = H - 46;
 
   // 时间轴
-  const axis = svg.createElementNS("http://www.w3.org/2000/svg","line");
+  const axis = document.createElementNS("http://www.w3.org/2000/svg","line");
   axis.setAttribute("x1",padL); axis.setAttribute("y1",axisY); axis.setAttribute("x2",W-padR); axis.setAttribute("y2",axisY);
   axis.setAttribute("class","tl-axis");
   svg.appendChild(axis);
@@ -341,11 +341,11 @@ function barChart(svg, items, {color=GOLD, h=220, pad=30, label=null}={}){
   // 月份刻度（4月~8月）
   const months = [["04",padL],["05",padL+span*6],["06",padL+span*13],["07",padL+span*19.5],["08",W-padR]];
   months.forEach(([m,x])=>{
-    const tick = svg.createElementNS("http://www.w3.org/2000/svg","line");
+    const tick = document.createElementNS("http://www.w3.org/2000/svg","line");
     tick.setAttribute("x1",x); tick.setAttribute("y1",axisY-6); tick.setAttribute("x2",x); tick.setAttribute("y2",axisY+6);
     tick.setAttribute("class","tl-tick");
     svg.appendChild(tick);
-    const lbl = svg.createElementNS("http://www.w3.org/2000/svg","text");
+    const lbl = document.createElementNS("http://www.w3.org/2000/svg","text");
     lbl.setAttribute("x",x); lbl.setAttribute("y",H-28); lbl.setAttribute("text-anchor","middle");
     lbl.setAttribute("class","tl-lbl"); lbl.textContent = "2026-"+m;
     svg.appendChild(lbl);
@@ -356,28 +356,28 @@ function barChart(svg, items, {color=GOLD, h=220, pad=30, label=null}={}){
   items.forEach((ev,i)=>{
     const x = padL + i*span;
     const y = axisY - 30 - (i % 2) * 42;  // 上下交错
-    const g = svg.createElementNS("http://www.w3.org/2000/svg","g");
+    const g = document.createElementNS("http://www.w3.org/2000/svg","g");
     g.setAttribute("class","tl-node");
     g.setAttribute("data-i",i);
     // 连接线
-    const line = svg.createElementNS("http://www.w3.org/2000/svg","line");
+    const line = document.createElementNS("http://www.w3.org/2000/svg","line");
     line.setAttribute("x1",x); line.setAttribute("y1",y + (i%2? 14: -14)); line.setAttribute("x2",x); line.setAttribute("y2",axisY);
     line.setAttribute("stroke", colors[ev.lv]); line.setAttribute("stroke-opacity",0.35); line.setAttribute("stroke-width",1);
     g.appendChild(line);
     // 节点圆（事故级大、返工级小）
-    const c = svg.createElementNS("http://www.w3.org/2000/svg","circle");
+    const c = document.createElementNS("http://www.w3.org/2000/svg","circle");
     c.setAttribute("cx",x); c.setAttribute("cy",y); c.setAttribute("r", ev.lv==="h" ? 7 : 5);
     c.setAttribute("fill", colors[ev.lv]);
     g.appendChild(c);
     // 日期标签
-    const t = svg.createElementNS("http://www.w3.org/2000/svg","text");
+    const t = document.createElementNS("http://www.w3.org/2000/svg","text");
     t.setAttribute("x",x); t.setAttribute("y", y + (i%2 ? 32 : -18));
     t.setAttribute("text-anchor","middle"); t.setAttribute("class","tl-lbl");
     t.textContent = ev.d;
     g.appendChild(t);
     // 事故级加事件名
     if (ev.lv === "h") {
-      const nm = svg.createElementNS("http://www.w3.org/2000/svg","text");
+      const nm = document.createElementNS("http://www.w3.org/2000/svg","text");
       nm.setAttribute("x",x); nm.setAttribute("y", y + (i%2 ? 46 : -30));
       nm.setAttribute("text-anchor","middle"); nm.setAttribute("fill", RED); nm.setAttribute("font-size", 9);
       nm.textContent = ev.t.length > 12 ? ev.t.slice(0,11)+"…" : ev.t;
