@@ -1,128 +1,303 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" class="no-js">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>WindsurfAPI · 全局历史账本可视化</title>
-<meta name="description" content="WindsurfAPI 项目 2026-04-09 → 2026-08-11 的全部历史：1208 个提交、183 个版本、69 个 PR、177 个 issue 的可视化总览">
+<title>WindsurfAPI · 全局历史账本</title>
+<meta name="description" content="WindsurfAPI 项目 2026-04-09 → 2026-08-11 的全部历史：1208 个提交、183 个版本、69 个 PR、177 个 issue">
+<script>document.documentElement.classList.remove('no-js');</script>
 <style>
-  :root {
-    --bg: #0d1117; --panel: #161b22; --border: #30363d;
-    --gold: #f5c518; --gold-dim: #d99e0b;
-    --text: #e6edf3; --dim: #8b949e; --green: #3fb950;
-    --red: #f85149; --blue: #58a6ff; --purple: #bc8cff;
+/* ============ 设计令牌（源自 src/dashboard/index.html 的设计 DNA） ============ */
+:root {
+  --paper: #0a0a0a; --paper-2: #141414; --paper-3: #1f1f1f;
+  --surface: #141414; --surface-2: #1c1c1e;
+  --ink: #ededed; --ink-soft: #c4c4c6; --text-muted: #a1a1aa; --text-dim: #71717a;
+  --border: rgba(255,255,255,.10); --border-strong: rgba(255,255,255,.18);
+  --accent: #d97757; --accent-hover: #c56245; --accent-soft: rgba(217,119,87,.20);
+  --success: #788c5d; --success-soft: rgba(120,140,93,.22);
+  --warn: #d9a257; --warn-soft: rgba(217,162,87,.22);
+  --error: #c65d4e; --error-soft: rgba(198,93,78,.22);
+  --info: #6a9bcc; --info-soft: rgba(106,155,204,.22);
+  --chart-req: #4c9aff; --chart-succ: #4a9d6a; --chart-err: #e0524a;
+  --radius: 12px; --radius-sm: 8px; --radius-lg: 16px;
+  --shadow-sm: 0 1px 2px rgba(0,0,0,.4); --shadow: 0 4px 12px rgba(0,0,0,.4); --shadow-lg: 0 8px 32px rgba(0,0,0,.5);
+  --font: 'Poppins', -apple-system, 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+  --mono: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  --ease-spring: cubic-bezier(.16,1,.3,1);
+  --ease-smooth: cubic-bezier(.2,.8,.2,1);
+  /* 动画参数（一处调全局） */
+  --type-speed: 34ms; --caret-color: var(--accent);
+  --bar-duration: .65s; --bar-stagger: 70ms;
+  --node-duration: .5s; --node-stagger: 110ms;
+}
+/* 三层兜底第一层：无 JS 直达终态 */
+.no-js [data-reveal] .bar, .no-js .bar { transform: scaleY(1); }
+.no-js [data-reveal] .node, .no-js [data-reveal] .stat, .no-js .tl-node { opacity: 1; }
+.no-js .hero-title, .no-js .hero-sub { white-space: normal; width: auto; }
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: var(--paper); color: var(--ink); font-family: var(--font); font-size: 14px; line-height: 1.5; }
+::selection { background: var(--accent-soft); }
+
+/* ============ 背景动效（网格 + 光晕 + 粒子） ============ */
+.bg { position: fixed; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; background: var(--paper); }
+.bg-grid {
+  position: absolute; inset: 0;
+  background-image:
+    linear-gradient(rgba(106,155,204,.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(106,155,204,.045) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 40%, transparent 100%);
+}
+.bg-orb { position: absolute; border-radius: 50%; filter: blur(80px); }
+.bg-orb.a { width: 460px; height: 460px; top: -140px; left: -100px;
+  background: radial-gradient(circle, rgba(217,119,87,.14), transparent 65%);
+  animation: orb-drift 30s ease-in-out infinite alternate; }
+.bg-orb.b { width: 380px; height: 380px; bottom: -120px; right: -80px;
+  background: radial-gradient(circle, rgba(106,155,204,.10), transparent 65%);
+  animation: orb-drift 40s ease-in-out infinite alternate-reverse; }
+@keyframes orb-drift {
+  from { transform: translate3d(0,0,0) scale(1); }
+  to { transform: translate3d(64px,48px,0) scale(1.14); }
+}
+#bg-canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+.wrap { max-width: 1080px; margin: 0 auto; padding: 0 20px 80px; }
+
+/* ============ Hero（打字机 + 大数字） ============ */
+.hero { padding: 88px 0 40px; text-align: center; }
+.logo-badge {
+  width: 56px; height: 56px; margin: 0 auto 22px; border-radius: 14px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-hover));
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 0 32px var(--accent-soft);
+  animation: logo-in .8s var(--ease-spring) both;
+}
+.logo-badge svg { width: 32px; height: 32px; }
+@keyframes logo-in { from { transform: scale(.6); opacity: 0; } }
+.hero-title {
+  font-size: clamp(30px, 5vw, 44px); font-weight: 700; letter-spacing: -.02em;
+  white-space: nowrap; overflow: hidden;
+}
+.hero-title .accent { color: var(--accent); }
+.hero-title.caret-on { border-right: 2px solid var(--caret-color); animation: caret-blink .8s steps(1) infinite; }
+@keyframes caret-blink { 50% { border-color: transparent; } }
+.hero-sub { margin-top: 14px; color: var(--text-muted); font-size: 14px; white-space: nowrap; overflow: hidden; }
+.hero-sub.caret-on { border-right: 2px solid var(--caret-color); animation: caret-blink .8s steps(1) infinite; }
+.hero-meta { margin-top: 26px; display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+.badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11px; font-weight: 600; color: var(--ink-soft);
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px; padding: 4px 12px;
+}
+.badge::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.badge.accent { color: var(--accent); }
+.badge.info { color: var(--info); }
+.badge.success { color: var(--success); }
+.badge.warn { color: var(--warn); }
+.badge.error { color: var(--error); }
+
+/* ============ 统计卡（数字滚动） ============ */
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin: 44px 0 8px; }
+.stat {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 18px 16px; text-align: center; box-shadow: var(--shadow-sm);
+  opacity: 0; transform: translateY(18px);
+  transition: transform .25s var(--ease-spring), border-color .2s;
+}
+.stat:hover { transform: translateY(-2px); border-color: var(--border-strong); }
+.stat .num {
+  display: block; font-family: var(--mono); font-size: 30px; font-weight: 700;
+  font-variant-numeric: tabular-nums; letter-spacing: -.01em;
+}
+.stat .num.c-accent { color: var(--accent); }
+.stat .num.c-info { color: var(--chart-req); }
+.stat .num.c-success { color: var(--chart-succ); }
+.stat .num.c-warn { color: var(--warn); }
+.stat .num.c-error { color: var(--chart-err); }
+.stat .cap { display: block; margin-top: 4px; font-size: 11px; color: var(--text-muted); letter-spacing: .04em; }
+.stat .cap small { display: block; font-size: 10px; color: var(--text-dim); margin-top: 2px; }
+[data-reveal].is-on .stat { animation: stat-in .5s var(--ease-spring) both; animation-delay: calc(var(--i) * 70ms); }
+@keyframes stat-in { from { opacity: 0; transform: translateY(18px); } }
+
+/* ============ 章节卡片 ============ */
+.section { margin-top: 40px; }
+.card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 22px; box-shadow: var(--shadow-sm);
+}
+.card h2 { font-size: 16px; font-weight: 650; display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.card h2::before { content: ''; width: 4px; height: 16px; background: var(--accent); border-radius: 2px; }
+.card .sub { color: var(--text-dim); font-size: 12px; margin-bottom: 16px; }
+.card .sub b { color: var(--text-muted); }
+svg { width: 100%; height: auto; display: block; }
+[data-reveal] svg { opacity: 0; }
+[data-reveal].is-on svg { animation: chart-fade .5s ease-out both; }
+@keyframes chart-fade { from { opacity: 0; transform: translateY(12px); } }
+
+/* ============ 四阶段 ============ */
+.phases { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; margin-top: 10px; }
+.phase {
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 14px 16px; position: relative; border-left: 3px solid var(--accent);
+  opacity: 0; transform: translateY(14px);
+}
+[data-reveal].is-on .phase { animation: stat-in .5s var(--ease-spring) both; animation-delay: calc(var(--i) * 90ms); }
+.phase.blue { border-left-color: var(--info); }
+.phase.green { border-left-color: var(--success); }
+.phase.gold { border-left-color: var(--warn); }
+.phase b { color: var(--accent); font-size: 13px; }
+.phase.blue b { color: var(--info); } .phase.green b { color: var(--success); } .phase.gold b { color: var(--warn); }
+.phase .date { font-family: var(--mono); font-size: 10px; color: var(--text-dim); margin-left: 6px; }
+.phase small { display: block; color: var(--text-muted); margin-top: 5px; font-size: 11.5px; line-height: 1.6; }
+
+/* ============ 自伤时间线（节点点亮动画） ============ */
+.tl-node { cursor: pointer; opacity: 0; }
+[data-reveal].is-on .tl-node {
+  animation: node-in var(--node-duration) ease-out both;
+  animation-delay: calc(var(--i) * var(--node-stagger));
+}
+@keyframes node-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; } }
+.tl-axis { stroke: var(--border-strong); stroke-width: 2; }
+.tl-tick { stroke: var(--border); stroke-width: 1; }
+.tl-lbl { fill: var(--text-dim); font-size: 9px; font-family: var(--mono); }
+
+/* ============ 浮窗（hover 跟随 + 点击锁定） ============ */
+#tl-tip {
+  position: fixed; z-index: 99; display: none; max-width: 340px;
+  background: rgba(28,28,30,.96); border: 1px solid var(--border-strong); border-radius: 10px;
+  padding: 12px 14px; font-size: 12px; box-shadow: var(--shadow-lg);
+  backdrop-filter: blur(8px); animation: tt-in .15s var(--ease-smooth);
+}
+@keyframes tt-in { from { opacity: 0; transform: translateY(4px); } }
+#tl-tip .tt-title { font-size: 13px; font-weight: 700; color: var(--ink); margin-bottom: 4px; }
+#tl-tip .tt-meta { color: var(--text-muted); font-size: 11px; margin-bottom: 6px; }
+#tl-tip .tt-desc { color: var(--ink-soft); line-height: 1.55; margin-bottom: 8px; }
+#tl-tip .tt-links { display: flex; gap: 8px; flex-wrap: wrap; }
+#tl-tip .tt-links a {
+  pointer-events: auto; color: var(--accent); text-decoration: none; font-size: 11px;
+  border: 1px solid var(--border-strong); border-radius: 6px; padding: 3px 9px; background: var(--paper-3);
+}
+#tl-tip .tt-links a:hover { border-color: var(--accent); background: var(--accent-soft); }
+
+/* ============ 页脚 ============ */
+.foot { text-align: center; color: var(--text-dim); font-size: 11.5px; margin-top: 48px; line-height: 2; }
+.foot code { background: var(--paper-3); padding: 1px 6px; border-radius: 4px; font-size: 10.5px; font-family: var(--mono); }
+.foot a { color: var(--info); text-decoration: none; }
+.foot a:hover { text-decoration: underline; }
+
+/* ============ reduced-motion：三层兜底第二层 ============ */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important; animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
   }
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { background: var(--bg); color: var(--text); font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; padding: 24px 16px 60px; }
-  .wrap { max-width: 1080px; margin: 0 auto; }
-  header { text-align: center; padding: 28px 0 8px; }
-  header h1 { font-size: 28px; font-weight: 700; letter-spacing: 0.5px; }
-  header h1 span { color: var(--gold); }
-  header p { color: var(--dim); margin-top: 8px; font-size: 14px; }
-  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 28px 0; }
-  .stat { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; text-align: center; }
-  .stat b { display: block; font-size: 30px; color: var(--gold); font-weight: 700; }
-  .stat span { font-size: 12px; color: var(--dim); }
-  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 20px; margin-bottom: 16px; }
-  .card h2 { font-size: 16px; margin-bottom: 4px; display: flex; align-items: center; gap: 8px; }
-  .card h2::before { content: ""; width: 4px; height: 16px; background: var(--gold); border-radius: 2px; }
-  .card .sub { color: var(--dim); font-size: 12px; margin-bottom: 14px; }
-  svg { width: 100%; height: auto; display: block; }
-  .legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: var(--dim); margin-top: 8px; }
-  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; }
-  .foot { text-align: center; color: var(--dim); font-size: 12px; margin-top: 32px; line-height: 1.8; }
-  .foot code { background: #21262d; padding: 1px 6px; border-radius: 4px; font-size: 11px; }
-  .phase { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin-top: 8px; }
-  .phase div { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; font-size: 13px; }
-  .phase b { color: var(--gold); }
-  .phase small { display: block; color: var(--dim); margin-top: 3px; font-size: 11px; }
-  /* 自伤时间线交互 */
-  #tl-tip { position: fixed; z-index: 99; display: none; max-width: 340px; background: #1c2128;
-    border: 1px solid #444c56; border-radius: 10px; padding: 12px 14px; font-size: 12px;
-    box-shadow: 0 8px 24px rgba(0,0,0,.5); pointer-events: none; }
-  #tl-tip .tt-title { font-size: 13px; font-weight: 700; color: var(--text); margin-bottom: 4px; }
-  #tl-tip .tt-meta { color: var(--dim); font-size: 11px; margin-bottom: 6px; }
-  #tl-tip .tt-desc { color: #adbac7; line-height: 1.55; margin-bottom: 8px; }
-  #tl-tip .tt-links { display: flex; gap: 8px; flex-wrap: wrap; }
-  #tl-tip .tt-links a { pointer-events: auto; color: var(--gold); text-decoration: none; font-size: 11px;
-    border: 1px solid #444c56; border-radius: 6px; padding: 3px 8px; background: #21262d; }
-  #tl-tip .tt-links a:hover { border-color: var(--gold); }
-  .tl-node { cursor: pointer; }
-  .tl-node:hover { opacity: .8; }
-  .tl-axis { stroke: #30363d; stroke-width: 2; }
-  .tl-tick { stroke: #21262d; stroke-width: 1; }
-  .tl-lbl { fill: var(--dim); font-size: 9px; }
+  [data-reveal] svg, .stat, .phase, .tl-node { opacity: 1 !important; transform: none !important; }
+  .bg-orb, .bg-grid { display: none; }
+}
 </style>
 </head>
 <body>
-<div class="wrap">
-  <header>
-    <h1>WindsurfAPI <span>全局历史账本</span></h1>
-    <p>2026-04-09 → 2026-08-11 · 4 个月 · 从单机反代脚本到 2930★ 的网关</p>
-  </header>
-
-  <div class="stats" id="stats"></div>
-
-  <div class="card">
-    <h2>月度提交节奏</h2>
-    <div class="sub">4 月成型冲刺（339）· 5 月停滞深水（98）· 6 月换轨（141）· 7-8 月高速期（328/302）</div>
-    <svg id="months" viewBox="0 0 1000 260"></svg>
-  </div>
-
-  <div class="card">
-    <h2>每周脉搏</h2>
-    <div class="sub">W17（04-21 前后）提交洪峰 229 条（当周 issue 报告 50 个）· W20-W21（5 月中旬）空窗 · W32（08-04）爆发 247 条</div>
-    <svg id="weeks" viewBox="0 0 1000 300"></svg>
-  </div>
-
-  <div class="card">
-    <h2>提交类型构成</h2>
-    <div class="sub">fix 占 40% —— 这个项目修 bug 的时间比写功能多</div>
-    <svg id="kinds" viewBox="0 0 1000 260"></svg>
-  </div>
-
-  <div class="card">
-    <h2>单日峰值 Top 10</h2>
-    <div class="sub">08-04 单日 81 条（v3.9.10→v3.9.14 五连发，间隔 32-14h）· 全史最短发版间隔 08-05 v3.9.16→v3.9.17 仅 14 分 49 秒</div>
-    <svg id="days" viewBox="0 0 1000 300"></svg>
-  </div>
-
-  <div class="card">
-    <h2>一天 24 小时</h2>
-    <div class="sub">凌晨 2 点还在提交 —— 该项目没有作息表</div>
-    <svg id="hours" viewBox="0 0 1000 180"></svg>
-  </div>
-
-  <div class="card">
-    <h2>版本节奏</h2>
-    <div class="sub">183 个 tag：4-5 月 52/52 个（每日一版），8 月 14 个（6 天 14 版）</div>
-    <svg id="tags" viewBox="0 0 1000 260"></svg>
-  </div>
-
-  <div class="card">
-    <h2>四个阶段</h2>
-    <div class="phase">
-      <div><b>成型期</b> 04-09 ~ 04-30<small>单机脚本→完整网关 · issue 洪峰 82 个 · 98% 解决率 · 单日 37-53 条</small></div>
-      <div><b>深水区</b> 05-01 ~ 06-05<small>工具兼容/上下文/粘性会话 · 中旬 8 天空窗（离线研究）· #115 六天四稿</small></div>
-      <div><b>换轨期</b> 06-05 ~ 06-30<small>Cascade bridge 爆发 → devin-connect 桥 24 小时诞生 · 探针烧账户事故</small></div>
-      <div><b>高速期</b> 07-01 ~ 08-11<small>v3.0-v3.9 密集发布 · 对抗 review 文化 · 会话保真三线 · 模型同步</small></div>
-    </div>
-  </div>
-
-  <div class="card">
-    <h2>自伤与返工（28 起，按时间）</h2>
-    <div class="sub">红色 = 事故级（烧钱/安全/生产挂）· 橙色 = 合并后自毁/返工自打脸 · <b style="color:var(--gold)">悬停节点看详情，可点进账本与 Git 提交</b></div>
-    <svg id="tl" viewBox="0 0 1000 240"></svg>
-    <div id="tl-tip"></div>
-  </div>
-
-  <div class="foot">
-    数据源：git log 全量 1208 条 + 22 个并行采集 agent · 逐条账见 <code>docs/HISTORY-LEDGER-2026-*.md</code> · 总账 <code>docs/HISTORY-LEDGER.md</code><br>
-    零依赖纯 SVG 渲染 · 每个 hash 都可 <code>git show</code> 验证
-  </div>
+<div class="bg" aria-hidden="true">
+  <div class="bg-grid"></div>
+  <div class="bg-orb a"></div>
+  <div class="bg-orb b"></div>
+  <canvas id="bg-canvas"></canvas>
 </div>
 
+<div class="wrap">
+  <header class="hero">
+    <div class="logo-badge">
+      <svg viewBox="0 0 128 128" width="32" height="32" aria-hidden="true">
+        <path d="M26 92 L45 34 L64 78 L83 34 L102 92" fill="none" stroke="#0a0a0a" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
+        <circle cx="90" cy="22" r="6" fill="#0a0a0a"/>
+        <circle cx="102" cy="33" r="6" fill="#0a0a0a"/>
+        <circle cx="110" cy="47" r="6" fill="#0a0a0a"/>
+      </svg>
+    </div>
+    <h1 class="hero-title" data-text="WindsurfAPI · 全局<span class='accent'>历史账本</span>">WindsurfAPI · 全局<span class="accent">历史账本</span></h1>
+    <p class="hero-sub" data-text="2026-04-09 → 2026-08-11 · 从单机反代脚本到 2930★ 的网关 · 四个月的全部历史">2026-04-09 → 2026-08-11 · 从单机反代脚本到 2930★ 的网关 · 四个月的全部历史</p>
+    <div class="hero-meta">
+      <span class="badge accent">1208 提交</span>
+      <span class="badge info">183 版本</span>
+      <span class="badge success">69 PR</span>
+      <span class="badge warn">177 issue</span>
+      <span class="badge error">28 自伤</span>
+    </div>
+  </header>
+
+  <section class="stats" data-reveal id="stats"></section>
+
+  <section class="section card" data-reveal>
+    <h2>月度提交节奏</h2>
+    <div class="sub">4 月成型冲刺（339）· 5 月停滞深水（98）· 6 月换轨（141）· 7-8 月高速期（328/302）—— <b>悬停柱子看详情，点击锁定可点链接</b></div>
+    <svg id="months" viewBox="0 0 1000 240"></svg>
+  </section>
+
+  <section class="section card" data-reveal>
+    <h2>每周脉搏</h2>
+    <div class="sub">W17（04-21 前后）提交洪峰 229 条（当周 issue 报告 50 个）· W20-W21（5 月中旬）空窗 · W32（08-04）爆发 247 条</div>
+    <svg id="weeks" viewBox="0 0 1000 290"></svg>
+  </section>
+
+  <section class="section card" data-reveal>
+    <h2>提交类型构成</h2>
+    <div class="sub">fix 占 40% —— 这个项目修 bug 的时间比写功能多</div>
+    <svg id="kinds" viewBox="0 0 1000 250"></svg>
+  </section>
+
+  <section class="section card" data-reveal>
+    <h2>单日峰值 Top 10</h2>
+    <div class="sub">08-04 单日 81 条（v3.9.10→v3.9.14 五连发）· 全史最短发版间隔 08-05 v3.9.16→v3.9.17 仅 14 分 49 秒</div>
+    <svg id="days" viewBox="0 0 1000 290"></svg>
+  </section>
+
+  <section class="section card" data-reveal>
+    <h2>一天 24 小时</h2>
+    <div class="sub">凌晨 2 点还在提交 —— 该项目没有作息表</div>
+    <svg id="hours" viewBox="0 0 1000 170"></svg>
+  </section>
+
+  <section class="section card" data-reveal>
+    <h2>版本节奏</h2>
+    <div class="sub">183 个 tag：4-5 月 52/52 个（每日一版），8 月 14 个（6 天 14 版）</div>
+    <svg id="tags" viewBox="0 0 1000 240"></svg>
+  </section>
+
+  <section class="section card" data-reveal>
+    <h2>四个阶段</h2>
+    <div class="sub">从脚本到网关的演化轨迹</div>
+    <div class="phases">
+      <div class="phase" style="--i:0"><b>成型期</b><span class="date">04-09 ~ 04-30</span><small>单机脚本→完整网关 · issue 洪峰 82 个 · 98% 解决率 · 单日最高 53 条</small></div>
+      <div class="phase gold" style="--i:1"><b>深水区</b><span class="date">05-01 ~ 06-05</span><small>工具兼容/上下文/粘性会话 · 中旬 8 天空窗（离线研究）· #115 六天四稿</small></div>
+      <div class="phase green" style="--i:2"><b>换轨期</b><span class="date">06-05 ~ 06-30</span><small>Cascade bridge 爆发 → devin-connect 桥 24 小时诞生 · 探针烧账户事故</small></div>
+      <div class="phase blue" style="--i:3"><b>高速期</b><span class="date">07-01 ~ 08-11</span><small>v3.0-v3.9 密集发布 · 对抗 review 文化 · 会话保真三线 · 模型同步</small></div>
+    </div>
+  </section>
+
+  <section class="section card" data-reveal>
+    <h2>自伤与返工（28 起，按时间）</h2>
+    <div class="sub">红 = 事故级（烧钱/安全/生产挂）· 橙 = 合并后自毁/返工 · <b>悬停节点看详情（AI 总结 + 账本/Git 链接），点击锁定浮窗</b></div>
+    <svg id="tl" viewBox="0 0 1000 240"></svg>
+  </section>
+
+  <footer class="foot">
+    数据源：git log 全量 1208 条 + 22 个并行采集 agent · 逐条账见 <code>docs/HISTORY-LEDGER-2026-*.md</code> · 总账 <a href="https://github.com/dwgx/WindsurfAPI/blob/master/docs/HISTORY-LEDGER.md">HISTORY-LEDGER.md</a><br>
+    零依赖纯原生 · 设计 DNA 取自仓库自带 Dashboard · 每个 hash 都可 <code>git show</code> 验证
+  </footer>
+</div>
+
+<div id="tl-tip"></div>
+
 <script>
+(() => {
+'use strict';
+/* ============ 环境检测（三层兜底第二、三层） ============ */
+const REDUCED = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)').matches : false;
+const HAS_RAF = 'requestAnimationFrame' in window;
+const HAS_IO = 'IntersectionObserver' in window;
+
+/* ============ 数据 ============ */
 const D = {
   months: [
     {m:"2026-04", v:339, label:"成型冲刺",
@@ -254,15 +429,17 @@ const D = {
      desc:"账本描述 f3e0094（sk- 前缀误报修复）时原文引用了夹具 key 形态，触发 secret-scan 导致 CI 红——「审计工具与被审对象共享盲点」的第三个实例。"}
   ]
 };
-const GOLD="#f5c518", DIM="#8b949e", PANEL="#21262d", GREEN="#3fb950", RED="#f85149", ORANGE="#f0883e";
+
+/* ============ 常量 ============ */
+const NS = "http://www.w3.org/2000/svg";
+const C_ACCENT = "#d97757", C_INFO = "#4c9aff", C_SUCC = "#4a9d6a", C_WARN = "#d9a257", C_ERR = "#e0524a";
+const DIM = "#71717a";
 
 function svgEl(id){ return document.getElementById(id); }
 
-// ========== 通用交互浮窗（hover 跟随 + 点击锁定） ==========
+/* ============ 浮窗（hover 跟随 + 点击锁定） ============ */
 const tip = document.getElementById("tl-tip");
 let tipLocked = false;
-const NS = "http://www.w3.org/2000/svg";
-
 function tipHTML(title, meta, desc, links){
   return `<div class="tt-title">${title}</div>` +
          `<div class="tt-meta">${meta}</div>` +
@@ -278,21 +455,19 @@ function moveTip(e){
   tip.style.left = lx + "px"; tip.style.top = ly + "px";
 }
 function showTip(html, e){ tip.innerHTML = html; tip.style.display = "block"; moveTip(e); }
-function lockTip(){ tipLocked = true; tip.style.left = tip.style.left; }
 function hideTip(){ if (tipLocked) return; tip.style.display = "none"; }
 document.addEventListener("click", (e)=>{
   if (tipLocked && !tip.contains(e.target)) { tipLocked = false; tip.style.display = "none"; }
 });
-// 给 SVG 元素绑定交互：hover 跟随、click 锁定
 function bindBar(g, ev){
   g.addEventListener("mouseenter", (e)=> showTip(ev.tipHtml || tipHTML(ev.name, ev.meta, ev.desc, ev.links), e));
   g.addEventListener("mousemove", moveTip);
   g.addEventListener("mouseleave", hideTip);
-  g.addEventListener("click", (e)=>{ e.stopPropagation(); lockTip(); });
+  g.addEventListener("click", (e)=>{ e.stopPropagation(); tipLocked = true; });
 }
 
-// ========== 通用条形图（交互版） ==========
-function barChart(svg, items, {color=GOLD, h=220, pad=30, barColor=null, valFmt=null}={}){
+/* ============ 柱状图（生长动画 + 交互） ============ */
+function barChart(svg, items, {color=C_ACCENT, h=220, pad=30, barColor=null, cls="bar"}={}){
   const W=1000, H=h;
   const max = Math.max(...items.map(i=>i.v));
   const n = items.length;
@@ -304,12 +479,16 @@ function barChart(svg, items, {color=GOLD, h=220, pad=30, barColor=null, valFmt=
     const r = document.createElementNS(NS,"rect");
     r.setAttribute("x",x); r.setAttribute("y",y); r.setAttribute("width",bw*0.7); r.setAttribute("height",bh);
     r.setAttribute("rx",4);
+    r.setAttribute("class", cls);
+    r.style.transformOrigin = "bottom";
+    r.style.animationDelay = (i * 70) + "ms";
+    r.style.setProperty("--i", i);
     r.setAttribute("fill", barColor ? (typeof barColor === "function" ? barColor(item) : barColor) : color);
     g.appendChild(r);
     const t = document.createElementNS(NS,"text");
     t.setAttribute("x",x+bw*0.35); t.setAttribute("y",y-6); t.setAttribute("text-anchor","middle");
-    t.setAttribute("fill",DIM); t.setAttribute("font-size",11);
-    t.textContent = valFmt ? valFmt(item.v) : item.v;
+    t.setAttribute("fill",DIM); t.setAttribute("font-size",11); t.setAttribute("font-family","var(--mono)");
+    t.textContent = item.v;
     g.appendChild(t);
     const t2 = document.createElementNS(NS,"text");
     t2.setAttribute("x",x+bw*0.35); t2.setAttribute("y",H-10); t2.setAttribute("text-anchor","middle");
@@ -319,7 +498,7 @@ function barChart(svg, items, {color=GOLD, h=220, pad=30, barColor=null, valFmt=
     if (item.note) {
       const n2 = document.createElementNS(NS,"text");
       n2.setAttribute("x",x+bw*0.35); n2.setAttribute("y",y-18); n2.setAttribute("text-anchor","middle");
-      n2.setAttribute("fill",GREEN); n2.setAttribute("font-size",9);
+      n2.setAttribute("fill", C_SUCC); n2.setAttribute("font-size",9);
       n2.textContent = item.note;
       g.appendChild(n2);
     }
@@ -328,36 +507,36 @@ function barChart(svg, items, {color=GOLD, h=220, pad=30, barColor=null, valFmt=
   });
 }
 
-// 月度
+/* ============ 各图渲染 ============ */
 barChart(svgEl("months"), D.months.map(m=>({
   label:m.m.slice(2), v:m.v,
   name:m.m+" "+m.label, meta:m.m+" · "+m.v+" 条提交 · "+m.label,
   desc:m.desc, links:[["账本详细", m.link]]
-})));
+})), {h:220});
 
-// 周
 {
-  const svg = svgEl("weeks"), W=1000, H=300, pad=30;
+  const svg = svgEl("weeks"), W=1000, H=290, pad=30;
   const items = D.weeks;
   const max = Math.max(...items.map(i=>i.v));
   const n = items.length, bw=(W-pad*2)/n;
   items.forEach((item,i)=>{
     const bh=(item.v/max)*(H-80);
     const x=pad+i*bw+bw*0.2, y=H-40-bh;
-    const color = item.v>150 ? RED : item.v>80 ? ORANGE : item.v>20 ? GOLD : DIM;
+    const color = item.v>150 ? C_ERR : item.v>80 ? C_WARN : item.v>20 ? C_ACCENT : DIM;
     const g = document.createElementNS(NS,"g");
     const r = document.createElementNS(NS,"rect");
     r.setAttribute("x",x);r.setAttribute("y",y);r.setAttribute("width",bw*0.6);r.setAttribute("height",bh);
     r.setAttribute("rx",3);r.setAttribute("fill",color);
+    r.setAttribute("class","bar"); r.style.transformOrigin = "bottom"; r.style.animationDelay = (i*70)+"ms";
     g.appendChild(r);
     const t = document.createElementNS(NS,"text");
     t.setAttribute("x",x+bw*0.3);t.setAttribute("y",y-4);t.setAttribute("text-anchor","middle");
-    t.setAttribute("fill",DIM);t.setAttribute("font-size",9);t.textContent=item.v;
+    t.setAttribute("fill",DIM);t.setAttribute("font-size",9);t.setAttribute("font-family","var(--mono)");t.textContent=item.v;
     g.appendChild(t);
     if (item.note) {
       const n2 = document.createElementNS(NS,"text");
       n2.setAttribute("x",x+bw*0.3);n2.setAttribute("y",H-20);n2.setAttribute("text-anchor","middle");
-      n2.setAttribute("fill",GREEN);n2.setAttribute("font-size",9);n2.textContent=item.note;
+      n2.setAttribute("fill",C_SUCC);n2.setAttribute("font-size",9);n2.textContent=item.note;
       g.appendChild(n2);
     }
     bindBar(g, {
@@ -367,18 +546,13 @@ barChart(svgEl("months"), D.months.map(m=>({
     });
     svg.appendChild(g);
   });
-  const t = document.createElementNS(NS,"text");
-  t.setAttribute("x",pad);t.setAttribute("y",H-58);t.setAttribute("fill",DIM);t.setAttribute("font-size",10);
-  t.textContent = "W17 洪峰 229 · W20-21 空窗（离线研究）· W32 爆发 247";
-  svg.appendChild(t);
 }
 
-// 类型
 {
   const items = D.kinds.slice().sort((a,b)=>b.v-a.v);
-  const svg = svgEl("kinds"), W=1000, H=260, pad=30;
+  const svg = svgEl("kinds"), W=1000, H=250, pad=30;
   const max = Math.max(...items.map(i=>i.v));
-  const colors = {"fix":RED,"feat":GOLD,"docs":GREEN,"test":"#58a6ff","chore":DIM,"other":"#bc8cff","merge":"#8957e5","release":"#f0883e","refactor":"#39c5cf","ci":"#a5d6ff","revert":DIM,"perf":"#7ee787","style":DIM,"build":DIM};
+  const colors = {"fix":C_ERR,"feat":C_ACCENT,"docs":C_SUCC,"test":C_INFO,"chore":DIM,"other":"#bc8cff","merge":"#8957e5","release":C_WARN,"refactor":"#39c5cf","ci":"#a5d6ff","revert":DIM,"perf":"#7ee787","style":DIM,"build":DIM};
   const bw = (W-pad*2)/items.length;
   items.forEach((item,i)=>{
     const bh=(item.v/max)*(H-70);
@@ -387,10 +561,11 @@ barChart(svgEl("months"), D.months.map(m=>({
     const r = document.createElementNS(NS,"rect");
     r.setAttribute("x",x);r.setAttribute("y",y);r.setAttribute("width",bw-8);r.setAttribute("height",bh);
     r.setAttribute("rx",3);r.setAttribute("fill",colors[item.k]||DIM);
+    r.setAttribute("class","bar"); r.style.transformOrigin = "bottom"; r.style.animationDelay = (i*60)+"ms";
     g.appendChild(r);
     const t = document.createElementNS(NS,"text");
     t.setAttribute("x",x+bw/2);t.setAttribute("y",y-5);t.setAttribute("text-anchor","middle");
-    t.setAttribute("fill",DIM);t.setAttribute("font-size",10);t.textContent=item.v;
+    t.setAttribute("fill",DIM);t.setAttribute("font-size",10);t.setAttribute("font-family","var(--mono)");t.textContent=item.v;
     g.appendChild(t);
     const t2 = document.createElementNS(NS,"text");
     t2.setAttribute("x",x+bw/2);t2.setAttribute("y",H-10);t2.setAttribute("text-anchor","middle");
@@ -405,28 +580,28 @@ barChart(svgEl("months"), D.months.map(m=>({
   });
 }
 
-// 单日峰值
 {
   const items = D.days;
-  const svg = svgEl("days"), W=1000, H=300, pad=30;
+  const svg = svgEl("days"), W=1000, H=290, pad=30;
   const max = Math.max(...items.map(i=>i.v));
   const bw = (W-pad*2)/10;
   items.forEach((item,i)=>{
     const bh=(item.v/max)*(H-70);
     const x=pad+i*bw+6, y=H-30-bh;
-    const color = item.d==="08-04" ? RED : GOLD;
+    const color = item.d==="08-04" ? C_ERR : C_ACCENT;
     const g = document.createElementNS(NS,"g");
     const r = document.createElementNS(NS,"rect");
     r.setAttribute("x",x);r.setAttribute("y",y);r.setAttribute("width",bw-12);r.setAttribute("height",bh);
     r.setAttribute("rx",3);r.setAttribute("fill",color);
+    r.setAttribute("class","bar"); r.style.transformOrigin = "bottom"; r.style.animationDelay = (i*70)+"ms";
     g.appendChild(r);
     const t = document.createElementNS(NS,"text");
     t.setAttribute("x",x+bw/2);t.setAttribute("y",y-5);t.setAttribute("text-anchor","middle");
-    t.setAttribute("fill",DIM);t.setAttribute("font-size",10);t.textContent=item.v;
+    t.setAttribute("fill",DIM);t.setAttribute("font-size",10);t.setAttribute("font-family","var(--mono)");t.textContent=item.v;
     g.appendChild(t);
     const t2 = document.createElementNS(NS,"text");
     t2.setAttribute("x",x+bw/2);t2.setAttribute("y",H-10);t2.setAttribute("text-anchor","middle");
-    t2.setAttribute("fill",DIM);t2.setAttribute("font-size",9);t2.textContent=item.d;
+    t2.setAttribute("fill",DIM);t2.setAttribute("font-size",9);t2.setAttribute("font-family","var(--mono)");t2.textContent=item.d;
     g.appendChild(t2);
     bindBar(g, {
       name: "2026-"+item.d + " · " + item.v + " 条", meta: "2026-"+item.d + " · 单日 " + item.v + " 条提交",
@@ -437,10 +612,9 @@ barChart(svgEl("months"), D.months.map(m=>({
   });
 }
 
-// 24小时
 {
   const items = D.hours;
-  const svg = svgEl("hours"), W=1000, H=180, pad=30;
+  const svg = svgEl("hours"), W=1000, H=170, pad=30;
   const max = Math.max(...items.map(i=>i.v));
   const bw = (W-pad*2)/24;
   items.forEach((item,i)=>{
@@ -449,7 +623,8 @@ barChart(svgEl("months"), D.months.map(m=>({
     const g = document.createElementNS(NS,"g");
     const r = document.createElementNS(NS,"rect");
     r.setAttribute("x",x);r.setAttribute("y",y);r.setAttribute("width",bw-4);r.setAttribute("height",bh);
-    r.setAttribute("rx",2);r.setAttribute("fill",item.h>="00"&&item.h<="06" ? "#bc8cff" : GOLD);
+    r.setAttribute("rx",2);r.setAttribute("fill",item.h>="00"&&item.h<="06" ? "#bc8cff" : C_ACCENT);
+    r.setAttribute("class","bar"); r.style.transformOrigin = "bottom"; r.style.animationDelay = (i*25)+"ms";
     g.appendChild(r);
     bindBar(g, {
       name: item.h + " 时", meta: item.h + " 时 · " + item.v + " 条提交",
@@ -460,80 +635,71 @@ barChart(svgEl("months"), D.months.map(m=>({
     if (i%3===0){
       const t = document.createElementNS(NS,"text");
       t.setAttribute("x",x+bw/2);t.setAttribute("y",H-8);t.setAttribute("text-anchor","middle");
-      t.setAttribute("fill",DIM);t.setAttribute("font-size",9);t.textContent=item.h+"时";
+      t.setAttribute("fill",DIM);t.setAttribute("font-size",9);t.setAttribute("font-family","var(--mono)");t.textContent=item.h+"时";
       svg.appendChild(t);
     }
   });
 }
 
-// 版本节奏
 barChart(svgEl("tags"), D.tags.map(t=>({
   label:t.t.slice(2), v:t.v,
   name:t.t+" 版本", meta:t.t+" · "+t.v+" 个 tag",
   desc:t.desc, links:[["Releases","https://github.com/dwgx/WindsurfAPI/releases"]]
 })), {h:220});
 
-// 自伤时间线（交互版：hover 跟随鼠标 tooltip + 账本/Git 链接）
+/* ============ 自伤时间线 ============ */
 {
   const svg = svgEl("tl"), W=1000, H=240, padL=20, padR=20;
   const items = D.selfharm;
   const n = items.length;
   const span = (W - padL - padR) / (n - 1 || 1);
-  const colors = {"h":RED,"m":ORANGE};
+  const colors = {"h":C_ERR,"m":C_WARN};
   const axisY = H - 46;
 
-  // 时间轴
-  const axis = document.createElementNS("http://www.w3.org/2000/svg","line");
+  const axis = document.createElementNS(NS,"line");
   axis.setAttribute("x1",padL); axis.setAttribute("y1",axisY); axis.setAttribute("x2",W-padR); axis.setAttribute("y2",axisY);
   axis.setAttribute("class","tl-axis");
   svg.appendChild(axis);
 
-  // 月份刻度（4月~8月）
   const months = [["04",padL],["05",padL+span*6],["06",padL+span*13],["07",padL+span*19.5],["08",W-padR]];
   months.forEach(([m,x])=>{
-    const tick = document.createElementNS("http://www.w3.org/2000/svg","line");
+    const tick = document.createElementNS(NS,"line");
     tick.setAttribute("x1",x); tick.setAttribute("y1",axisY-6); tick.setAttribute("x2",x); tick.setAttribute("y2",axisY+6);
     tick.setAttribute("class","tl-tick");
     svg.appendChild(tick);
-    const lbl = document.createElementNS("http://www.w3.org/2000/svg","text");
+    const lbl = document.createElementNS(NS,"text");
     lbl.setAttribute("x",x); lbl.setAttribute("y",H-28); lbl.setAttribute("text-anchor","middle");
     lbl.setAttribute("class","tl-lbl"); lbl.textContent = "2026-"+m;
     svg.appendChild(lbl);
   });
 
-  // 节点
-  const tip = document.getElementById("tl-tip");
   items.forEach((ev,i)=>{
     const x = padL + i*span;
-    const y = axisY - 30 - (i % 2) * 42;  // 上下交错
-    const g = document.createElementNS("http://www.w3.org/2000/svg","g");
+    const y = axisY - 30 - (i % 2) * 42;
+    const g = document.createElementNS(NS,"g");
     g.setAttribute("class","tl-node");
     g.setAttribute("data-i",i);
-    // 连接线
-    const line = document.createElementNS("http://www.w3.org/2000/svg","line");
+    g.style.animationDelay = (i * 110) + "ms";
+    const line = document.createElementNS(NS,"line");
     line.setAttribute("x1",x); line.setAttribute("y1",y + (i%2? 14: -14)); line.setAttribute("x2",x); line.setAttribute("y2",axisY);
     line.setAttribute("stroke", colors[ev.lv]); line.setAttribute("stroke-opacity",0.35); line.setAttribute("stroke-width",1);
     g.appendChild(line);
-    // 节点圆（事故级大、返工级小）
-    const c = document.createElementNS("http://www.w3.org/2000/svg","circle");
+    const c = document.createElementNS(NS,"circle");
     c.setAttribute("cx",x); c.setAttribute("cy",y); c.setAttribute("r", ev.lv==="h" ? 7 : 5);
     c.setAttribute("fill", colors[ev.lv]);
     g.appendChild(c);
-    // 日期标签
-    const t = document.createElementNS("http://www.w3.org/2000/svg","text");
+    const t = document.createElementNS(NS,"text");
     t.setAttribute("x",x); t.setAttribute("y", y + (i%2 ? 32 : -18));
-    t.setAttribute("text-anchor","middle"); t.setAttribute("class","tl-lbl");
+    t.setAttribute("text-anchor","middle"); t.setAttribute("class","tl-lbl"); t.setAttribute("font-family","var(--mono)");
     t.textContent = ev.d;
     g.appendChild(t);
-    // 事故级加事件名
     if (ev.lv === "h") {
-      const nm = document.createElementNS("http://www.w3.org/2000/svg","text");
+      const nm = document.createElementNS(NS,"text");
       nm.setAttribute("x",x); nm.setAttribute("y", y + (i%2 ? 46 : -30));
-      nm.setAttribute("text-anchor","middle"); nm.setAttribute("fill", RED); nm.setAttribute("font-size", 9);
+      nm.setAttribute("text-anchor","middle"); nm.setAttribute("fill", C_ERR); nm.setAttribute("font-size", 9);
       nm.textContent = ev.t.length > 12 ? ev.t.slice(0,11)+"…" : ev.t;
       g.appendChild(nm);
     }
-    // hover 交互（通用组件：跟随 + 点击锁定）
     bindBar(g, {
       name: ev.t, meta: ev.d + " · " + (ev.lv==="h" ? "事故级（烧钱/安全/生产挂）" : "合并后自毁/返工自打脸"),
       desc: ev.desc,
@@ -543,16 +709,137 @@ barChart(svgEl("tags"), D.tags.map(t=>({
     svg.appendChild(g);
   });
 }
-// 统计卡
+
+/* ============ 统计卡 ============ */
 {
   const stats = [
-    ["1208","总提交（4 个月）"],["183","版本 tag"],["69","PR（47 合并）"],
-    ["177","issue（88% 解决）"],["28","自伤/返工事件"],["34","外部贡献者"],
-    ["40%","提交是 fix"],["14 分钟","最短发版间隔"],["8-04","单日峰值 81 条"]
+    ["1208","总提交（4 个月）","c-accent","1205 条 commit 全量 + 合并"],["183","版本 tag","c-info","v1.4.0 → v3.9.21"],
+    ["69","PR（47 合并）","c-success","34 位外部贡献者"],["177","issue（88% 解决）","c-warn","口径：COMPLETED/总数"],
+    ["28","自伤/返工事件","c-error","8 起事故级"],["34","外部贡献者","c-info","warelik 15 个 S×7 领跑"],
+    ["40%","提交是 fix","c-accent","482/1208"],["14 分 49 秒","最短发版间隔","c-warn","v3.9.16→v3.9.17"],
+    ["81","单日峰值","c-error","08-04 · 一天五版"]
   ];
-  document.getElementById("stats").innerHTML = stats.map(([v,l])=>
-    `<div class="stat"><b>${v}</b><span>${l}</span></div>`).join("");
+  document.getElementById("stats").innerHTML = stats.map(([v,l,c,s],i)=>
+    `<div class="stat" style="--i:${i}"><span class="num ${c}" data-count="${v.replace(/[^0-9.]/g,'')}" data-prefix="${v.includes('%')?'':''}">${v}</span><span class="cap">${l}<small>${s||''}</small></span></div>`).join("");
 }
+
+/* ============ 动画工具 ============ */
+function typewriter(el) {
+  const full = el.dataset.text || el.textContent;
+  el.dataset.text = full;
+  if (REDUCED || !el.textContent) return Promise.resolve();
+  // 取纯文本（HTML 里可能有 span）——逐块推进
+  const tmp = document.createElement('div'); tmp.innerHTML = full;
+  const plain = tmp.textContent;
+  const speed = 34;
+  const perTick = Math.max(1, Math.round(plain.length / 100));
+  el.textContent = '';
+  el.classList.add('caret-on');
+  let i = 0;
+  return new Promise(res => {
+    (function tick(){
+      i = Math.min(i + perTick, plain.length);
+      el.textContent = plain.slice(0, i);
+      if (i < plain.length) setTimeout(tick, speed); else res();
+    })();
+  });
+}
+function countUp(el) {
+  const raw = el.dataset.count;
+  if (!raw) return Promise.resolve();
+  const target = parseFloat(raw);
+  const pre = el.dataset.prefix || '';
+  if (REDUCED || !HAS_RAF) { return Promise.resolve(); }
+  const dur = 1400, t0 = performance.now();
+  return new Promise(res => {
+    (function tick(now){
+      const p = Math.min((now - t0) / dur, 1);
+      const e = p === 1 ? 1 : 1 - Math.pow(2, -10 * p);
+      el.textContent = pre + Math.round(target * e).toLocaleString('en-US');
+      p < 1 ? requestAnimationFrame(tick) : res();
+    })(t0);
+  });
+}
+/* 粒子背景 */
+function initParticleBg(canvas) {
+  if (!canvas || REDUCED) return;
+  const ctx = canvas.getContext('2d');
+  const DPR = Math.min(window.devicePixelRatio || 1, 2);
+  let parts = [], w = 0, h = 0, raf = 0, running = false;
+  function resize() {
+    w = canvas.clientWidth; h = canvas.clientHeight;
+    canvas.width = w * DPR; canvas.height = h * DPR;
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    const n = Math.max(18, Math.min(60, (w * h / 22000) | 0));
+    parts = Array.from({ length: n }, () => ({
+      x: Math.random() * w, y: Math.random() * h,
+      vx: (Math.random() - .5) * .35, vy: (Math.random() - .5) * .35,
+      r: .6 + Math.random() * 1.5, tw: Math.random() * Math.PI * 2
+    }));
+  }
+  function frame(now) {
+    ctx.clearRect(0, 0, w, h);
+    const t = now / 1000;
+    for (const p of parts) {
+      p.x += p.vx; p.y += p.vy;
+      if (p.x < -2) p.x += w + 4; else if (p.x > w + 2) p.x -= w + 4;
+      if (p.y < -2) p.y += h + 4; else if (p.y > h + 2) p.y -= h + 4;
+      const a = .18 + .28 * (.5 + .5 * Math.sin(t * 1.5 + p.tw));
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(217,119,87,' + a.toFixed(3) + ')';
+      ctx.fill();
+    }
+    raf = requestAnimationFrame(frame);
+  }
+  function start() { if (running || REDUCED) return; running = true; resize(); raf = requestAnimationFrame(frame); }
+  function stop() { running = false; cancelAnimationFrame(raf); }
+  window.addEventListener('resize', () => running && resize());
+  document.addEventListener('visibilitychange', () => document.hidden ? stop() : start());
+  return { start };
+}
+
+/* ============ 滚动触发 ============ */
+const io = HAS_IO ? new IntersectionObserver(es => es.forEach(e => {
+  if (e.isIntersecting) { trigger(e.target); io.unobserve(e.target); }
+}), { threshold: .12, rootMargin: '0px 0px -30px 0px' }) : null;
+function trigger(el) {
+  el.classList.add('is-on');
+  el.querySelectorAll('[data-count]:not([data-done])').forEach(el => {
+    el.dataset.done = '1'; countUp(el);
+  });
+}
+
+/* ============ 编排 ============ */
+async function playIntro() {
+  const bg = document.getElementById('bg-canvas');
+  if (bg) initParticleBg(bg).start();
+  const title = document.querySelector('.hero-title');
+  const sub = document.querySelector('.hero-sub');
+  if (title) await typewriter(title);
+  if (sub) { await new Promise(r=>setTimeout(r,150)); await typewriter(sub); }
+  // 视口内区块按顺序点亮，视口外交给 IO
+  for (const el of document.querySelectorAll('[data-reveal]')) {
+    if (el.getBoundingClientRect().top < innerHeight * .9) {
+      trigger(el);
+      await new Promise(r => setTimeout(r, 220));
+    } else if (io) io.observe(el);
+  }
+  document.querySelectorAll('[data-count]:not([data-done])').forEach(el => {
+    el.dataset.done = '1'; countUp(el);
+  });
+}
+function boot() {
+  if (REDUCED || !io) {
+    document.querySelectorAll('[data-reveal]').forEach(trigger);
+    document.querySelectorAll('[data-count]:not([data-done])').forEach(el => { el.dataset.done = '1'; countUp(el); });
+    const bg = document.getElementById('bg-canvas');
+    if (bg) initParticleBg(bg).start();
+    return;
+  }
+  playIntro();
+}
+document.readyState === 'loading' ? document.addEventListener('DOMContentLoaded', boot) : boot();
+})();
 </script>
 </body>
 </html>
