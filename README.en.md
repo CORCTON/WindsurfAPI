@@ -1,9 +1,17 @@
+<p align="center">
+  <img src="logo.svg" alt="WindsurfAPI" width="92" />
+</p>
+
 # WindsurfAPI · DevinAPI
 
 > Turn Windsurf / Devin's 100+ AI models (Claude, GPT, Gemini, DeepSeek, Kimi, GLM, SWE…) into OpenAI / Anthropic / Gemini standard APIs. Zero npm runtime dependencies.
 
 <p align="center">
   <a href="https://github.com/dwgx/WindsurfAPI/stargazers"><img src="https://img.shields.io/github/stars/dwgx/WindsurfAPI?style=for-the-badge&logo=github&color=f5c518" alt="Stars"></a>&nbsp;
+  <a href="https://github.com/dwgx/WindsurfAPI/blob/master/LICENSE"><img src="https://img.shields.io/github/license/dwgx/WindsurfAPI?style=for-the-badge&color=2da44e" alt="License"></a>&nbsp;
+  <a href="https://github.com/dwgx/WindsurfAPI/releases/latest"><img src="https://img.shields.io/github/v/release/dwgx/WindsurfAPI?style=for-the-badge&logo=github&color=1f6feb" alt="Release"></a>&nbsp;
+  <a href="https://github.com/dwgx/WindsurfAPI/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/dwgx/WindsurfAPI/ci.yml?style=for-the-badge&logo=githubactions&logoColor=white&label=CI&color=8957e5" alt="CI"></a>&nbsp;
+  <a href="https://dwgx.github.io/WindsurfAPI/"><img src="https://img.shields.io/badge/Docs-GitHub_Pages-181717?style=for-the-badge&logo=github" alt="Docs"></a>&nbsp;
   <a href="https://github.com/dwgx"><img src="https://img.shields.io/github/followers/dwgx?label=Follow&style=for-the-badge&logo=github&color=181717" alt="Follow"></a>
   &nbsp;·&nbsp;
   <a href="README.md">中文/简体中文</a>
@@ -471,6 +479,49 @@ firewall-cmd --add-port=3003/tcp --permanent && firewall-cmd --reload
 
 Remember to open port 3003 in your cloud provider's security group.
 
+## Having Issues? Start Here
+
+Search by **symptom** — no need to read the whole FAQ. This is a protocol-conversion gateway, so the first step of any investigation is always to figure out **which layer is broken**: the client, this gateway, or the upstream.
+
+```mermaid
+flowchart TD
+    S{"Symptom?"} --> A["Request never arrives<br/>connection refused / timeout"]
+    S --> B["401 / 403 returned"]
+    S --> C["Replies, but tools not called"]
+    S --> D["Replies, but content is wrong<br/>lost context / thinking leaked in"]
+    S --> E["All accounts down<br/>rate-limited / unavailable"]
+
+    A --> A1["1. Is the service alive?<br/>curl :3003/v1/models"]
+    A1 --> A2["2. Is port 3003 open in the firewall?<br/>see the Firewall section"]
+    A2 --> A3["3. Raising a timeout in .env won't help<br/>see the context deadline entry"]
+
+    B --> B1["Don't mix up the two key layers:<br/>caller key ≠ upstream account"]
+    B1 --> B2["Gemini clients use<br/>x-goog-api-key or ?key="]
+
+    C --> C1["Check ToolRoute[...] in the logs first<br/>it lists why tools were filtered/downgraded"]
+    C1 --> C2["Then check for server-side tools<br/>the translation layer drops unimplemented kinds"]
+
+    D --> D1["Lost context → should you use<br/>the /v1/responses chain?"]
+    D1 --> D2["Thinking leaked in → enable LEAK_TRACE<br/>and capture boundary logs"]
+
+    E --> E1["First separate: account-limited<br/>or IP-level cooldown?"]
+    E1 --> E2["See the 'All accounts<br/>temporarily rate-limited' entry"]
+
+    classDef sym fill:#8957e522,stroke:#8957e5
+    classDef act fill:#1f6feb22,stroke:#1f6feb
+    class A,B,C,D,E sym
+    class A1,A2,A3,B1,B2,C1,C2,D1,D2,E1,E2 act
+```
+
+**The two easiest to trip over**:
+
+| Symptom | Real cause |
+|---|---|
+| Raised the timeout in `.env` but `context deadline exceeded` is still there | That timeout lives at a different layer. See the FAQ entry with the same name below |
+| "All accounts rate-limited" right after start, suspecting the proxy is broken | Most likely an IP-level cooldown — not an account problem, not a proxy problem |
+
+When tracing a request chain, **send a real request and read the response — don't just read the code**. This is a protocol-conversion gateway with two key layers and four egress paths; reasoning from the source alone leads you astray.
+
 ## FAQ
 
 **Q: Login fails with "Invalid email or password"**
@@ -494,8 +545,20 @@ A: Mostly `gemini-2.5-flash`, `glm-4.7` / `5` / `5.1`, `kimi-k2` / `k2.5` / `k2-
 **Q: Are tool calls reliable on free accounts?**
 A: Depends on the model. Claude family is rock-solid (also free-account-entitled when available). GLM-4.7 / Kimi-K2.5 work in most cases via NLU recovery + `WINDSURFAPI_NLU_RETRY=1` retry-with-correction. GLM-5.1 is unreliable on the cascade backend (frequent empty responses) — proxy can't fix this. GPT family is similarly limited by the cascade protocol layer not passing `tools[]` schema. **For Claude Code / Cline / Codex doing local file/shell ops prefer `claude-haiku-4.5` or `claude-sonnet-4.6`.**
 
+**Q: The client shows "tools not being called" — how do I debug this?**
+A: First look for `ToolRoute[...]` in the logs. It lists the tools your client declared, the effective tools after `tool_choice` filtering, mapped/unmapped tools for the native bridge, the preamble downgrade tier, and the reason (`tool_choice_none` / `forced_tool_not_declared` / `preamble_compacted` / `native_bridge_*`). Server-side tools on `/v1/messages` and `/v1/responses` (Anthropic advisor/code_execution, OpenAI file_search/mcp/computer_use) are dropped at the translation layer when the proxy doesn't implement them; those aren't ordinary function tools, and their absence doesn't mean WindsurfAPI can execute them on the client's behalf. The native bridge is also not a "local IDE tool fix" switch: the default safe path is prompt/tool emulation with local client-side execution; the native bridge makes the remote Windsurf workspace execute Cascade built-in tools and is only meant for low-traffic experiments behind a model/account/API-key gate.
+
 **Q: 31 trial accounts go unavailable after a few hundred calls**
 A: Likely the model is a weekly-quota variant — `claude-opus-4-7-max` / `gpt-5.5-xhigh` / `claude-sonnet-4-7-thinking` etc. cap at 5 calls per week per account, so 31 accounts × 5 ≈ 150 calls hit the wall fast. Switch to `claude-sonnet-4.6` / `claude-haiku-4.5` (daily quotas are much wider). Verify with `docker logs windsurfapi-windsurf-api-1 | grep rate_limit` — the per-account cooldown reason is in the log.
+
+**Q: "All accounts temporarily rate-limited" / IP-level cooldown — is the proxy broken?**
+A: Usually not. Windsurf's upstream applies cooldowns to dense bursts from the same egress IP + same model, so accounts sharing one egress IP get limited together. WindsurfAPI stops burning accounts and returns `429 + Retry-After`; since v2.0.140 the wait time reflects the upstream's real value (e.g. `Resets in: 27m12s`) instead of a fixed 30-second hint. The fixes are lowering concurrency, switching to gentler models, binding accounts to different egress IPs, or waiting for the upstream cooldown to expire.
+
+**Q: Is the free tier locally limited to 1 request per minute?**
+A: No. The local free-tier RPM defaults to 10/min. The 1/min you're seeing (or recovery after a while) is usually Windsurf upstream's dynamic free-tier throttling or a model entitlement limit. Check account status and the available-model list in the Dashboard; when you request a model you're not entitled to, the error's `available_in_pool` field lists what the current pool can use.
+
+**Q: Can `context deadline exceeded` / `Client.Timeout` be fixed by raising the .env timeout?**
+A: No. Long thinking / long output is cut at roughly 236-243 seconds — that's the Windsurf provider/Cascade single-stream window. WindsurfAPI marks it `upstream_deadline_exceeded` / `windsurf_provider_deadline` and discards the half-finished Cascade reuse trajectory so the next round's context doesn't get corrupted. The only real mitigations are splitting the task, lowering reasoning/max output, or switching to a faster model.
 
 ## Contributors
 

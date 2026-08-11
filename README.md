@@ -1,9 +1,17 @@
+<p align="center">
+  <img src="logo.svg" alt="WindsurfAPI" width="92" />
+</p>
+
 # WindsurfAPI · DevinAPI
 
 > 把 Windsurf / Devin 的 100+ AI 模型（Claude、GPT、Gemini、DeepSeek、Kimi、GLM、SWE…）变成 OpenAI / Anthropic / Gemini 三套标准 API。零 npm 运行时依赖。
 
 <p align="center">
   <a href="https://github.com/dwgx/WindsurfAPI/stargazers"><img src="https://img.shields.io/github/stars/dwgx/WindsurfAPI?style=for-the-badge&logo=github&color=f5c518" alt="Stars"></a>&nbsp;
+  <a href="https://github.com/dwgx/WindsurfAPI/blob/master/LICENSE"><img src="https://img.shields.io/github/license/dwgx/WindsurfAPI?style=for-the-badge&color=2da44e" alt="License"></a>&nbsp;
+  <a href="https://github.com/dwgx/WindsurfAPI/releases/latest"><img src="https://img.shields.io/github/v/release/dwgx/WindsurfAPI?style=for-the-badge&logo=github&color=1f6feb" alt="Release"></a>&nbsp;
+  <a href="https://github.com/dwgx/WindsurfAPI/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/dwgx/WindsurfAPI/ci.yml?style=for-the-badge&logo=githubactions&logoColor=white&label=CI&color=8957e5" alt="CI"></a>&nbsp;
+  <a href="https://dwgx.github.io/WindsurfAPI/"><img src="https://img.shields.io/badge/Docs-GitHub_Pages-181717?style=for-the-badge&logo=github" alt="Docs"></a>&nbsp;
   <a href="https://github.com/dwgx"><img src="https://img.shields.io/github/followers/dwgx?label=Follow&style=for-the-badge&logo=github&color=181717" alt="Follow"></a>
   &nbsp;·&nbsp;
   <a href="README.en.md">English</a>
