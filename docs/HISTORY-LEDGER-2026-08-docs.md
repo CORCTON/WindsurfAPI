@@ -25,7 +25,7 @@
 坐标来源与 #13 同层：第三方 .proto 声明顺序，未抓包确认，option_name 词汇表也未知 → 默认关 + `DEVIN_CONNECT_TOOL_CHOICE_TAGS` 可改。`normalizeToolChoice` 只发非默认意图：'auto' 返回 null 不发字段（auto 就是上游默认，发出等于白加未确认字段）；'any' 按 Anthropic 对 'required' 的拼写归一。此前仓库只能对 tool_choice 做分类（缓存键/提示词模拟），`required` 和强制工具名是「静默降级」——本 commit 是第一次让它到上游。
 
 **5. `f3e0094` fix(test): web search 夹具 key 去掉 sk- 前缀**
-自伤型修复：自己写的测试夹具 `sk-ws-web-search-exposure-test` 触发自己的 secret 扫描器（sk- 前缀判 OpenAI key）。改成 `ws-fixture-...` 一行。与 1a95e11 的 fixture 策略一致（ws-fixture 前缀）。
+自伤型修复：自己写的测试夹具（`sk-` 前缀的 `ws-web-search-exposure-test` 形态）触发自己的 secret 扫描器（`sk-` 前缀判 OpenAI key）。改成 `ws-fixture-...` 一行。与 1a95e11 的 fixture 策略一致（ws-fixture 前缀）。本账本在描述此 commit 时曾原文引用该夹具名，同样触发了 secret-scan（openai-api-key 模式）——「审计工具与被审对象共享盲点」的又一实例。
 
 **6. `ac8fa06` feat(dashboard): 暴露 web search —— POST /accounts/:id/web-search**
 `getWebSearchResults`（GetWebSearchResults RPC）「已存在且已测，但从来没人调用它」——本 commit 是首次暴露。设计要点：账号由**调用方指名**而非内部挑选（静默选择会让未解释的限流/封禁落到运营者没选的账号）；错误 in-band 返回（{ok:false} 渲染成消息而非 500）；ESM 不可 monkey-patch → `__setWebSearchDeps` 注入缝。
