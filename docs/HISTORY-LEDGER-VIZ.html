@@ -124,12 +124,77 @@
 
 <script>
 const D = {
-  months: {"2026-04":339,"2026-05":98,"2026-06":141,"2026-07":328,"2026-08":302},
-  weeks: [["W16",8],["W17",229],["W18",130],["W19",30],["W20",7],["W21",4],["W22",14],["W23",66],["W24",8],["W25",2],["W26",12],["W27",91],["W28",136],["W29",51],["W30",40],["W31",66],["W32",247],["W33",52]],
-  kinds: {"fix":482,"feat":207,"docs":126,"test":100,"chore":85,"other":62,"merge":57,"release":48,"refactor":14,"ci":9,"revert":9,"perf":6,"style":2,"build":1},
-  days: [["2026-04-24",53],["2026-04-23",51],["2026-08-10",46],["2026-08-05",45],["2026-04-21",37],["2026-07-08",34],["2026-08-03",34],["2026-08-06",34],["2026-04-29",32],["2026-07-13",27]],
-  hours: {"00":65,"01":49,"02":47,"03":56,"04":29,"05":49,"06":43,"07":51,"08":43,"09":33,"10":42,"11":43,"12":39,"13":34,"14":47,"15":41,"16":66,"17":60,"18":53,"19":71,"20":70,"21":54,"22":59,"23":64},
-  tags: {"2026-04":52,"2026-05":52,"2026-06":24,"2026-07":41,"2026-08":14},
+  months: [
+    {m:"2026-04", v:339, label:"成型冲刺",
+     desc:"单机脚本→完整网关的冲刺月：/v1/messages、模型 tier、Dashboard 雏形；issue 洪峰 82 个、98% 解决率；单日最高 53 条。",
+     link:"https://github.com/dwgx/WindsurfAPI/blob/master/docs/HISTORY-LEDGER.md"},
+    {m:"2026-05", v:98, label:"停滞深水",
+     desc:"社区 issue 洪峰但提交骤降；中旬 8 天空窗（疑似离线研究）；#115 六天四稿的方言战；NLU 七连 hotfix。",
+     link:"https://github.com/dwgx/WindsurfAPI/blob/master/docs/HISTORY-LEDGER.md"},
+    {m:"2026-06", v:141, label:"换轨",
+     desc:"Cascade native bridge 爆发 → 6-30 devin-connect 桥 24 小时诞生；探针烧账户事故、cutover 双 P0。",
+     link:"https://github.com/dwgx/WindsurfAPI/blob/master/docs/HISTORY-LEDGER.md"},
+    {m:"2026-07", v:328, label:"高速",
+     desc:"v3.0-v3.9 密集发布；7-27 对抗 review 风暴日（v3.9.0 当天被打穿）；审计台账建立；gpt-5.6-sol 烧账号。",
+     link:"https://github.com/dwgx/WindsurfAPI/blob/master/docs/HISTORY-LEDGER.md"},
+    {m:"2026-08", v:302, label:"高速",
+     desc:"会话保真三线落地；发版机器（6 天 14 版，最短间隔 14 分钟）；模型同步 #244；文档补课与审计收尾。",
+     link:"https://github.com/dwgx/WindsurfAPI/blob/master/docs/HISTORY-LEDGER.md"}
+  ],
+  weeks: [
+    {w:"W16",v:8},{w:"W17",v:229,note:"洪峰",desc:"issue 洪峰驱动的一周：04-20~26 提交 229 条、当周 issue 报告 50 个（4 月全月 82 个的一半以上）。"},
+    {w:"W18",v:130},{w:"W19",v:30},{w:"W20",v:7,note:"空窗",desc:"5 月中旬八天空窗（疑似离线研究期），研究线在 6-05 总兑现。"},
+    {w:"W21",v:4,note:"空窗",desc:"继续空窗；下一周起 sticky 深水区自查风暴。"},
+    {w:"W22",v:14},{w:"W23",v:66},{w:"W24",v:8},{w:"W25",v:2,note:"空窗",desc:"5-30~6-02 四天空窗。"},
+    {w:"W26",v:12},{w:"W27",v:91},{w:"W28",v:136},{w:"W29",v:51},{w:"W30",v:40},{w:"W31",v:66},
+    {w:"W32",v:247,note:"爆发",desc:"08-04 前后功能爆发：v3.9.10→v3.9.14 五连发、会话保真三线、eleven defects 大 patch。"},
+    {w:"W33",v:52}
+  ],
+  kinds: [
+    {k:"fix",v:482,desc:"修 bug 占 40%——这个项目修 bug 的时间比写功能多。482 个修复提交贯穿 4 个月，含大量当晚修 issue 的记录。"},
+    {k:"feat",v:207,desc:"功能：devin-connect 桥、会话保真三线、/v1/responses、Dashboard、模型同步。"},
+    {k:"docs",v:126,desc:"文档：8 月补课轮集中爆发（ENV-SWITCHES 五批、CHANGELOG、README 中英对齐、审计台账）。"},
+    {k:"test",v:100,desc:"测试：守卫文化成型——突变验证 38 specs、docs 一致性守卫、issue 模板守卫。"},
+    {k:"chore",v:85,desc:"杂务：版本号、依赖、工具链。"},
+    {k:"other",v:62,desc:"其他。"},
+    {k:"merge",v:57,desc:"合并：47 个外部 PR 合并 + 内部分支合并。"},
+    {k:"release",v:48,desc:"发版：183 个 tag、release notes 172 份、4-5 月每日一版。"},
+    {k:"refactor",v:14,desc:"重构。"},
+    {k:"ci",v:9,desc:"CI：node24、pre-commit hook、版本守卫。"},
+    {k:"revert",v:9,desc:"回退：含 04-23 三连 revert、sticky 当天 revert 等自伤收尾。"},
+    {k:"perf",v:6,desc:"性能。"},
+    {k:"style",v:2,desc:"样式。"},
+    {k:"build",v:1,desc:"构建。"}
+  ],
+  days: [
+    {d:"04-24",v:53,desc:"v2.0 革新日：53 测试 + connect-rpc + 8 issue（#42 云候选、Retry-After、TOOL_PARSE_MODE）。"},
+    {d:"04-23",v:51,desc:"三连 revert 同日：三个「聪明改动」全踩中自己记录的「不能改」。"},
+    {d:"08-10",v:46,desc:"文档补课收尾：ENV-SWITCHES、守卫盲点四连补、PR #249/#252 合并后 5 个修补。"},
+    {d:"08-05",v:45,desc:"v3.9.15→v3.9.19 五连发；rescue digest 钳两个半边；#241 合并。"},
+    {d:"04-21",v:37,desc:"issue 洪峰日：#9-#22 一天 14 个 + 外部 PR #13 + 两轮安全审计同日叠加。"},
+    {d:"07-08",v:34,desc:"v3.0.0 发布前夜：Dashboard 大改版冲刺。"},
+    {d:"08-03",v:34,desc:"v3.9.8/9 双发；干旱门禁结构性不可达修复。"},
+    {d:"08-06",v:34,desc:"协议出口修复轮：response-store 四条、零内容流、identity-neutralize 跨段落。"},
+    {d:"04-29",v:32,desc:"v2.0.x 中段：安全审计与反代指纹深化。"},
+    {d:"07-13",v:27,desc:"一天 9 版（v3.2.6~v3.3.2 + rc5/6）；Windows 热更新致命 bug 修复。"}
+  ],
+  hours: [
+    {h:"00",v:65,desc:"午夜还在写代码。"},{h:"01",v:49,desc:"凌晨 1 点。"},{h:"02",v:47,desc:"凌晨 2 点还在提交——该项目没有作息表。"},
+    {h:"03",v:56,desc:"凌晨 3 点（发版高峰时段）。"},{h:"04",v:29,desc:"凌晨 4 点（最低谷）。"},{h:"05",v:49,desc:"凌晨 5 点。"},
+    {h:"06",v:43,desc:"清晨 6 点。"},{h:"07",v:51,desc:"早上 7 点。"},{h:"08",v:43,desc:"早上 8 点。"},
+    {h:"09",v:33,desc:"上午 9 点（最低谷之一）。"},{h:"10",v:42,desc:"上午 10 点。"},{h:"11",v:43,desc:"上午 11 点。"},
+    {h:"12",v:39,desc:"中午 12 点。"},{h:"13",v:34,desc:"下午 1 点。"},{h:"14",v:47,desc:"下午 2 点。"},
+    {h:"15",v:41,desc:"下午 3 点。"},{h:"16",v:66,desc:"下午 4 点（高峰）。"},{h:"17",v:60,desc:"下午 5 点。"},
+    {h:"18",v:53,desc:"晚上 6 点。"},{h:"19",v:71,desc:"晚上 7 点（全天峰值）。"},{h:"20",v:70,desc:"晚上 8 点。"},
+    {h:"21",v:54,desc:"晚上 9 点。"},{h:"22",v:59,desc:"晚上 10 点。"},{h:"23",v:64,desc:"晚上 11 点。"}
+  ],
+  tags: [
+    {t:"2026-04", v:52, desc:"每日一版的节奏：4 月 52 个 tag（v1.4.0→v2.0.x 早期），成型期高频发版。"},
+    {t:"2026-05", v:52, desc:"5 月 52 个 tag（v2.0.45→v2.0.97），社区洪峰驱动，NLU 七连 hotfix 都在这个月。"},
+    {t:"2026-06", v:24, desc:"6 月 24 个（v2.0.98→v2.0.146 隐式内嵌 + devin-connect 桥），发版节奏放缓但桥诞生。"},
+    {t:"2026-07", v:41, desc:"7 月 41 个（v3.0.0→v3.9.6），v3.0 发布当天三连版、7-27 一天 4 版。"},
+    {t:"2026-08", v:14, desc:"8 月 14 个（v3.9.8→v3.9.21），6 天 14 版，最短间隔 14 分钟。"}
+  ],
   selfharm: [
     {d:"04-17", t:"PR #1 撞车+致谢反转", lv:"m", h:"4ff1baf",
      desc:"同一 commit 走两遍 PR 流程（merge 第二父就是作者自己的 commit）；随后 credits 移除又 revert，对外部贡献的致谢决策反复横跳。"},
@@ -193,136 +258,221 @@ const GOLD="#f5c518", DIM="#8b949e", PANEL="#21262d", GREEN="#3fb950", RED="#f85
 
 function svgEl(id){ return document.getElementById(id); }
 
-// 通用条形图
-function barChart(svg, items, {color=GOLD, h=220, pad=30, label=null}={}){
+// ========== 通用交互浮窗（hover 跟随 + 点击锁定） ==========
+const tip = document.getElementById("tl-tip");
+let tipLocked = false;
+const NS = "http://www.w3.org/2000/svg";
+
+function tipHTML(title, meta, desc, links){
+  return `<div class="tt-title">${title}</div>` +
+         `<div class="tt-meta">${meta}</div>` +
+         (desc ? `<div class="tt-desc">${desc}</div>` : "") +
+         (links && links.length ? `<div class="tt-links">${links.map(l=>`<a href="${l[1]}" target="_blank" rel="noopener">${l[0]}</a>`).join("")}</div>` : "");
+}
+function moveTip(e){
+  if (tipLocked) return;
+  const tw = tip.offsetWidth || 300, th = tip.offsetHeight || 160;
+  let lx = e.clientX + 14, ly = e.clientY + 14;
+  if (lx + tw > window.innerWidth - 8) lx = e.clientX - tw - 14;
+  if (ly + th > window.innerHeight - 8) ly = e.clientY - th - 14;
+  tip.style.left = lx + "px"; tip.style.top = ly + "px";
+}
+function showTip(html, e){ tip.innerHTML = html; tip.style.display = "block"; moveTip(e); }
+function lockTip(){ tipLocked = true; tip.style.left = tip.style.left; }
+function hideTip(){ if (tipLocked) return; tip.style.display = "none"; }
+document.addEventListener("click", (e)=>{
+  if (tipLocked && !tip.contains(e.target)) { tipLocked = false; tip.style.display = "none"; }
+});
+// 给 SVG 元素绑定交互：hover 跟随、click 锁定
+function bindBar(g, ev){
+  g.addEventListener("mouseenter", (e)=> showTip(ev.tipHtml || tipHTML(ev.name, ev.meta, ev.desc, ev.links), e));
+  g.addEventListener("mousemove", moveTip);
+  g.addEventListener("mouseleave", hideTip);
+  g.addEventListener("click", (e)=>{ e.stopPropagation(); lockTip(); });
+}
+
+// ========== 通用条形图（交互版） ==========
+function barChart(svg, items, {color=GOLD, h=220, pad=30, barColor=null, valFmt=null}={}){
   const W=1000, H=h;
-  const max = Math.max(...items.map(i=>i[1]));
+  const max = Math.max(...items.map(i=>i.v));
   const n = items.length;
   const bw = (W - pad*2) / n;
-  items.forEach(([name, val], i) => {
-    const bh = (val/max) * (H - 70);
+  items.forEach((item, i) => {
+    const bh = (item.v/max) * (H - 70);
     const x = pad + i*bw + bw*0.15, y = H - 30 - bh;
-    const r = document.createElementNS("http://www.w3.org/2000/svg","rect");
+    const g = document.createElementNS(NS,"g");
+    const r = document.createElementNS(NS,"rect");
     r.setAttribute("x",x); r.setAttribute("y",y); r.setAttribute("width",bw*0.7); r.setAttribute("height",bh);
-    r.setAttribute("rx",4); r.setAttribute("fill",color);
-    svg.appendChild(r);
-    const t = document.createElementNS("http://www.w3.org/2000/svg","text");
+    r.setAttribute("rx",4);
+    r.setAttribute("fill", barColor ? (typeof barColor === "function" ? barColor(item) : barColor) : color);
+    g.appendChild(r);
+    const t = document.createElementNS(NS,"text");
     t.setAttribute("x",x+bw*0.35); t.setAttribute("y",y-6); t.setAttribute("text-anchor","middle");
-    t.setAttribute("fill",DIM); t.setAttribute("font-size",11); t.textContent = val;
-    svg.appendChild(t);
-    const t2 = document.createElementNS("http://www.w3.org/2000/svg","text");
+    t.setAttribute("fill",DIM); t.setAttribute("font-size",11);
+    t.textContent = valFmt ? valFmt(item.v) : item.v;
+    g.appendChild(t);
+    const t2 = document.createElementNS(NS,"text");
     t2.setAttribute("x",x+bw*0.35); t2.setAttribute("y",H-10); t2.setAttribute("text-anchor","middle");
-    t2.setAttribute("fill",DIM); t2.setAttribute("font-size",10); t2.textContent = name;
-    svg.appendChild(t2);
+    t2.setAttribute("fill",DIM); t2.setAttribute("font-size",10);
+    t2.textContent = item.label;
+    g.appendChild(t2);
+    if (item.note) {
+      const n2 = document.createElementNS(NS,"text");
+      n2.setAttribute("x",x+bw*0.35); n2.setAttribute("y",y-18); n2.setAttribute("text-anchor","middle");
+      n2.setAttribute("fill",GREEN); n2.setAttribute("font-size",9);
+      n2.textContent = item.note;
+      g.appendChild(n2);
+    }
+    bindBar(g, item);
+    svg.appendChild(g);
   });
 }
 
 // 月度
-{
-  const items = Object.entries(D.months);
-  barChart(svgEl("months"), items, {h:220});
-}
+barChart(svgEl("months"), D.months.map(m=>({
+  label:m.m.slice(2), v:m.v,
+  name:m.m+" "+m.label, meta:m.m+" · "+m.v+" 条提交 · "+m.label,
+  desc:m.desc, links:[["账本详细", m.link]]
+})));
+
 // 周
 {
-  const items = D.weeks;
   const svg = svgEl("weeks"), W=1000, H=300, pad=30;
-  const max = Math.max(...items.map(i=>i[1]));
+  const items = D.weeks;
+  const max = Math.max(...items.map(i=>i.v));
   const n = items.length, bw=(W-pad*2)/n;
-  items.forEach(([name,val],i)=>{
-    const bh=(val/max)*(H-80);
+  items.forEach((item,i)=>{
+    const bh=(item.v/max)*(H-80);
     const x=pad+i*bw+bw*0.2, y=H-40-bh;
-    const color = val>150 ? RED : val>80 ? ORANGE : val>20 ? GOLD : DIM;
-    const r = document.createElementNS("http://www.w3.org/2000/svg","rect");
+    const color = item.v>150 ? RED : item.v>80 ? ORANGE : item.v>20 ? GOLD : DIM;
+    const g = document.createElementNS(NS,"g");
+    const r = document.createElementNS(NS,"rect");
     r.setAttribute("x",x);r.setAttribute("y",y);r.setAttribute("width",bw*0.6);r.setAttribute("height",bh);
     r.setAttribute("rx",3);r.setAttribute("fill",color);
-    svg.appendChild(r);
-    const t = document.createElementNS("http://www.w3.org/2000/svg","text");
+    g.appendChild(r);
+    const t = document.createElementNS(NS,"text");
     t.setAttribute("x",x+bw*0.3);t.setAttribute("y",y-4);t.setAttribute("text-anchor","middle");
-    t.setAttribute("fill",DIM);t.setAttribute("font-size",9);t.textContent=val;
-    svg.appendChild(t);
-    if (val===2||val===4||val===7) {
-      const note = document.createElementNS("http://www.w3.org/2000/svg","text");
-      note.setAttribute("x",x+bw*0.3);note.setAttribute("y",H-20);note.setAttribute("text-anchor","middle");
-      note.setAttribute("fill",GREEN);note.setAttribute("font-size",9);note.textContent="空窗";
-      svg.appendChild(note);
+    t.setAttribute("fill",DIM);t.setAttribute("font-size",9);t.textContent=item.v;
+    g.appendChild(t);
+    if (item.note) {
+      const n2 = document.createElementNS(NS,"text");
+      n2.setAttribute("x",x+bw*0.3);n2.setAttribute("y",H-20);n2.setAttribute("text-anchor","middle");
+      n2.setAttribute("fill",GREEN);n2.setAttribute("font-size",9);n2.textContent=item.note;
+      g.appendChild(n2);
     }
+    bindBar(g, {
+      name: item.w, meta: item.w + " · " + item.v + " 条提交",
+      desc: item.desc || (item.v > 100 ? "高密度提交周。" : item.v > 30 ? "正常节奏。" : "低活跃周。"),
+      links: [["账本详细","https://github.com/dwgx/WindsurfAPI/blob/master/docs/HISTORY-LEDGER.md"]]
+    });
+    svg.appendChild(g);
   });
-  const t = document.createElementNS("http://www.w3.org/2000/svg","text");
+  const t = document.createElementNS(NS,"text");
   t.setAttribute("x",pad);t.setAttribute("y",H-58);t.setAttribute("fill",DIM);t.setAttribute("font-size",10);
   t.textContent = "W17 洪峰 229 · W20-21 空窗（离线研究）· W32 爆发 247";
   svg.appendChild(t);
 }
+
 // 类型
 {
-  const items = Object.entries(D.kinds).sort((a,b)=>b[1]-a[1]);
+  const items = D.kinds.slice().sort((a,b)=>b.v-a.v);
   const svg = svgEl("kinds"), W=1000, H=260, pad=30;
-  const max = Math.max(...items.map(i=>i[1]));
+  const max = Math.max(...items.map(i=>i.v));
   const colors = {"fix":RED,"feat":GOLD,"docs":GREEN,"test":"#58a6ff","chore":DIM,"other":"#bc8cff","merge":"#8957e5","release":"#f0883e","refactor":"#39c5cf","ci":"#a5d6ff","revert":DIM,"perf":"#7ee787","style":DIM,"build":DIM};
-  items.forEach(([name,val],i)=>{
-    const bh=(val/max)*(H-70);
-    const x=pad+i*(W-pad*2)/items.length+4, y=H-30-bh;
-    const r = document.createElementNS("http://www.w3.org/2000/svg","rect");
-    r.setAttribute("x",x);r.setAttribute("y",y);r.setAttribute("width",(W-pad*2)/items.length-8);r.setAttribute("height",bh);
-    r.setAttribute("rx",3);r.setAttribute("fill",colors[name]||DIM);
-    svg.appendChild(r);
-    const t = document.createElementNS("http://www.w3.org/2000/svg","text");
-    t.setAttribute("x",x+(W-pad*2)/items.length/2);t.setAttribute("y",y-5);t.setAttribute("text-anchor","middle");
-    t.setAttribute("fill",DIM);t.setAttribute("font-size",10);t.textContent=val;
-    svg.appendChild(t);
-    const t2 = document.createElementNS("http://www.w3.org/2000/svg","text");
-    t2.setAttribute("x",x+(W-pad*2)/items.length/2);t2.setAttribute("y",H-10);t2.setAttribute("text-anchor","middle");
-    t2.setAttribute("fill",DIM);t2.setAttribute("font-size",9);t2.textContent=name;
-    svg.appendChild(t2);
+  const bw = (W-pad*2)/items.length;
+  items.forEach((item,i)=>{
+    const bh=(item.v/max)*(H-70);
+    const x=pad+i*bw+4, y=H-30-bh;
+    const g = document.createElementNS(NS,"g");
+    const r = document.createElementNS(NS,"rect");
+    r.setAttribute("x",x);r.setAttribute("y",y);r.setAttribute("width",bw-8);r.setAttribute("height",bh);
+    r.setAttribute("rx",3);r.setAttribute("fill",colors[item.k]||DIM);
+    g.appendChild(r);
+    const t = document.createElementNS(NS,"text");
+    t.setAttribute("x",x+bw/2);t.setAttribute("y",y-5);t.setAttribute("text-anchor","middle");
+    t.setAttribute("fill",DIM);t.setAttribute("font-size",10);t.textContent=item.v;
+    g.appendChild(t);
+    const t2 = document.createElementNS(NS,"text");
+    t2.setAttribute("x",x+bw/2);t2.setAttribute("y",H-10);t2.setAttribute("text-anchor","middle");
+    t2.setAttribute("fill",DIM);t2.setAttribute("font-size",9);t2.textContent=item.k;
+    g.appendChild(t2);
+    bindBar(g, {
+      name: item.k + " ×" + item.v, meta: item.k + " · " + item.v + " 条",
+      desc: item.desc,
+      links: [["账本详细","https://github.com/dwgx/WindsurfAPI/blob/master/docs/HISTORY-LEDGER.md"]]
+    });
+    svg.appendChild(g);
   });
 }
+
 // 单日峰值
 {
   const items = D.days;
   const svg = svgEl("days"), W=1000, H=300, pad=30;
-  const max = Math.max(...items.map(i=>i[1]));
-  items.forEach(([name,val],i)=>{
-    const bh=(val/max)*(H-70);
-    const x=pad+i*(W-pad*2)/10+6, y=H-30-bh;
-    const color = name==="2026-08-04" ? RED : GOLD;
-    const r = document.createElementNS("http://www.w3.org/2000/svg","rect");
-    r.setAttribute("x",x);r.setAttribute("y",y);r.setAttribute("width",(W-pad*2)/10-12);r.setAttribute("height",bh);
+  const max = Math.max(...items.map(i=>i.v));
+  const bw = (W-pad*2)/10;
+  items.forEach((item,i)=>{
+    const bh=(item.v/max)*(H-70);
+    const x=pad+i*bw+6, y=H-30-bh;
+    const color = item.d==="08-04" ? RED : GOLD;
+    const g = document.createElementNS(NS,"g");
+    const r = document.createElementNS(NS,"rect");
+    r.setAttribute("x",x);r.setAttribute("y",y);r.setAttribute("width",bw-12);r.setAttribute("height",bh);
     r.setAttribute("rx",3);r.setAttribute("fill",color);
-    svg.appendChild(r);
-    const t = document.createElementNS("http://www.w3.org/2000/svg","text");
-    t.setAttribute("x",x+(W-pad*2)/20);t.setAttribute("y",y-5);t.setAttribute("text-anchor","middle");
-    t.setAttribute("fill",DIM);t.setAttribute("font-size",10);t.textContent=val;
-    svg.appendChild(t);
-    const t2 = document.createElementNS("http://www.w3.org/2000/svg","text");
-    t2.setAttribute("x",x+(W-pad*2)/20);t2.setAttribute("y",H-10);t2.setAttribute("text-anchor","middle");
-    t2.setAttribute("fill",DIM);t2.setAttribute("font-size",9);t2.textContent=name.slice(5);
-    svg.appendChild(t2);
+    g.appendChild(r);
+    const t = document.createElementNS(NS,"text");
+    t.setAttribute("x",x+bw/2);t.setAttribute("y",y-5);t.setAttribute("text-anchor","middle");
+    t.setAttribute("fill",DIM);t.setAttribute("font-size",10);t.textContent=item.v;
+    g.appendChild(t);
+    const t2 = document.createElementNS(NS,"text");
+    t2.setAttribute("x",x+bw/2);t2.setAttribute("y",H-10);t2.setAttribute("text-anchor","middle");
+    t2.setAttribute("fill",DIM);t2.setAttribute("font-size",9);t2.textContent=item.d;
+    g.appendChild(t2);
+    bindBar(g, {
+      name: "2026-"+item.d + " · " + item.v + " 条", meta: "2026-"+item.d + " · 单日 " + item.v + " 条提交",
+      desc: item.desc,
+      links: [["账本详细","https://github.com/dwgx/WindsurfAPI/blob/master/docs/HISTORY-LEDGER.md"]]
+    });
+    svg.appendChild(g);
   });
 }
+
 // 24小时
 {
-  const items = Object.entries(D.hours);
+  const items = D.hours;
   const svg = svgEl("hours"), W=1000, H=180, pad=30;
-  const max = Math.max(...items.map(i=>i[1]));
-  items.forEach(([name,val],i)=>{
-    const bh=(val/max)*(H-50);
-    const x=pad+i*(W-pad*2)/24+2, y=H-25-bh;
-    const r = document.createElementNS("http://www.w3.org/2000/svg","rect");
-    r.setAttribute("x",x);r.setAttribute("y",y);r.setAttribute("width",(W-pad*2)/24-4);r.setAttribute("height",bh);
-    r.setAttribute("rx",2);r.setAttribute("fill",name>="00"&&name<="06" ? "#bc8cff" : GOLD);
-    svg.appendChild(r);
+  const max = Math.max(...items.map(i=>i.v));
+  const bw = (W-pad*2)/24;
+  items.forEach((item,i)=>{
+    const bh=(item.v/max)*(H-50);
+    const x=pad+i*bw+2, y=H-25-bh;
+    const g = document.createElementNS(NS,"g");
+    const r = document.createElementNS(NS,"rect");
+    r.setAttribute("x",x);r.setAttribute("y",y);r.setAttribute("width",bw-4);r.setAttribute("height",bh);
+    r.setAttribute("rx",2);r.setAttribute("fill",item.h>="00"&&item.h<="06" ? "#bc8cff" : GOLD);
+    g.appendChild(r);
+    bindBar(g, {
+      name: item.h + " 时", meta: item.h + " 时 · " + item.v + " 条提交",
+      desc: item.desc,
+      links: [["账本详细","https://github.com/dwgx/WindsurfAPI/blob/master/docs/HISTORY-LEDGER.md"]]
+    });
+    svg.appendChild(g);
     if (i%3===0){
-      const t = document.createElementNS("http://www.w3.org/2000/svg","text");
-      t.setAttribute("x",x+(W-pad*2)/48);t.setAttribute("y",H-8);t.setAttribute("text-anchor","middle");
-      t.setAttribute("fill",DIM);t.setAttribute("font-size",9);t.textContent=name+"时";
+      const t = document.createElementNS(NS,"text");
+      t.setAttribute("x",x+bw/2);t.setAttribute("y",H-8);t.setAttribute("text-anchor","middle");
+      t.setAttribute("fill",DIM);t.setAttribute("font-size",9);t.textContent=item.h+"时";
       svg.appendChild(t);
     }
   });
 }
+
 // 版本节奏
-{
-  const items = Object.entries(D.tags);
-  barChart(svgEl("tags"), items, {h:220});
-}
+barChart(svgEl("tags"), D.tags.map(t=>({
+  label:t.t.slice(2), v:t.v,
+  name:t.t+" 版本", meta:t.t+" · "+t.v+" 个 tag",
+  desc:t.desc, links:[["Releases","https://github.com/dwgx/WindsurfAPI/releases"]]
+})), {h:220});
+
 // 自伤时间线（交互版：hover 跟随鼠标 tooltip + 账本/Git 链接）
 {
   const svg = svgEl("tl"), W=1000, H=240, padL=20, padR=20;
@@ -383,28 +533,13 @@ function barChart(svg, items, {color=GOLD, h=220, pad=30, label=null}={}){
       nm.textContent = ev.t.length > 12 ? ev.t.slice(0,11)+"…" : ev.t;
       g.appendChild(nm);
     }
-    // hover 交互
-    g.addEventListener("mouseenter", ()=>{
-      const lvTxt = ev.lv==="h" ? "事故级（烧钱/安全/生产挂）" : "合并后自毁/返工自打脸";
-      tip.innerHTML =
-        `<div class="tt-title">${ev.t}</div>` +
-        `<div class="tt-meta">${ev.d} · <span style="color:${colors[ev.lv]}">${lvTxt}</span></div>` +
-        `<div class="tt-desc">${ev.desc}</div>` +
-        `<div class="tt-links">` +
-          `<a href="https://github.com/dwgx/WindsurfAPI/blob/master/docs/HISTORY-LEDGER.md" target="_blank" rel="noopener">账本详细</a>` +
-          `<a href="https://github.com/dwgx/WindsurfAPI/commit/${ev.h}" target="_blank" rel="noopener">Git 提交 ${ev.h.slice(0,7)}</a>` +
-        `</div>`;
-      tip.style.display = "block";
+    // hover 交互（通用组件：跟随 + 点击锁定）
+    bindBar(g, {
+      name: ev.t, meta: ev.d + " · " + (ev.lv==="h" ? "事故级（烧钱/安全/生产挂）" : "合并后自毁/返工自打脸"),
+      desc: ev.desc,
+      links: [["账本详细","https://github.com/dwgx/WindsurfAPI/blob/master/docs/HISTORY-LEDGER.md"],
+              ["Git 提交","https://github.com/dwgx/WindsurfAPI/commit/"+ev.h]]
     });
-    g.addEventListener("mousemove", (e)=>{
-      const tw = tip.offsetWidth || 300, th = tip.offsetHeight || 160;
-      let lx = e.clientX + 14, ly = e.clientY + 14;
-      if (lx + tw > window.innerWidth - 8) lx = e.clientX - tw - 14;
-      if (ly + th > window.innerHeight - 8) ly = e.clientY - th - 14;
-      tip.style.left = lx + "px"; tip.style.top = ly + "px";
-    });
-    g.addEventListener("mouseleave", ()=>{ tip.style.display = "none"; });
-    svg.appendChild(g);
   });
 }
 // 统计卡
