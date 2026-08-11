@@ -62,6 +62,34 @@ body { background: var(--paper); color: var(--ink); font-family: var(--font); fo
 }
 #bg-canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
 
+/* ─── 背景语录：弹幕式横穿 + 浮沉（合成器动画，零 JS 逐帧） ─── */
+.bg-quotes {
+  position: absolute; inset: 0; overflow: hidden;
+  pointer-events: none; user-select: none;
+  font-family: var(--mono);
+}
+.bg-quotes .q {
+  position: absolute; top: var(--y); left: 0;
+  white-space: nowrap; opacity: var(--o, .05);
+  color: var(--c, #ededed); font-size: var(--s, 12px);
+  will-change: transform;
+  animation: q-drift var(--dur, 160s) linear infinite;
+  animation-delay: var(--delay, 0s);
+}
+.bg-quotes .q > span {
+  display: inline-block;
+  animation: q-bob var(--bob-dur, 14s) ease-in-out infinite alternate;
+  animation-delay: var(--bob-delay, 0s);
+}
+@keyframes q-drift {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(100vw); }
+}
+@keyframes q-bob {
+  from { transform: translateY(0); }
+  to   { transform: translateY(var(--bob, 16px)); }
+}
+
 .wrap { max-width: 1080px; margin: 0 auto; padding: 0 20px 80px; }
 
 /* ============ Hero（打字机 + 大数字） ============ */
@@ -200,6 +228,7 @@ svg { width: 100%; height: auto; display: block; }
   [data-reveal] svg, .stat, .phase, .tl-node { opacity: 1 !important; transform: none !important; }
   .bar { transform: scaleY(1) !important; }
   .bg-orb, .bg-grid { display: none; }
+  .bg-quotes { display: none; }
 }
 
 /* ============ 顶部引导 tab ============ */
@@ -310,6 +339,7 @@ svg { width: 100%; height: auto; display: block; }
   <div class="bg-orb a"></div>
   <div class="bg-orb b"></div>
   <canvas id="bg-canvas"></canvas>
+  <div class="bg-quotes" aria-hidden="true"></div>
 </div>
 
 <nav class="ledger-nav" id="ledgerNav" aria-label="章节导航">
@@ -407,7 +437,7 @@ svg { width: 100%; height: auto; display: block; }
     <h2>Git 树形态</h2>
     <div class="sub">1250 提交 · 59 个合并 · 主干 1063 节点 —— <b>悬停节点/线段看详情，点击锁定</b></div>
     <div class="tree-legend" id="tree-legend"></div>
-    <svg id="tree" viewBox="0 0 1000 1900"></svg>
+    <svg id="tree" viewBox="0 0 1000 6900"></svg>
   </section>
 
 <section class="section card" data-reveal>
@@ -931,7 +961,13 @@ barChart(svgEl("tags"), D.tags.map(t=>({
     let h = 0; for (const ch of login) h = (h * 31 + ch.charCodeAt(0)) % 360;
     return 'hsl(' + h + ',45%,45%)';
   };
-  const avatarOf = (login, cls) => `<span class="${cls||'c-avatar'}" style="background:${avatarColor(login)}">${login[0].toUpperCase()}</span>`;
+  const GID = {"warelik":54947489,"wangergou777":142420084,"andya1lan":58987282};
+  const avatarOf = (login, cls) =>
+    `<span class="${cls||'c-avatar'}" style="background:${avatarColor(login)};position:relative;overflow:hidden">` +
+      `<img src="${GID[login] ? 'https://avatars.githubusercontent.com/u/' + GID[login] + '?s=64' : 'https://github.com/' + login + '.png?size=64'}" ` +
+      `alt="" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover" ` +
+      `onerror="this.style.display='none'" onload="this.parentNode.textContent='';this.parentNode.appendChild(this);this.style.display='block'">` +
+    `</span>`;
   const maxAdd = Math.max(...ext.map(c=>c.add), 1);
   ext.slice(0, 10).forEach((c, i)=>{
     const row = document.createElement('div');
@@ -972,161 +1008,197 @@ barChart(svgEl("tags"), D.tags.map(t=>({
   });
 })();
 
-/* ============ Git 树渲染 ============ */
+/* ============ Git 树渲染（头像 + 布局修正版） ============ */
 (() => {
   const svg = svgEl('tree');
   if (!svg) return;
   const G = D_GIT;
-  const W = 1000, H = 1900, padT = 30, padB = 40, padL = 60, padR = 60;
+  const NS = 'http://www.w3.org/2000/svg';
+  const LOGIN_ID = {"warelik": 54947489, "wangergou777": 142420084, "andya1lan": 58987282};
+  const AUTHOR_LOGIN = {"dwgx": "dwgx", "W ARELIK": "warelik", "warelik": "warelik", "Baily": "baily-zhang", "Stefan Meinecke": "smeinecke", "AI CT": "aict666", "aict666": "aict666", "abwuge": "abwuge", "li shuangqi": "Fermiz", "Fermiz": "Fermiz", "kosonen": "clarezoe", "clarezoe": "clarezoe", "hikki": "datfooldive", "linqicheng": "linqichenggg", "lauvww": "lauvww", "ucloudnb666": "ucloudnb666", "you922": "you922", "Song Jie": "lovivi", "lovivi": "lovivi", "The-five-stooges": "The-five-stooges", "andya1lan": "andya1lan", "wangergou777": "wangergou777", "brandonedley": "brandonedley", "MatrixNeoKozak": "MatrixNeoKozak", "wjurkowlaniec": "wjurkowlaniec", "sandleft": "sandleft", "motto1": "motto1", "youfak": "youfak", "colin1112a": "colin1112a", "dd373156": "dd373156", "forrinzhao": "forrinzhao", "kevin5251984": "kevin5251984", "RogueBinary": "RogueBinary", "Yuuqq": "Yuuqq", "UntaDotMy": "UntaDotMy", "suhaihui-git": "suhaihui-git", "Await-d": "Await-d", "chukangkang": "chukangkang", "Kloping": "Kloping", "limweb": "limweb", "moduvoice": "moduvoice", "Bad Child": ""};
+  const avatarUrl = login => LOGIN_ID[login]
+    ? 'https://avatars.githubusercontent.com/u/' + LOGIN_ID[login] + '?s=64'
+    : 'https://github.com/' + login + '.png?size=64';
+  const loginOf = a => AUTHOR_LOGIN[a.a] || '';
+  const avatarDefs = {};
+  function avatarOf(login, x, y, r) {
+    const g = document.createElementNS(NS, 'g');
+    let h = 0; for (const ch of login) h = (h * 31 + ch.charCodeAt(0)) % 360;
+    const fb = document.createElementNS(NS, 'circle');
+    fb.setAttribute('cx', x); fb.setAttribute('cy', y); fb.setAttribute('r', r);
+    fb.setAttribute('fill', 'hsl(' + h + ',45%,45%)');
+    g.appendChild(fb);
+    const letter = document.createElementNS(NS, 'text');
+    letter.setAttribute('x', x); letter.setAttribute('y', y + r * .38);
+    letter.setAttribute('text-anchor', 'middle'); letter.setAttribute('font-size', r * 1.1);
+    letter.setAttribute('font-weight', '700'); letter.setAttribute('fill', '#fff');
+    letter.textContent = login[0].toUpperCase();
+    g.appendChild(letter);
+    const safe = login.replace(/[^a-zA-Z0-9]/g, '');
+    if (!avatarDefs[login]) {
+      avatarDefs[login] = true;
+      const defs = document.createElementNS(NS, 'defs');
+      const clip = document.createElementNS(NS, 'clipPath');
+      clip.setAttribute('id', 'ac-' + safe);
+      const cc = document.createElementNS(NS, 'circle');
+      cc.setAttribute('cx', x); cc.setAttribute('cy', y); cc.setAttribute('r', r);
+      clip.appendChild(cc); defs.appendChild(clip);
+      svg.insertBefore(defs, svg.firstChild);
+    }
+    const img = document.createElementNS(NS, 'image');
+    img.setAttribute('x', x - r); img.setAttribute('y', y - r);
+    img.setAttribute('width', r * 2); img.setAttribute('height', r * 2);
+    img.setAttribute('clip-path', 'url(#ac-' + safe + ')');
+    img.setAttribute('href', avatarUrl(login));
+    img.setAttribute('opacity', '0');
+    img.style.transition = 'opacity .3s';
+    img.addEventListener('load', () => img.setAttribute('opacity', '1'));
+    g.appendChild(img);
+    return g;
+  }
+  const byHash = {}; G.anchors.forEach(a => byHash[a.h] = a);
+  const W = 1000, H = 6900, padT = 40, padB = 60, padL = 80, padR = 120;
   const t0 = G.t0, t1 = G.t1;
   const span = t1 - t0 || 1;
   const Y = t => padT + (t - t0) / span * (H - padT - padB);
-  const LANE_W = 34;
-  const laneOf = {};   // hash8 -> lane
-  const anchors = G.anchors;
-  // lane 分配：spine 标记（在 master 主干上）= lane 0；其余从 1 起
+  const laneOf = {};
   let nextLane = 1;
-  anchors.forEach(a => {
-    if (a.spine === 1) { laneOf[a.h] = 0; }
+  G.anchors.forEach(a => {
+    if (a.spine === 1) { laneOf[a.h] = 0; return; }
+    let pl = null;
+    for (const p of (a.p || [])) { if (laneOf[p] !== undefined) { pl = laneOf[p]; break; } }
+    if (pl !== null && pl > 0) { laneOf[a.h] = pl; }
     else { laneOf[a.h] = nextLane++; }
   });
-
-  // 月份背景条带 + 标签
+  const LANE_W = 26;
+  const maxLane = Math.max(...Object.values(laneOf));
+  const laneX = l => padL + l * LANE_W;
   const monthStarts = {};
-  anchors.forEach(a => {
+  G.anchors.forEach(a => {
     const d = new Date(a.t * 1000);
-    const mk = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0');
+    const mk = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
     if (!(mk in monthStarts)) monthStarts[mk] = a.t;
   });
   const mkKeys = Object.keys(monthStarts).sort();
   mkKeys.forEach((mk, i) => {
     const y0 = Y(monthStarts[mk]);
-    const y1 = i+1 < mkKeys.length ? Y(monthStarts[mkKeys[i+1]]) : H - padB;
-    const r = document.createElementNS(NS,'rect');
+    const y1 = i + 1 < mkKeys.length ? Y(monthStarts[mkKeys[i + 1]]) : H - padB;
+    const r = document.createElementNS(NS, 'rect');
     r.setAttribute('x', 0); r.setAttribute('y', y0); r.setAttribute('width', W); r.setAttribute('height', y1 - y0);
     r.setAttribute('fill', i % 2 ? 'rgba(255,255,255,.015)' : 'transparent');
     svg.appendChild(r);
-    const t = document.createElementNS(NS,'text');
-    t.setAttribute('x', 8); t.setAttribute('y', y0 + 12); t.setAttribute('font-size', 10);
+    const t = document.createElementNS(NS, 'text');
+    t.setAttribute('x', 8); t.setAttribute('y', y0 + 14); t.setAttribute('font-size', 11);
     t.setAttribute('font-family', 'var(--mono)'); t.setAttribute('fill', '#71717a');
     t.textContent = mk;
     svg.appendChild(t);
   });
-
-  // 主干折叠段（粗线）
   const segInfo = {}; G.segments.forEach(s => segInfo[s[0]] = s);
-  anchors.forEach(a => {
+  G.anchors.forEach(a => {
     if (laneOf[a.h] !== 0) return;
     const seg = segInfo[a.h];
     if (!seg) return;
     const [fromH, toH, n, st0, st1] = seg;
-    const line = document.createElementNS(NS,'line');
-    line.setAttribute('x1', padL); line.setAttribute('y1', Y(st1)); line.setAttribute('x2', padL); line.setAttribute('y2', Y(st0));
-    line.setAttribute('stroke', '#d97757'); line.setAttribute('stroke-opacity', .28);
-    line.setAttribute('stroke-width', 7); line.setAttribute('stroke-linecap', 'round');
+    const glow = document.createElementNS(NS, 'line');
+    glow.setAttribute('x1', laneX(0)); glow.setAttribute('y1', Y(st1)); glow.setAttribute('x2', laneX(0)); glow.setAttribute('y2', Y(st0));
+    glow.setAttribute('stroke', '#d97757'); glow.setAttribute('stroke-opacity', .12);
+    glow.setAttribute('stroke-width', 11); glow.setAttribute('stroke-linecap', 'round');
+    svg.appendChild(glow);
+    const line = document.createElementNS(NS, 'line');
+    line.setAttribute('x1', laneX(0)); line.setAttribute('y1', Y(st1)); line.setAttribute('x2', laneX(0)); line.setAttribute('y2', Y(st0));
+    line.setAttribute('stroke', '#d97757'); line.setAttribute('stroke-opacity', .4);
+    line.setAttribute('stroke-width', 3); line.setAttribute('stroke-linecap', 'round');
     line.setAttribute('class', 'tree-line');
-    bindBar(line, { name: n + ' 个提交', meta: new Date(st0*1000).toISOString().slice(0,10) + ' → ' + new Date(st1*1000).toISOString().slice(0,10), desc: '主干上两锚点之间的普通提交（已折叠）。', links: [] });
+    bindBar(line, { name: n + ' 个提交', meta: new Date(st0 * 1000).toISOString().slice(0, 10) + ' → ' + new Date(st1 * 1000).toISOString().slice(0, 10), desc: '主干上两锚点之间的普通提交（已折叠）。', links: [] });
     svg.appendChild(line);
   });
-
-  // 非主干锚点连线（从分支 lane 汇入主干或垂直）
-  const branches = {};
-  G.tips && Object.keys(G.tips).forEach(h => branches[h] = G.tips[h]);
-  anchors.forEach(a => {
+  G.anchors.forEach(a => {
     const l = laneOf[a.h];
     if (l === 0) return;
-    const x = padL + l * LANE_W;
-    const y = Y(a.t);
-    // 竖线到底（到最近的下一主干点或底部）
-    const line = document.createElementNS(NS,'line');
-    line.setAttribute('x1', x); line.setAttribute('y1', y);
-    line.setAttribute('x2', x); line.setAttribute('y2', H - padB);
-    line.setAttribute('stroke', '#4c9aff'); line.setAttribute('stroke-opacity', .18);
-    line.setAttribute('stroke-width', 1.5);
-    line.setAttribute('stroke-dasharray', '3,4');
-    svg.appendChild(line);
-    // 汇入主干：水平线到 padL
-    const hline = document.createElementNS(NS,'line');
-    hline.setAttribute('x1', x); hline.setAttribute('y1', y); hline.setAttribute('x2', padL); hline.setAttribute('y2', y);
-    hline.setAttribute('stroke', l % 2 ? '#d9a257' : '#4c9aff'); hline.setAttribute('stroke-opacity', .5);
-    hline.setAttribute('stroke-width', 1.5);
-    svg.appendChild(hline);
+    const x = laneX(l), y = Y(a.t);
+    const v = document.createElementNS(NS, 'line');
+    v.setAttribute('x1', x); v.setAttribute('y1', y); v.setAttribute('x2', x); v.setAttribute('y2', H - padB);
+    v.setAttribute('stroke', '#4c9aff'); v.setAttribute('stroke-opacity', .14);
+    v.setAttribute('stroke-width', 1.5); v.setAttribute('stroke-dasharray', '3,5');
+    svg.appendChild(v);
+    const h = document.createElementNS(NS, 'line');
+    h.setAttribute('x1', x); h.setAttribute('y1', y); h.setAttribute('x2', laneX(0)); h.setAttribute('y2', y);
+    h.setAttribute('stroke', l % 2 ? '#d9a257' : '#4c9aff'); h.setAttribute('stroke-opacity', .45);
+    h.setAttribute('stroke-width', 1.5);
+    svg.appendChild(h);
   });
-
-  // 锚点节点
-  const MAX_LABEL = 12;
-  anchors.forEach(a => {
+  const tips = G.tips || {};
+  G.anchors.forEach(a => {
     const l = laneOf[a.h];
-    const x = l === 0 ? padL : padL + l * LANE_W;
+    const x = l === 0 ? laneX(0) : laneX(l);
     const y = Y(a.t);
-    const g = document.createElementNS(NS,'g');
+    const g = document.createElementNS(NS, 'g');
     g.setAttribute('class', 'tree-node');
-    // 节点形状
-    let node;
-    const isPR = (a.k === 'pr');
-    if (isPR) {
-      node = document.createElementNS(NS,'rect');
-      node.setAttribute('x', x-4.5); node.setAttribute('y', y-4.5); node.setAttribute('width', 9); node.setAttribute('height', 9);
-      node.setAttribute('transform', 'rotate(45 ' + x + ' ' + y + ')');
-      node.setAttribute('fill', '#d9a257');
-    } else if (a.k === 'merge') {
-      node = document.createElementNS(NS,'circle');
-      node.setAttribute('cx', x); node.setAttribute('cy', y); node.setAttribute('r', 6);
-      node.setAttribute('fill', '#1c1c1e'); node.setAttribute('stroke', '#d97757'); node.setAttribute('stroke-width', 2);
-    } else if (a.k === 'head') {
-      node = document.createElementNS(NS,'circle');
-      node.setAttribute('cx', x); node.setAttribute('cy', y); node.setAttribute('r', 7);
-      node.setAttribute('fill', '#d97757');
+    const login = loginOf(a);
+    const wantAvatar = (a.k === 'merge' || a.k === 'pr' || a.k === 'head' || a.k === 'tip') && login;
+    if (wantAvatar) {
+      g.appendChild(avatarOf(login, x, y, 8));
+      const ring = document.createElementNS(NS, 'circle');
+      ring.setAttribute('cx', x); ring.setAttribute('cy', y); ring.setAttribute('r', 11);
+      ring.setAttribute('fill', 'none');
+      ring.setAttribute('stroke', a.k === 'merge' ? '#d97757' : a.k === 'pr' ? '#d9a257' : '#4c9aff');
+      ring.setAttribute('stroke-width', 2);
+      g.appendChild(ring);
     } else {
-      node = document.createElementNS(NS,'circle');
-      node.setAttribute('cx', x); node.setAttribute('cy', y); node.setAttribute('r', 3.5);
-      node.setAttribute('fill', '#ededed');
+      let node;
+      if (a.k === 'head') {
+        node = document.createElementNS(NS, 'circle');
+        node.setAttribute('cx', x); node.setAttribute('cy', y); node.setAttribute('r', 6);
+        node.setAttribute('fill', '#d97757');
+      } else if (a.k === 'root') {
+        node = document.createElementNS(NS, 'circle');
+        node.setAttribute('cx', x); node.setAttribute('cy', y); node.setAttribute('r', 5);
+        node.setAttribute('fill', '#ededed');
+      } else {
+        node = document.createElementNS(NS, 'circle');
+        node.setAttribute('cx', x); node.setAttribute('cy', y); node.setAttribute('r', 3.5);
+        node.setAttribute('fill', 'none'); node.setAttribute('stroke', '#ededed'); node.setAttribute('stroke-width', 1.5);
+      }
+      g.appendChild(node);
     }
-    g.appendChild(node);
-    // 标签（主干右侧 / 分支上方）
-    const label = document.createElementNS(NS,'text');
-    label.setAttribute('x', x + (l === 0 ? 12 : -8)); label.setAttribute('y', y + 3);
-    label.setAttribute('text-anchor', l === 0 ? 'start' : 'end');
+    const label = document.createElementNS(NS, 'text');
+    label.setAttribute('x', x + 14); label.setAttribute('y', y + 3);
     label.setAttribute('font-size', 8.5); label.setAttribute('font-family', 'var(--mono)');
     label.setAttribute('fill', '#71717a');
     label.textContent = a.h;
     g.appendChild(label);
-    // 分支 tip 名称
-    if (branches[a.h]) {
-      const bt = document.createElementNS(NS,'text');
-      bt.setAttribute('x', x + (l === 0 ? 12 : -8)); bt.setAttribute('y', y - 6);
-      bt.setAttribute('text-anchor', l === 0 ? 'start' : 'end');
+    if (tips[a.h]) {
+      const bt = document.createElementNS(NS, 'text');
+      bt.setAttribute('x', x + 14); bt.setAttribute('y', y - 8);
       bt.setAttribute('font-size', 8.5); bt.setAttribute('font-family', 'var(--mono)');
       bt.setAttribute('fill', '#4c9aff');
-      bt.textContent = branches[a.h].replace('origin/','');
+      bt.textContent = tips[a.h].replace('origin/', '').replace('feat/', '').replace('fix/', '').replace('docs/', '').replace('chore/', '').replace('pr/', '');
       g.appendChild(bt);
     }
-    // 链接
     const links = [['Git 提交', 'https://github.com/dwgx/WindsurfAPI/commit/' + a.h]];
     if (G.merge_prs[a.h]) links.push(['PR #' + G.merge_prs[a.h], 'https://github.com/dwgx/WindsurfAPI/pull/' + G.merge_prs[a.h]]);
-    bindBar(g, { name: a.s || a.h, meta: a.h + ' · ' + new Date(a.t*1000).toISOString().slice(0,10) + ' · ' + a.a + ' · ' + (a.k==='merge'?'merge':a.k==='pr'?'PR':a.k==='tag'?'tag':'commit'), desc: '', links });
+    if (login) links.push(['作者', 'https://github.com/' + login]);
+    bindBar(g, { name: a.s || a.h, meta: a.h + ' · ' + new Date(a.t * 1000).toISOString().slice(0, 10) + ' · ' + (login || a.a) + ' · ' + a.k, desc: '', links });
     svg.appendChild(g);
   });
-
-  // tag 里程碑标牌（右边缘）
   (G.tags_milestone || []).forEach(([name, h]) => {
     const a = byHash[h]; if (!a) return;
     const y = Y(a.t);
-    const g = document.createElementNS(NS,'g');
-    const tx = W - padR;
-    const rect = document.createElementNS(NS,'rect');
-    const tw = name.length * 7 + 12;
-    rect.setAttribute('x', tx - tw); rect.setAttribute('y', y - 8); rect.setAttribute('width', tw); rect.setAttribute('height', 16);
-    rect.setAttribute('rx', 8); rect.setAttribute('fill', '#1c1c1e');
-    rect.setAttribute('stroke', 'rgba(217,162,87,.5)'); rect.setAttribute('stroke-width', 1);
+    const g = document.createElementNS(NS, 'g');
+    const tx = W - padR + 20;
+    const rect = document.createElementNS(NS, 'rect');
+    const tw = name.length * 7.5 + 14;
+    rect.setAttribute('x', tx - tw); rect.setAttribute('y', y - 9); rect.setAttribute('width', tw); rect.setAttribute('height', 18);
+    rect.setAttribute('rx', 9); rect.setAttribute('fill', '#1c1c1e');
+    rect.setAttribute('stroke', 'rgba(217,162,87,.55)'); rect.setAttribute('stroke-width', 1);
     g.appendChild(rect);
-    const t = document.createElementNS(NS,'text');
-    t.setAttribute('x', tx - tw/2); t.setAttribute('y', y + 3.5);
-    t.setAttribute('text-anchor', 'middle'); t.setAttribute('font-size', 8.5);
+    const t = document.createElementNS(NS, 'text');
+    t.setAttribute('x', tx - tw / 2); t.setAttribute('y', y + 4);
+    t.setAttribute('text-anchor', 'middle'); t.setAttribute('font-size', 9);
     t.setAttribute('font-family', 'var(--mono)'); t.setAttribute('fill', '#d9a257');
     t.textContent = name;
     g.appendChild(t);
-    bindBar(g, { name: name, meta: 'tag · ' + new Date(a.t*1000).toISOString().slice(0,10), desc: '版本里程碑。', links: [['Releases', 'https://github.com/dwgx/WindsurfAPI/releases/tag/' + name]] });
+    bindBar(g, { name: name, meta: 'tag · ' + new Date(a.t * 1000).toISOString().slice(0, 10), desc: '版本里程碑。', links: [['Releases', 'https://github.com/dwgx/WindsurfAPI/releases/tag/' + name]] });
     svg.appendChild(g);
   });
 })();
@@ -1223,6 +1295,100 @@ function initParticleBg(canvas) {
   return { start };
 }
 
+/* ============ 背景语录（真实 commit/issue/PR 摘抄，弹幕式飘动） ============ */
+const BG_QUOTES = [
+  "git revert 确实会跑 post-commit,我的探针是坏的",
+  "交接文档自己也含一个字面 NUL —— 它正在记录这个教训却踩了同一个坑",
+  "这是今天第三次 anchor 被 src 改动打断,而这次是我在把这条教训写进台账之后自己犯的",
+  "我给 post-commit 加了一句无条件 echo、跑 revert、没看到输出,就断言",
+  "审计工具与被审对象共享盲点",
+  "这道钳失败不是因为它写错了,而是因为它对的",
+  "别 close,没修复好,我今天才部署的,在你修复后部署的",
+  "那我真的很苦恼了 明天应该能修 我自己买点号吧 其实这个项目我很久都没有维护了",
+  "哥,辛苦了,51还在工作,51快乐。",
+  "v2.0.85 仓促 ship → 86 hotfix OFF → 87 真修 → 88 发现 alias 自己也写错了 key",
+  "docs(ledger): 第十二轮 —— 并更正上一轮一句假话",
+  "修 5 条自己写的假测试 —— 源码 grep 冒充行为守卫",
+  "我上一批修复自己引入的",
+  "上批修复当天就被 revert,结论反转",
+  "这个项目修 bug 的时间比写功能多",
+  "要 GPT 拿到 SWE",
+  "探针把活着的免费账户 free→expired",
+  "打开页面就把自己 IP ban 了",
+  "两个开关对守卫隐形还报绿",
+  "同一 commit 走两遍 PR 流程",
+  "merge 后 8 小时才发现端点不可用",
+  "v3.9.2 只修了 1/3",
+  "86/86 收齐被一次补 47 个推翻",
+  "三个聪明改动全踩中自己记录的不能改",
+  "catalog 没核实就上架,82 秒内三次提交全撤回",
+  "自己写的测试文件里带字面 NUL 字节",
+  "守卫检测语言跟不上代码表达",
+  "语法检查通过不等于行为正确",
+  "这个项目没有作息表",
+  "凌晨 2 点还在提交",
+  "每日一版的节奏,4 月 52 个 tag",
+  "单日 81 条,一天五版,最短间隔 14 分钟",
+  "24 位单发过客,每人 1 个 PR,修完就走",
+  "S=大师级根因修复,A=兼容层,B=社区修复",
+  "warelik 15 个 PR,7 个 S 级,领跑外部贡献者",
+  "作者 70% 代码,外部 30%",
+  "fix 占 40% —— 修 bug 的时间比写功能多",
+  "主干 1063 节点,59 个合并,183 个 tag 项链",
+  "对抗 review 风暴日,v3.9.0 当天被打穿",
+  "七-二七 审计台账建立,16 轮修修补补",
+  "从单机反代脚本到 2930★ 的网关",
+  "零 npm 依赖,纯 Node.js",
+  "凌晨 4 点是最低谷,晚上 7 点是峰值",
+  "这个项目修 bug 修出了文化",
+  "守卫文化:合并后才暴露 → CI 拦截",
+  "1205 条 commit,每条都有账",
+  "29 位外部贡献者,69 个 PR,47 个合并",
+  "GOD 是作者,MR 是传奇,别的都是过客",
+  "reborn 横幅批量关了 5 个 issue",
+  "那些悬空的 issue,会再撞上的",
+  "唯一的外部输入:一次付费抓包",
+];
+function initQuotes(host) {
+  if (!host || REDUCED) return;
+  const area = innerWidth * innerHeight;
+  const n = Math.max(innerWidth < 600 ? 14 : 24, Math.min(35, (area / 45000) | 0));
+  const picked = BG_QUOTES.slice();
+  for (let i = picked.length - 1; i > 0; i--) {
+    const j = (Math.random() * (i + 1)) | 0;
+    [picked[i], picked[j]] = [picked[j], picked[i]];
+  }
+  const frag = document.createDocumentFragment();
+  for (let i = 0; i < n; i++) {
+    const dur = 120 + Math.random() * 140;
+    const el = document.createElement('div');
+    const inner = document.createElement('span');
+    inner.textContent = picked[i];
+    el.appendChild(inner);
+    el.classList.add('q');
+    el.style.setProperty('--y', (10 + Math.random() * 86).toFixed(1) + '%');
+    el.style.setProperty('--s', (11 + Math.random() * 3).toFixed(1) + 'px');
+    el.style.setProperty('--dur', dur.toFixed(0) + 's');
+    el.style.setProperty('--delay', (-Math.random() * dur).toFixed(0) + 's');
+    el.style.setProperty('--bob', (8 + Math.random() * 12).toFixed(0) + 'px');
+    el.style.setProperty('--bob-dur', (10 + Math.random() * 10).toFixed(1) + 's');
+    el.style.setProperty('--bob-delay', (-Math.random() * 20).toFixed(1) + 's');
+    const tint = Math.random();
+    if (tint < .15) {
+      el.style.setProperty('--c', '#d97757');
+      el.style.setProperty('--o', (.035 + Math.random() * .02).toFixed(3));
+    } else if (tint < .3) {
+      el.style.setProperty('--c', '#6a9bcc');
+      el.style.setProperty('--o', (.035 + Math.random() * .02).toFixed(3));
+    } else {
+      el.style.setProperty('--c', '#ededed');
+      el.style.setProperty('--o', (.045 + Math.random() * .035).toFixed(3));
+    }
+    frag.appendChild(el);
+  }
+  host.appendChild(frag);
+}
+
 /* ============ 滚动触发 ============ */
 const io = HAS_IO ? new IntersectionObserver(es => es.forEach(e => {
   if (e.isIntersecting) { trigger(e.target); io.unobserve(e.target); }
@@ -1238,6 +1404,7 @@ function trigger(el) {
 async function playIntro() {
   const bg = document.getElementById('bg-canvas');
   if (bg) initParticleBg(bg).start();
+  initQuotes(document.querySelector('.bg-quotes'));
   const title = document.querySelector('.hero-title');
   const sub = document.querySelector('.hero-sub');
   if (title) await typewriter(title);
@@ -1259,6 +1426,7 @@ function boot() {
     document.querySelectorAll('[data-count]:not([data-done])').forEach(el => { el.dataset.done = '1'; countUp(el); });
     const bg = document.getElementById('bg-canvas');
     if (bg) initParticleBg(bg).start();
+    initQuotes(document.querySelector('.bg-quotes'));
     return;
   }
   playIntro();
