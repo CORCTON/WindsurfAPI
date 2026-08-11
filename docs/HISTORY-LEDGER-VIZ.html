@@ -355,6 +355,9 @@ body.clean-mode .esc-hint { color: var(--accent); border-color: rgba(217,119,87,
 .tree-tools button:hover { color: var(--ink); border-color: var(--border-strong); }
 .tree-tools button.is-active { background: var(--accent); color: #0a0a0a; border-color: var(--accent); }
 .tree-legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 11px; color: var(--text-muted); margin-bottom: 10px; }
+.tree-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.tree-scroll.scrollable svg { width: 3200px; max-width: none; }
+.tree-scroll:not(.scrollable) svg { width: 100%; }
 .tree-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; vertical-align: -1px; }
 .tree-line { cursor: pointer; }
 .tree-node { cursor: pointer; }
@@ -473,7 +476,7 @@ body.clean-mode .esc-hint { color: var(--accent); border-color: rgba(217,119,87,
     </div>
     <div class="sub">1250 提交 · 59 个合并 · 主干 1063 节点 —— <b>悬停节点/线段看详情，点击锁定</b></div>
     <div class="tree-legend" id="tree-legend"></div>
-    <svg id="tree" viewBox="0 0 1000 6900"></svg>
+    <div class="tree-scroll" id="tree-scroll"><svg id="tree" viewBox="0 0 1000 4200"></svg></div>
   </section>
 
 <section class="section card" data-reveal>
@@ -1481,17 +1484,44 @@ document.addEventListener('keydown', e => {
       line.setAttribute('class', 'tree-line');
       bindBar(line, { name: n + ' 个提交', meta: new Date(st0 * 1000).toISOString().slice(0, 10) + ' → ' + new Date(st1 * 1000).toISOString().slice(0, 10), desc: '主干折叠段。', links: [] });
     });
+    // 分支节点 → 汇入主干弧的贝塞尔曲线（终点 = 父锚点在弧上的位置，展示合并关系）
     G.anchors.forEach(a => {
       const l = laneOf[a.h];
       if (l === 0) return;
-      const r1 = R_IN + l * 22, r2 = R_OUT - 12;
-      const line = document.createElementNS(NS, 'line');
-      line.setAttribute('x1', px(a.t, r1)); line.setAttribute('y1', py(a.t, r1));
-      line.setAttribute('x2', px(a.t, r2)); line.setAttribute('y2', py(a.t, r2));
-      line.setAttribute('stroke', l % 2 ? '#d9a257' : '#4c9aff'); line.setAttribute('stroke-opacity', .35);
-      line.setAttribute('stroke-width', 1.5);
-      svg.appendChild(line);
+      const r1 = R_IN + l * 22;
+      const x1 = px(a.t, r1), y1 = py(a.t, r1);
+      // 汇入点：父锚点（第一父若在锚点集），否则最近的后继主干锚点，否则同时间弧上
+      let tJoin = a.t;
+      if (a.p && a.p[0] && byHash[a.p[0]]) tJoin = byHash[a.p[0]].t;
+      else {
+        const nxt = G.anchors.filter(b => b.spine === 1 && b.t >= a.t).sort((x, y) => x.t - y.t)[0];
+        if (nxt) tJoin = nxt.t;
+      }
+      const x2 = px(tJoin, R_OUT), y2 = py(tJoin, R_OUT);
+      const path = document.createElementNS(NS, 'path');
+      // 二次贝塞尔：控制点取径向中点（保持弧线流畅）
+      const mx = (x1 + x2) / 2 + (y2 - y1) * .18, my = (y1 + y2) / 2 - (x2 - x1) * .18;
+      path.setAttribute('d', 'M ' + x1 + ' ' + y1 + ' Q ' + mx + ' ' + my + ' ' + x2 + ' ' + y2);
+      path.setAttribute('fill', 'none');
+      path.setAttribute('stroke', l % 2 ? '#d9a257' : '#4c9aff');
+      path.setAttribute('stroke-opacity', .4); path.setAttribute('stroke-width', 1.5);
+      path.setAttribute('marker-end', 'url(#arr)');
+      svg.appendChild(path);
     });
+    // 箭头 defs
+    (function arrowDefs() {
+      const defs = document.createElementNS(NS, 'defs');
+      const mk = document.createElementNS(NS, 'marker');
+      mk.setAttribute('id', 'arr'); mk.setAttribute('viewBox', '0 0 8 8');
+      mk.setAttribute('refX', '7'); mk.setAttribute('refY', '4');
+      mk.setAttribute('markerWidth', '5'); mk.setAttribute('markerHeight', '5');
+      mk.setAttribute('orient', 'auto');
+      const p = document.createElementNS(NS, 'path');
+      p.setAttribute('d', 'M 0 0 L 8 4 L 0 8 z');
+      p.setAttribute('fill', '#4c9aff'); p.setAttribute('opacity', '.7');
+      mk.appendChild(p); defs.appendChild(mk);
+      svg.insertBefore(defs, svg.firstChild);
+    })();
     G.anchors.forEach(a => {
       const l = laneOf[a.h];
       const r = l === 0 ? R_OUT : R_IN + l * 22;
@@ -1558,6 +1588,8 @@ document.addEventListener('keydown', e => {
   function render() {
     svg.innerHTML = '';
     for (const k in avatarDefs) delete avatarDefs[k];
+    const sc = document.getElementById('tree-scroll');
+    if (sc) sc.classList.toggle('scrollable', currentMode === 'horizontal');
     if (currentMode === 'vertical') renderVertical();
     else if (currentMode === 'horizontal') renderHorizontal();
     else renderRing();
