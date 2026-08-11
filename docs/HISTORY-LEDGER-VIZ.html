@@ -1554,6 +1554,15 @@ document.addEventListener('keydown', e => {
     svg.setAttribute('viewBox', '0 0 1000 1000');
   }
 
+  let currentMode = 'vertical';
+  function render() {
+    svg.innerHTML = '';
+    for (const k in avatarDefs) delete avatarDefs[k];
+    if (currentMode === 'vertical') renderVertical();
+    else if (currentMode === 'horizontal') renderHorizontal();
+    else renderRing();
+  }
+
   window.__treeRender = mode => { currentMode = mode; render(); };
   document.querySelectorAll('.tree-tools button').forEach(btn => {
     btn.addEventListener('click', () => {
