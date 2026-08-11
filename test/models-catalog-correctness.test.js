@@ -105,8 +105,43 @@ describe('v2.0.29 model catalog correctness', () => {
     assert.equal(getModelInfo('gpt-5.5-medium')?.modelUid, 'gpt-5-5-medium');
   });
 
-  it('exposes claude-opus-4-7-max with dotted alias', () => {
-    assert.ok(getModelInfo('claude-opus-4-7-max'));
+  it('exposes gpt-5.6-luna ladder with cloud-format and compact aliases (issue #244)', () => {
+    for (const tier of ['none', 'low', 'medium', 'high', 'xhigh']) {
+      assert.ok(getModelInfo(`gpt-5.6-luna-${tier}`), `gpt-5.6-luna-${tier} missing`);
+      // cloud sends `gpt-5-6-luna-${tier}`, we should resolve it back
+      assert.equal(resolveModel(`gpt-5-6-luna-${tier}`), `gpt-5.6-luna-${tier}`);
+    }
+    // bare dotted, bare dashed, and the issue's verbatim compact form all → medium
+    assert.equal(resolveModel('gpt-5.6-luna'), 'gpt-5.6-luna-medium');
+    assert.equal(resolveModel('gpt-5-6-luna'), 'gpt-5.6-luna-medium');
+    assert.equal(resolveModel('gpt5.6-luna'), 'gpt-5.6-luna-medium');
+    assert.equal(getModelInfo('gpt-5.6-luna-medium')?.modelUid, 'gpt-5-6-luna-medium');
+    assert.equal(getModelInfo('gpt-5.6-luna-medium')?.provider, 'openai');
+  });
+
+  it('exposes Claude 5 family (fable/sonnet/opus) with bare and compact aliases (issue #244)', () => {
+    for (const family of ['claude-5-fable', 'claude-sonnet-5', 'claude-opus-5']) {
+      for (const tier of ['low', 'medium', 'high', 'xhigh', 'max']) {
+        const key = `${family}-${tier}`;
+        assert.ok(getModelInfo(key), `${key} missing`);
+        assert.equal(getModelInfo(key)?.provider, 'anthropic');
+      }
+    }
+    // fast lanes for opus-5 only (fable/sonnet-5 have no -fast in the price table)
+    for (const tier of ['low', 'medium', 'high', 'xhigh', 'max']) {
+      assert.ok(getModelInfo(`claude-opus-5-${tier}-fast`), `claude-opus-5-${tier}-fast missing`);
+    }
+    // bare family names default to medium
+    assert.equal(resolveModel('claude-5-fable'), 'claude-5-fable-medium');
+    assert.equal(resolveModel('claude-sonnet-5'), 'claude-sonnet-5-medium');
+    assert.equal(resolveModel('claude-opus-5'), 'claude-opus-5-medium');
+    // issue #244 verbatim compact forms
+    assert.equal(resolveModel('claude5'), 'claude-sonnet-5-medium');
+    assert.equal(resolveModel('claude-5'), 'claude-sonnet-5-medium');
+    assert.equal(getModelInfo('claude-5-fable-medium')?.modelUid, 'claude-5-fable-medium');
+  });
+
+  it('exposes claude-opus-4-7-max with dotted alias', () => {    assert.ok(getModelInfo('claude-opus-4-7-max'));
     assert.equal(resolveModel('claude-opus-4.7-max'), 'claude-opus-4-7-max');
     assert.equal(getModelInfo('claude-opus-4-7-max')?.modelUid, 'claude-opus-4-7-max');
   });

@@ -62,6 +62,34 @@ export const MODELS = {
   'claude-opus-4-8-xhigh-fast':     { name: 'claude-opus-4-8-xhigh-fast',     provider: 'anthropic', enumValue: 0,   modelUid: 'claude-opus-4-8-xhigh-fast', credit: 80 },
   'claude-opus-4-8-max-fast':       { name: 'claude-opus-4-8-max-fast',       provider: 'anthropic', enumValue: 0,   modelUid: 'claude-opus-4-8-max-fast', credit: 100 },
 
+  // ── Claude 5 family ──────────────────────────────────────
+  // fable-5 (2026-06-09) / sonnet-5 (2026-06-30) / opus-5 (2026-07-23) — Devin
+  // catalog, dash-form selectors. fable/sonnet-5 confirmed in the 07-08 live
+  // snapshot; opus-5 + fast lanes from the official price table (docs.devin.ai
+  // 2026-08-11) — selector form follows the 4-8 family (claude-opus-5-*). All
+  // five effort tiers per family, no -thinking siblings in the catalog.
+  // Credit multipliers from the official modelCostData table.
+  'claude-5-fable-low':             { name: 'claude-5-fable-low',             provider: 'anthropic', enumValue: 0,   modelUid: 'claude-5-fable-low', credit: 40 },
+  'claude-5-fable-medium':          { name: 'claude-5-fable-medium',          provider: 'anthropic', enumValue: 0,   modelUid: 'claude-5-fable-medium', credit: 50 },
+  'claude-5-fable-high':            { name: 'claude-5-fable-high',            provider: 'anthropic', enumValue: 0,   modelUid: 'claude-5-fable-high', credit: 70 },
+  'claude-5-fable-xhigh':           { name: 'claude-5-fable-xhigh',           provider: 'anthropic', enumValue: 0,   modelUid: 'claude-5-fable-xhigh', credit: 80 },
+  'claude-5-fable-max':             { name: 'claude-5-fable-max',             provider: 'anthropic', enumValue: 0,   modelUid: 'claude-5-fable-max', credit: 100 },
+  'claude-sonnet-5-low':            { name: 'claude-sonnet-5-low',            provider: 'anthropic', enumValue: 0,   modelUid: 'claude-sonnet-5-low', credit: 12 },
+  'claude-sonnet-5-medium':         { name: 'claude-sonnet-5-medium',         provider: 'anthropic', enumValue: 0,   modelUid: 'claude-sonnet-5-medium', credit: 15 },
+  'claude-sonnet-5-high':           { name: 'claude-sonnet-5-high',           provider: 'anthropic', enumValue: 0,   modelUid: 'claude-sonnet-5-high', credit: 20 },
+  'claude-sonnet-5-xhigh':          { name: 'claude-sonnet-5-xhigh',          provider: 'anthropic', enumValue: 0,   modelUid: 'claude-sonnet-5-xhigh', credit: 30 },
+  'claude-sonnet-5-max':            { name: 'claude-sonnet-5-max',            provider: 'anthropic', enumValue: 0,   modelUid: 'claude-sonnet-5-max', credit: 40 },
+  'claude-opus-5-low':              { name: 'claude-opus-5-low',              provider: 'anthropic', enumValue: 0,   modelUid: 'claude-opus-5-low', credit: 20 },
+  'claude-opus-5-medium':           { name: 'claude-opus-5-medium',           provider: 'anthropic', enumValue: 0,   modelUid: 'claude-opus-5-medium', credit: 25 },
+  'claude-opus-5-high':             { name: 'claude-opus-5-high',             provider: 'anthropic', enumValue: 0,   modelUid: 'claude-opus-5-high', credit: 35 },
+  'claude-opus-5-xhigh':            { name: 'claude-opus-5-xhigh',            provider: 'anthropic', enumValue: 0,   modelUid: 'claude-opus-5-xhigh', credit: 40 },
+  'claude-opus-5-max':              { name: 'claude-opus-5-max',              provider: 'anthropic', enumValue: 0,   modelUid: 'claude-opus-5-max', credit: 50 },
+  'claude-opus-5-low-fast':         { name: 'claude-opus-5-low-fast',         provider: 'anthropic', enumValue: 0,   modelUid: 'claude-opus-5-low-fast', credit: 40 },
+  'claude-opus-5-medium-fast':      { name: 'claude-opus-5-medium-fast',      provider: 'anthropic', enumValue: 0,   modelUid: 'claude-opus-5-medium-fast', credit: 50 },
+  'claude-opus-5-high-fast':        { name: 'claude-opus-5-high-fast',        provider: 'anthropic', enumValue: 0,   modelUid: 'claude-opus-5-high-fast', credit: 70 },
+  'claude-opus-5-xhigh-fast':       { name: 'claude-opus-5-xhigh-fast',       provider: 'anthropic', enumValue: 0,   modelUid: 'claude-opus-5-xhigh-fast', credit: 80 },
+  'claude-opus-5-max-fast':         { name: 'claude-opus-5-max-fast',         provider: 'anthropic', enumValue: 0,   modelUid: 'claude-opus-5-max-fast', credit: 100 },
+
   // ── GPT ─────────────────────────────────────────────────
   'gpt-4o':                         { name: 'gpt-4o',                         provider: 'openai', enumValue: 109, modelUid: 'MODEL_CHAT_GPT_4O_2024_08_06', credit: 1 , deprecated: true },
   'gpt-4o-mini':                    { name: 'gpt-4o-mini',                    provider: 'openai', enumValue: 113, credit: 0.5, deprecated: true },
@@ -142,6 +170,18 @@ export const MODELS = {
   'gpt-5.5-medium-fast':            { name: 'gpt-5.5-medium-fast',            provider: 'openai', enumValue: 0,   modelUid: 'gpt-5-5-medium-priority', credit: 4 },
   'gpt-5.5-high-fast':              { name: 'gpt-5.5-high-fast',              provider: 'openai', enumValue: 0,   modelUid: 'gpt-5-5-high-priority', credit: 8 },
   'gpt-5.5-xhigh-fast':             { name: 'gpt-5.5-xhigh-fast',             provider: 'openai', enumValue: 0,   modelUid: 'gpt-5-5-xhigh-priority', credit: 16 },
+
+  // GPT-5.6 — Devin catalog 2026-07-09 (Sol/Terra/Luna). Luna is the fastest
+  // cheapest sibling; issue #244 asked for it by name. Five effort tiers
+  // (none/low/medium/high/xhigh), no max tier in the official price table.
+  // Bare `gpt-5.6-luna` / `gpt-5-6-luna` / compact `gpt5.6-luna` default to
+  // medium (see _lookup aliases below). Credit from official modelCostData.
+  'gpt-5.6-luna':                   { name: 'gpt-5.6-luna',                   provider: 'openai', enumValue: 0,   modelUid: 'gpt-5-6-luna-medium', credit: 5 },
+  'gpt-5.6-luna-none':              { name: 'gpt-5.6-luna-none',              provider: 'openai', enumValue: 0,   modelUid: 'gpt-5-6-luna-none', credit: 3 },
+  'gpt-5.6-luna-low':               { name: 'gpt-5.6-luna-low',               provider: 'openai', enumValue: 0,   modelUid: 'gpt-5-6-luna-low', credit: 4 },
+  'gpt-5.6-luna-medium':            { name: 'gpt-5.6-luna-medium',            provider: 'openai', enumValue: 0,   modelUid: 'gpt-5-6-luna-medium', credit: 5 },
+  'gpt-5.6-luna-high':              { name: 'gpt-5.6-luna-high',              provider: 'openai', enumValue: 0,   modelUid: 'gpt-5-6-luna-high', credit: 6 },
+  'gpt-5.6-luna-xhigh':             { name: 'gpt-5.6-luna-xhigh',             provider: 'openai', enumValue: 0,   modelUid: 'gpt-5-6-luna-xhigh', credit: 8 },
 
   // GPT-5.3 Codex — already had bare `gpt-5.3-codex` (legacy alias), now expose tier variants.
   'gpt-5.3-codex-low':              { name: 'gpt-5.3-codex-low',              provider: 'openai', enumValue: 0,   modelUid: 'gpt-5-3-codex-low', credit: 0.5 },
@@ -289,6 +329,10 @@ _lookup.set('claude-4.6', 'claude-sonnet-4.6');
 _lookup.set('claude-4.6-thinking', 'claude-sonnet-4.6-thinking');
 _lookup.set('claude-4.6-1m', 'claude-sonnet-4.6-1m');
 _lookup.set('claude-4.6-thinking-1m', 'claude-sonnet-4.6-thinking-1m');
+// Bare `claude5` / `claude-5` — issue #244 verbatim. Default to sonnet-5 medium
+// (same convention as claude-4.6 → sonnet: sonnet is the more common tier).
+_lookup.set('claude5', 'claude-sonnet-5-medium');
+_lookup.set('claude-5', 'claude-sonnet-5-medium');
 _lookup.set('gpt-5-4-none', 'gpt-5.4-none');
 _lookup.set('gpt-5-4-low', 'gpt-5.4-low');
 _lookup.set('gpt-5-4-medium', 'gpt-5.4-medium');
@@ -320,6 +364,15 @@ _lookup.set('gpt-5-5-low-priority', 'gpt-5.5-low-fast');
 _lookup.set('gpt-5-5-medium-priority', 'gpt-5.5-medium-fast');
 _lookup.set('gpt-5-5-high-priority', 'gpt-5.5-high-fast');
 _lookup.set('gpt-5-5-xhigh-priority', 'gpt-5.5-xhigh-fast');
+// gpt-5.6-luna cloud-format aliases (cloud sends `gpt-5-6-luna-*`, OpenAI-style
+// is `gpt-5.6-luna-*`). Bare + compact `gpt5.6-luna` (issue #244 verbatim) → medium.
+_lookup.set('gpt-5-6-luna', 'gpt-5.6-luna-medium');
+_lookup.set('gpt5.6-luna', 'gpt-5.6-luna-medium');
+_lookup.set('gpt-5-6-luna-none', 'gpt-5.6-luna-none');
+_lookup.set('gpt-5-6-luna-low', 'gpt-5.6-luna-low');
+_lookup.set('gpt-5-6-luna-medium', 'gpt-5.6-luna-medium');
+_lookup.set('gpt-5-6-luna-high', 'gpt-5.6-luna-high');
+_lookup.set('gpt-5-6-luna-xhigh', 'gpt-5.6-luna-xhigh');
 // gpt-5.3-codex tier aliases
 _lookup.set('gpt-5-3-codex-low', 'gpt-5.3-codex-low');
 _lookup.set('gpt-5-3-codex-medium', 'gpt-5.3-codex');
@@ -420,6 +473,29 @@ const ANTHROPIC_DATED = {
   'claude-opus-4.8-max-fast':   'claude-opus-4-8-max-fast',
   'claude-opus-4-8-thinking':   'claude-opus-4-8-medium',
   'claude-opus-4.8-thinking':   'claude-opus-4-8-medium',
+
+  // Claude 5 — bare aliases default to medium (family convention). Upstream
+  // selectors are the dash form (claude-5-fable-*, claude-sonnet-5-*,
+  // claude-opus-5-*); `claude-fable-5-*` is the docs display name, not the wire
+  // selector. No dated suffix variants exist yet — bare/latest cover clients.
+  'claude-5-fable':             'claude-5-fable-medium',
+  'claude-5-fable-latest':      'claude-5-fable-medium',
+  'claude-sonnet-5':            'claude-sonnet-5-medium',
+  'claude-sonnet-5-latest':     'claude-sonnet-5-medium',
+  'claude-opus-5':              'claude-opus-5-medium',
+  'claude-opus-5-latest':       'claude-opus-5-medium',
+  'claude-5-fable-low':         'claude-5-fable-low',
+  'claude-5-fable-high':        'claude-5-fable-high',
+  'claude-5-fable-xhigh':       'claude-5-fable-xhigh',
+  'claude-5-fable-max':         'claude-5-fable-max',
+  'claude-sonnet-5-low':        'claude-sonnet-5-low',
+  'claude-sonnet-5-high':       'claude-sonnet-5-high',
+  'claude-sonnet-5-xhigh':      'claude-sonnet-5-xhigh',
+  'claude-sonnet-5-max':        'claude-sonnet-5-max',
+  'claude-opus-5-low':          'claude-opus-5-low',
+  'claude-opus-5-high':         'claude-opus-5-high',
+  'claude-opus-5-xhigh':        'claude-opus-5-xhigh',
+  'claude-opus-5-max':          'claude-opus-5-max',
 };
 for (const [k, v] of Object.entries(ANTHROPIC_DATED)) _lookup.set(k, v);
 
@@ -437,6 +513,8 @@ const OPENAI_DATED = {
   // GPT-5.5 — bare aliases default to medium tier (matches gpt-5.2 / gpt-5.4 pattern).
   'gpt-5-5':    'gpt-5.5-medium',
   'gpt-5.5':    'gpt-5.5-medium',
+  // GPT-5.6 Luna — OpenAI-side slug `gpt-5.6-luna` (bare → medium).
+  'gpt-5.6-luna': 'gpt-5.6-luna-medium',
 };
 for (const [k, v] of Object.entries(OPENAI_DATED)) _lookup.set(k, v);
 
@@ -455,6 +533,12 @@ const CURSOR_ALIASES = {
   'opus-4.8':              'claude-opus-4-8-medium',
   'opus-4.8-thinking':     'claude-opus-4-8-medium',
   'o4.8':                  'claude-opus-4-8-medium',
+  // Claude 5 — Cursor whitelist blocks "claude" in model names, so bare
+  // family names resolve through here.
+  'opus-5':                'claude-opus-5-medium',
+  'o5':                    'claude-opus-5-medium',
+  'fable-5':               'claude-5-fable-medium',
+  'sonnet-5':              'claude-sonnet-5-medium',
   // sonnet
   'sonnet-4.6':            'claude-sonnet-4.6',
   'sonnet-4.6-thinking':   'claude-sonnet-4.6-thinking',

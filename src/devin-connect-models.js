@@ -122,6 +122,18 @@ const SELECTOR_MAP = new Map(Object.entries({
   'swe-1-7-lightning': 'swe-1-7-lightning',
   'swe-1.7-lightning': 'swe-1-7-lightning',
   'deepseek-v4': 'deepseek-v4',
+
+  // GPT-5.6 family (live catalog 2026-07-09, docs.devin.ai price table). Luna is
+  // the fastest/cheapest sibling. Bare, dash and compact forms (issue #244 verbatim
+  // `gpt5.6-luna`) all default to -medium. Targets in the snapshot below.
+  'gpt-5.6-luna': 'gpt-5-6-luna-medium',
+  'gpt-5-6-luna': 'gpt-5-6-luna-medium',
+  'gpt5.6-luna': 'gpt-5-6-luna-medium',
+
+  // Claude 5: fable/sonnet-5 already mapped above. Opus 5 (2026-07-23) added with
+  // the family convention; bare `claude5` (issue #244) defaults to sonnet-5-medium.
+  'claude-opus-5': 'claude-opus-5-medium',
+  'claude5': 'claude-sonnet-5-medium',
 }));
 
 // The set of selectors the live catalog actually exposes (committed snapshot,

@@ -1,7 +1,7 @@
 {
-  "_comment": "DEVIN_CONNECT catalog whitelist. Refreshed from live GetCascadeModelConfigs 2026-07-08. Live dash-form + enum selectors; MODEL_PRIVATE_* excluded EXCEPT those referenced by SELECTOR_MAP; swe-1-6-slow free-tier fallback preserved.",
+  "_comment": "DEVIN_CONNECT catalog whitelist. Refreshed from live GetCascadeModelConfigs 2026-07-08. Live dash-form + enum selectors; MODEL_PRIVATE_* excluded EXCEPT those referenced by SELECTOR_MAP; swe-1-6-slow free-tier fallback preserved. Extended 2026-08-11 from docs.devin.ai modelCostData (gpt-5-6-luna-*, claude-opus-5-*) — NOT yet frame-verified; selector form follows the 4-8/fable family convention.",
   "_calibratedAt": "2026-07-08",
-  "_count": 105,
+  "_count": 120,
   "models": [
     {
       "selector": "claude-opus-4-8-medium",
@@ -522,6 +522,66 @@
       "selector": "deepseek-v4",
       "provider": "6",
       "alias": "deepseek-v4"
+    },
+    {
+      "selector": "gpt-5-6-luna-none",
+      "provider": "openai"
+    },
+    {
+      "selector": "gpt-5-6-luna-low",
+      "provider": "openai"
+    },
+    {
+      "selector": "gpt-5-6-luna-medium",
+      "provider": "openai"
+    },
+    {
+      "selector": "gpt-5-6-luna-high",
+      "provider": "openai"
+    },
+    {
+      "selector": "gpt-5-6-luna-xhigh",
+      "provider": "openai"
+    },
+    {
+      "selector": "claude-opus-5-low",
+      "provider": "anthropic"
+    },
+    {
+      "selector": "claude-opus-5-medium",
+      "provider": "anthropic"
+    },
+    {
+      "selector": "claude-opus-5-high",
+      "provider": "anthropic"
+    },
+    {
+      "selector": "claude-opus-5-xhigh",
+      "provider": "anthropic"
+    },
+    {
+      "selector": "claude-opus-5-max",
+      "provider": "anthropic"
+    },
+    {
+      "selector": "claude-opus-5-low-fast",
+      "provider": "anthropic"
+    },
+    {
+      "selector": "claude-opus-5-medium-fast",
+      "provider": "anthropic"
+    },
+    {
+      "selector": "claude-opus-5-high-fast",
+      "provider": "anthropic"
+    },
+    {
+      "selector": "claude-opus-5-xhigh-fast",
+      "provider": "anthropic"
+    },
+    {
+      "selector": "claude-opus-5-max-fast",
+      "provider": "anthropic"
     }
   ]
 }
