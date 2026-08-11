@@ -457,7 +457,7 @@ body.clean-mode .esc-hint { color: var(--accent); border-color: rgba(217,119,87,
 
     <section class="section card" data-reveal id="contributors">
     <h2>贡献者分析</h2>
-    <div class="sub">34 位外部贡献者 · 47 个合并 PR · 24 位单发过客 —— <b>悬停排行看详情，点击锁定</b></div>
+    <div class="sub">34 位外部贡献者 · 8 位多次贡献者（2+ PR）· 26 位单发过客 —— <b>悬停排行看详情，点击锁定</b></div>
     <div class="stats c-stats" id="c-stats"></div>
     <div class="share-card" id="c-share-wrap"><div class="share-label">代码归属（合并 PR 行数占比）</div><div class="share-bar" id="c-share"></div></div>
     <div class="rows" id="c-rows"></div>
@@ -1004,7 +1004,8 @@ document.addEventListener('keydown', e => {
   const totalAdd = cs.reduce((s, c) => s + c.add, 0);
   const totalPR = cs.reduce((s, c) => s + c.prs, 0);
   const totalMerged = cs.reduce((s, c) => s + c.merged, 0);
-  const single = ext.filter(c => c.prs === 1);
+  const multi = ext.filter(c => c.prs > 1);   // 多次贡献者（进排行榜）
+  const single = ext.filter(c => c.prs === 1);  // 单发过客（进长尾）
 
   // 统计卡
   wrap.innerHTML = [
@@ -1050,7 +1051,7 @@ document.addEventListener('keydown', e => {
       `onerror="this.style.display='none'" onload="this.style.display='block'">` +
     `</span>`;
   const maxAdd = Math.max(...ext.map(c=>c.add), 1);
-  ext.slice(0, 10).forEach((c, i)=>{
+  multi.forEach((c, i)=>{
     const row = document.createElement('div');
     row.className = 'c-row'; row.style.setProperty('--i', i);
     row.innerHTML =
@@ -1073,7 +1074,7 @@ document.addEventListener('keydown', e => {
     const themes = c.grade === 'GOD' ? ['架构','协议翻译','release'] : c.grade === 'S' ? ['根因修复','会话连续性'] : c.grade === 'A' ? ['兼容层','i18n'] : ['社区修复'];
     return themes.map(t=>`<span class="cc-chip">${t}</span>`).join('');
   };
-  const featured = [dwgx, ...ext.slice(0,4)].filter(Boolean);
+  const featured = [dwgx, ...multi.slice(0,4)].filter(Boolean);
   featured.forEach((c, i)=>{
     const card = document.createElement('div');
     card.className = 'c-card' + (c.grade==='GOD' ? '' : i===1 ? ' gold' : i===2 ? ' blue' : ' green');
