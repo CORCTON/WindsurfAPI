@@ -195,6 +195,19 @@ svg { width: 100%; height: auto; display: block; }
 .tl-tick { stroke: var(--border); stroke-width: 1; }
 .tl-lbl { fill: var(--text-dim); font-size: 9px; font-family: var(--mono); }
 
+/* ============ ESC 纯净模式（隐藏全部内容，露出背景流动字幕） ============ */
+body.clean-mode .wrap, body.clean-mode .ledger-nav { display: none; }
+body.clean-mode { cursor: default; }
+.esc-hint {
+  position: fixed; right: 14px; bottom: 12px; z-index: 70;
+  font-size: 10px; color: var(--text-dim); font-family: var(--mono);
+  background: rgba(10,10,10,.6); border: 1px solid var(--border);
+  border-radius: 999px; padding: 3px 10px; pointer-events: none;
+  transition: opacity .3s;
+}
+body.clean-mode .esc-hint { color: var(--accent); border-color: rgba(217,119,87,.4); }
+@media (prefers-reduced-motion: reduce) { body.clean-mode .bg-quotes .q { animation: none; } }
+
 /* ============ 浮窗（hover 跟随 + 点击锁定） ============ */
 #tl-tip {
   position: fixed; z-index: 99; display: none; max-width: 340px;
@@ -446,6 +459,7 @@ svg { width: 100%; height: auto; display: block; }
     <svg id="tl" viewBox="0 0 1000 240"></svg>
   </section>
 
+  <div class="esc-hint">ESC 切换纯净字幕视图</div>
   <footer class="foot">
     数据源：git log 全量 1208 条 + 22 个并行采集 agent · 逐条账见 <code>docs/HISTORY-LEDGER-2026-*.md</code> · 总账 <a href="https://github.com/dwgx/WindsurfAPI/blob/master/docs/HISTORY-LEDGER.md">HISTORY-LEDGER.md</a><br>
     零依赖纯原生 · 设计 DNA 取自仓库自带 Dashboard · 每个 hash 都可 <code>git show</code> 验证
@@ -886,6 +900,11 @@ barChart(svgEl("tags"), D.tags.map(t=>({
 }
 
 
+/* ============ ESC 纯净模式切换 ============ */
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') document.body.classList.toggle('clean-mode');
+});
+
 /* ============ 引导 tab：scrollspy ============ */
 (() => {
   const nav = document.getElementById('ledgerNav');
@@ -1062,16 +1081,17 @@ barChart(svgEl("tags"), D.tags.map(t=>({
   const span = t1 - t0 || 1;
   const Y = t => padT + (t - t0) / span * (H - padT - padB);
   const laneOf = {};
+  // 非主干锚点轮询共享 lane 1-4（连通分量的近似：时间序 + 父继承，超出 4 条时循环复用）
+  // 避免 38 个锚点各自独占 lane 超出画布（Agent B 研究结论：连通合并后只有 22 分支 root）
   let nextLane = 1;
   G.anchors.forEach(a => {
     if (a.spine === 1) { laneOf[a.h] = 0; return; }
     let pl = null;
-    for (const p of (a.p || [])) { if (laneOf[p] !== undefined) { pl = laneOf[p]; break; } }
-    if (pl !== null && pl > 0) { laneOf[a.h] = pl; }
-    else { laneOf[a.h] = nextLane++; }
+    for (const p of (a.p || [])) { if (laneOf[p] !== undefined && laneOf[p] > 0) { pl = laneOf[p]; break; } }
+    if (pl !== null) { laneOf[a.h] = pl; }
+    else { laneOf[a.h] = nextLane; nextLane = (nextLane % 4) + 1; }
   });
   const LANE_W = 26;
-  const maxLane = Math.max(...Object.values(laneOf));
   const laneX = l => padL + l * LANE_W;
   const monthStarts = {};
   G.anchors.forEach(a => {
