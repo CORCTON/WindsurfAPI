@@ -8,7 +8,7 @@
   <a href="../README.md">← Main README</a>
 </p>
 
-> **Which door is yours?** This directory holds 193 tracked files, most of them append-only
+> **Which door is yours?** This directory holds 204 tracked files, most of them append-only
 > records aimed at whoever maintains the project next. The three tables below are the short
 > paths in. If you only want the gateway running, you need nothing under "Take it over".
 
