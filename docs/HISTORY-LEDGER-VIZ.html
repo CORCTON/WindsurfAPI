@@ -55,7 +55,7 @@
 
   <div class="card">
     <h2>每周脉搏</h2>
-    <div class="sub">W17（04-21 前后）issue 洪峰 229 条 · W20-W21（5 月中旬）8 天空窗 · W32（08-04）爆发 247 条</div>
+    <div class="sub">W17（04-21 前后）提交洪峰 229 条（当周 issue 报告 50 个）· W20-W21（5 月中旬）空窗 · W32（08-04）爆发 247 条</div>
     <svg id="weeks" viewBox="0 0 1000 300"></svg>
   </div>
 
@@ -67,7 +67,7 @@
 
   <div class="card">
     <h2>单日峰值 Top 10</h2>
-    <div class="sub">08-04 单日 81 条：v3.9.10→v3.9.14 五连发，最短间隔 14 分钟</div>
+    <div class="sub">08-04 单日 81 条（v3.9.10→v3.9.14 五连发，间隔 32-14h）· 全史最短发版间隔 08-05 v3.9.16→v3.9.17 仅 14 分 49 秒</div>
     <svg id="days" viewBox="0 0 1000 300"></svg>
   </div>
 
@@ -95,7 +95,7 @@
 
   <div class="card">
     <h2>自伤与返工（28 起，按时间）</h2>
-    <div class="sub">红色 = 烧钱/事故级 · 橙色 = 合并后自毁 · 灰色 = 返工自打脸 —— 全都写进了账本</div>
+    <div class="sub">红色 = 事故级（烧钱/安全/生产挂）· 橙色 = 合并后自毁/返工自打脸 —— 全都写进了账本</div>
     <svg id="selfharm" viewBox="0 0 1000 220"></svg>
   </div>
 
@@ -281,7 +281,7 @@ function barChart(svg, items, {color=GOLD, h=220, pad=30, label=null}={}){
   });
   const t = svg.createElementNS("http://www.w3.org/2000/svg","text");
   t.setAttribute("x",pad);t.setAttribute("y",H-10);t.setAttribute("fill",DIM);t.setAttribute("font-size",10);
-  t.textContent = "● 事故级（烧钱/安全/生产挂）  ● 合并后自毁  ● 返工自打脸 —— 完整链条见账本";
+  t.textContent = "● 事故级（烧钱/安全/生产挂） ● 合并后自毁/返工自打脸 —— 完整链条见账本";
   svg.appendChild(t);
 }
 // 统计卡
