@@ -568,8 +568,16 @@ describe('docs: in-repo anchor links resolve to a real heading', () => {
       return headingCache.get(abs);
     };
 
+    // Issue forms are scanned alongside markdown: GitHub requires ABSOLUTE links in
+    // `config.yml`, so its anchors are invisible to every relative-path check and to the
+    // self-repo branch below unless the file is actually read.
+    const formsDir = join(ROOT, '.github', 'ISSUE_TEMPLATE');
+    const forms = existsSync(formsDir)
+      ? readdirSync(formsDir).filter((f) => f.endsWith('.yml')).map((f) => join(formsDir, f))
+      : [];
+
     const problems = [];
-    for (const abs of mdFiles()) {
+    for (const abs of [...mdFiles(), ...forms]) {
       let body = read(abs);
       body = body.replace(/^```[\s\S]*?^```/gm, '').replace(/`[^`\n]*`/g, '');
       // BOTH link syntaxes. Nav bars are centred with <p align>, so their links are raw HTML
@@ -580,9 +588,24 @@ describe('docs: in-repo anchor links resolve to a real heading', () => {
       const targets = [
         ...[...body.matchAll(/\[[^\]]*\]\(([^)\s]*)#([^)\s]+)\)/g)].map((m) => [m[1], m[2]]),
         ...[...body.matchAll(/<a\s[^>]*href=["']([^"'#]*)#([^"']+)["']/gi)].map((m) => [m[1], m[2]]),
+        // Bare URLs — issue-form YAML carries `url: https://…#anchor` with no link syntax at
+        // all, so neither pattern above sees it.
+        ...[...body.matchAll(/(?<![(["'\w])(https?:\/\/[^\s"'<>)]*?)#([^\s"'<>)]+)/g)]
+          .map((m) => [m[1], m[2]]),
       ];
-      for (const [path, rawAnchor] of targets) {
-        if (/^https?:/i.test(path)) continue;
+      for (const [rawPath, rawAnchor] of targets) {
+        let path = rawPath;
+        if (/^https?:/i.test(path)) {
+          // An absolute URL pointing back at THIS repo is still checkable, and those are the
+          // ones that rot: `.github/ISSUE_TEMPLATE/config.yml` has to use absolute links, so
+          // its anchors escape every relative-path check. HTTP 200 proves nothing here —
+          // GitHub serves the page and simply does not scroll when the anchor is missing.
+          const self = path.match(
+            /^https?:\/\/github\.com\/dwgx\/WindsurfAPI(?:\/blob\/[^/]+\/(.+?))?\/?$/i,
+          );
+          if (!self) continue; // genuinely external; not ours to verify offline
+          path = self[1] ? relative(dirname(abs), join(ROOT, self[1])) : relative(dirname(abs), join(ROOT, 'README.md'));
+        }
         const anchor = decodeURIComponent(rawAnchor).toLowerCase();
         const targetAbs = path ? join(dirname(abs), path) : abs;
         if (!/\.(md|html)$/i.test(targetAbs)) continue;

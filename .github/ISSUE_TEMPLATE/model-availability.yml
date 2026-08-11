@@ -1,13 +1,13 @@
 name: 🤖 模型不可用 / 看不到某个模型 · Model missing or unavailable
 description: "某个模型在 /v1/models 里没有、报 model_not_entitled、或在 Windsurf/Devin 里能用但这里不能"
 title: "[Model] "
-labels: ["model-availability", "needs-triage"]
+labels: ["upstream", "needs-triage"]
 body:
   - type: markdown
     attributes:
       value: |
-        这是本仓库**最常见**的一类报告（177 个历史 issue 里约 1/4）,所以单独做了这个表单。
-        大多数情况下**不是 bug**,而是上游 entitlement 的结果 —— 下面三步能自己判断:
+        「某个模型用不了」反复出现（177 个历史 issue 里 33 个标题提到模型）,所以单独做了
+        这个表单。它大多数情况下**不是 bug**,是上游 entitlement 的结果 —— 下面三步能自己判断:
 
         1. **模型清单来自上游,不是本地文件。** 看不到某个新模型,通常是上游还没把它放给
            这个账号,不是本地清单旧了。换句话说:**升级本项目不会让模型出现。**
