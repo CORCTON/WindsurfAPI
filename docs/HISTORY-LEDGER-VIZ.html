@@ -1150,7 +1150,8 @@ document.addEventListener('keydown', e => {
   });
   const monthStart = mk => monthStartMap[mk] !== undefined ? monthStartMap[mk] : t0;
 
-  // 头像（真实 + 首字母 fallback，onerror 安全）
+  // 头像（真实 + 首字母 fallback）：defs 每 login 定义一次，节点用 <use> 复用
+  // —— 35 个唯一头像只建 35 个 image DOM + 35 个网络请求，节点零开销
   const avatarDefs = {};
   function avatarEl(login, x, y, r) {
     const g = document.createElementNS(NS, 'g');
@@ -1165,16 +1166,27 @@ document.addEventListener('keydown', e => {
     letter.setAttribute('font-weight', '700'); letter.setAttribute('fill', '#fff');
     letter.textContent = login[0].toUpperCase();
     g.appendChild(letter);
-    const img = document.createElementNS(NS, 'image');
-    img.setAttribute('transform', 'translate(' + (x - r) + ',' + (y - r) + ')');
-    img.setAttribute('width', r * 2); img.setAttribute('height', r * 2);
-    img.style.clipPath = 'circle(50%)';
-    img.setAttribute('href', avatarUrl(login));
-    img.setAttribute('opacity', '0');
-    img.style.transition = 'opacity .3s';
-    img.addEventListener('load', () => img.setAttribute('opacity', '1'));
-    img.addEventListener('error', () => { /* 保持首字母 fallback */ });
-    g.appendChild(img);
+    const safe = login.replace(/[^a-zA-Z0-9]/g, '');
+    if (!avatarDefs[login]) {
+      avatarDefs[login] = true;
+      const defs = document.createElementNS(NS, 'defs');
+      const img = document.createElementNS(NS, 'image');
+      img.setAttribute('id', 'av-' + safe);
+      img.setAttribute('x', 0); img.setAttribute('y', 0);
+      img.setAttribute('width', r * 2); img.setAttribute('height', r * 2);
+      img.style.clipPath = 'circle(50%)';
+      img.setAttribute('href', avatarUrl(login));
+      img.setAttribute('opacity', '0');
+      img.style.transition = 'opacity .3s';
+      img.addEventListener('load', () => img.setAttribute('opacity', '1'));
+      img.addEventListener('error', () => { /* 保持首字母 fallback */ });
+      defs.appendChild(img);
+      svg.insertBefore(defs, svg.firstChild);
+    }
+    const use = document.createElementNS(NS, 'use');
+    use.setAttribute('href', '#av-' + safe);
+    use.setAttribute('transform', 'translate(' + (x - r) + ',' + (y - r) + ')');
+    g.appendChild(use);
     return g;
   }
 
@@ -1252,6 +1264,8 @@ document.addEventListener('keydown', e => {
 
   // ============ 模式一：竖（时间向下） ============
   function renderVertical(collapsed) {
+    const frag = document.createDocumentFragment();
+
     const W = 1000, H = collapsed ? 2200 : 4200, padT = 40, padB = 60, padL = 70;
     const X = l => padL + l * 26;
     const rawY = t => padT + (t - t0) / span * (H - padT - padB);
@@ -1270,13 +1284,13 @@ document.addEventListener('keydown', e => {
       const r = document.createElementNS(NS, 'rect');
       r.setAttribute('x', 0); r.setAttribute('y', y0); r.setAttribute('width', W); r.setAttribute('height', y1 - y0);
       r.setAttribute('fill', 'rgba(198,93,78,.045)');
-      svg.appendChild(r);
+      frag.appendChild(r);
       const t = document.createElementNS(NS, 'text');
       t.setAttribute('x', W - 190); t.setAttribute('y', yc + 4); t.setAttribute('text-anchor', 'middle');
       t.setAttribute('font-size', 10); t.setAttribute('font-family', 'var(--mono)');
       t.setAttribute('fill', '#c65d4e'); t.setAttribute('opacity', .7);
       t.textContent = days + ' 天空窗';
-      svg.appendChild(t);
+      frag.appendChild(t);
     });
     G.anchors.forEach(a => {
       if (laneOf[a.h] !== 0) return;
@@ -1291,19 +1305,19 @@ document.addEventListener('keydown', e => {
       v.setAttribute('x1', x); v.setAttribute('y1', y); v.setAttribute('x2', x); v.setAttribute('y2', H - padB);
       v.setAttribute('stroke', '#4c9aff'); v.setAttribute('stroke-opacity', .12);
       v.setAttribute('stroke-width', 1.5); v.setAttribute('stroke-dasharray', '3,5');
-      svg.appendChild(v);
+      frag.appendChild(v);
       const h = document.createElementNS(NS, 'line');
       h.setAttribute('x1', x); h.setAttribute('y1', y); h.setAttribute('x2', X(0)); h.setAttribute('y2', y);
       h.setAttribute('stroke', l % 2 ? '#d9a257' : '#4c9aff'); h.setAttribute('stroke-opacity', .45);
       h.setAttribute('stroke-width', 1.5);
-      svg.appendChild(h);
+      frag.appendChild(h);
       if (tips[a.h]) {
         const bt = document.createElementNS(NS, 'text');
         bt.setAttribute('x', x + 8); bt.setAttribute('y', y - 6);
         bt.setAttribute('font-size', 8); bt.setAttribute('font-family', 'var(--mono)');
         bt.setAttribute('fill', '#4c9aff');
         bt.textContent = tips[a.h].replace(/^(origin|feat|fix|docs|chore|pr)\//, '').slice(0, 14);
-        svg.appendChild(bt);
+        frag.appendChild(bt);
       }
     });
       G.anchors.forEach(a => drawNode(a, X(laneOf[a.h]), yOf[a.h], {}));
@@ -1331,7 +1345,7 @@ document.addEventListener('keydown', e => {
           g.appendChild(node);
         }
         bindNode(g, a);
-        svg.appendChild(g);
+        frag.appendChild(g);
       });
     }
     (G.tags_milestone || []).forEach(([name, h]) => {
@@ -1350,7 +1364,7 @@ document.addEventListener('keydown', e => {
       t.textContent = name;
       g.appendChild(t);
       bindBar(g, { name: name, meta: 'tag', desc: '版本里程碑。', links: [['Releases', 'https://github.com/dwgx/WindsurfAPI/releases/tag/' + name]] });
-      svg.appendChild(g);
+      frag.appendChild(g);
     });
     const MONTH_DESC = {
       '2026-04': '成型冲刺:issue 洪峰 82 个,98% 解决率',
@@ -1383,13 +1397,16 @@ document.addEventListener('keydown', e => {
       g.appendChild(d);
       g.appendChild(t);
       bindBar(g, { name: mk, meta: mk + ' · ' + mi.commits + ' 锚点 · ' + mi.prs + ' PR', desc: MONTH_DESC[mk] || '该月树上的锚点与 PR 计数。', links: [] });
-      svg.appendChild(g);
+      frag.appendChild(g);
     });
-    svg.setAttribute('viewBox', '0 0 1000 ' + H);
+    svg.setAttribute('viewBox', '0 0 1000 ' + H)
+    svg.appendChild(frag);;
   }
 
   // ============ 模式二：横（时间向右，精简可读） ============
   function renderHorizontal() {
+    const frag = document.createDocumentFragment();
+
     const W = 3200, H = 360, padL = 50, padR = 80, padT = 40;
     const X = t => padL + (t - t0) / span * (W - padL - padR);
     const Y = l => padT + l * 34;
@@ -1400,7 +1417,7 @@ document.addEventListener('keydown', e => {
       t.setAttribute('x', x); t.setAttribute('y', 16); t.setAttribute('font-size', 10);
       t.setAttribute('font-family', 'var(--mono)'); t.setAttribute('fill', '#71717a');
       t.textContent = mk;
-      svg.appendChild(t);
+      frag.appendChild(t);
     });
     (G.gaps || []).forEach(([t0g, t1g, days]) => {
       const x0 = X(t0g), x1 = X(t1g);
@@ -1410,14 +1427,14 @@ document.addEventListener('keydown', e => {
         r.setAttribute('x1', xg); r.setAttribute('y1', 24); r.setAttribute('x2', xg); r.setAttribute('y2', H - 20);
         r.setAttribute('stroke', '#c65d4e'); r.setAttribute('stroke-opacity', .3);
         r.setAttribute('stroke-width', 1); r.setAttribute('stroke-dasharray', '2,4');
-        svg.appendChild(r);
+        frag.appendChild(r);
       }
       const t = document.createElementNS(NS, 'text');
       t.setAttribute('x', xc); t.setAttribute('y', 40); t.setAttribute('text-anchor', 'middle');
       t.setAttribute('font-size', 9); t.setAttribute('font-family', 'var(--mono)');
       t.setAttribute('fill', '#c65d4e'); t.setAttribute('opacity', .7);
       t.textContent = days + '天';
-      svg.appendChild(t);
+      frag.appendChild(t);
     });
     G.anchors.forEach(a => {
       if (laneOf[a.h] !== 0) return;
@@ -1428,14 +1445,14 @@ document.addEventListener('keydown', e => {
       glow.setAttribute('x1', X(st1)); glow.setAttribute('y1', Y(0)); glow.setAttribute('x2', X(st0)); glow.setAttribute('y2', Y(0));
       glow.setAttribute('stroke', '#d97757'); glow.setAttribute('stroke-opacity', .12);
       glow.setAttribute('stroke-width', 12); glow.setAttribute('stroke-linecap', 'round');
-      svg.appendChild(glow);
+      frag.appendChild(glow);
       const line = document.createElementNS(NS, 'line');
       line.setAttribute('x1', X(st1)); line.setAttribute('y1', Y(0)); line.setAttribute('x2', X(st0)); line.setAttribute('y2', Y(0));
       line.setAttribute('stroke', '#d97757'); line.setAttribute('stroke-opacity', .4);
       line.setAttribute('stroke-width', 3.5); line.setAttribute('stroke-linecap', 'round');
       line.setAttribute('class', 'tree-line');
       bindBar(line, { name: n + ' 个提交', meta: new Date(st0 * 1000).toISOString().slice(0, 10) + ' → ' + new Date(st1 * 1000).toISOString().slice(0, 10), desc: '主干折叠段。', links: [] });
-      svg.appendChild(line);
+      frag.appendChild(line);
     });
     G.anchors.forEach(a => {
       const l = laneOf[a.h];
@@ -1445,7 +1462,7 @@ document.addEventListener('keydown', e => {
       v.setAttribute('x1', x); v.setAttribute('y1', y); v.setAttribute('x2', x); v.setAttribute('y2', Y(0));
       v.setAttribute('stroke', l % 2 ? '#d9a257' : '#4c9aff'); v.setAttribute('stroke-opacity', .4);
       v.setAttribute('stroke-width', 1.5);
-      svg.appendChild(v);
+      frag.appendChild(v);
     });
     G.anchors.forEach(a => {
       const l = laneOf[a.h];
@@ -1463,7 +1480,7 @@ document.addEventListener('keydown', e => {
         ring.setAttribute('stroke-width', 2);
         g.appendChild(ring);
         bindNode(g, a);
-        svg.appendChild(g);
+        frag.appendChild(g);
       } else {
         const g = document.createElementNS(NS, 'g');
         g.setAttribute('class', 'tree-node');
@@ -1473,7 +1490,7 @@ document.addEventListener('keydown', e => {
         node.setAttribute('stroke', '#ededed'); node.setAttribute('stroke-width', 1.5);
         g.appendChild(node);
         bindNode(g, a);
-        svg.appendChild(g);
+        frag.appendChild(g);
       }
     });
     (G.tags_milestone || []).forEach(([name, h]) => {
@@ -1492,13 +1509,16 @@ document.addEventListener('keydown', e => {
       t.textContent = name;
       g.appendChild(t);
       bindBar(g, { name: name, meta: 'tag', desc: '版本里程碑。', links: [['Releases', 'https://github.com/dwgx/WindsurfAPI/releases/tag/' + name]] });
-      svg.appendChild(g);
+      frag.appendChild(g);
     });
-    svg.setAttribute('viewBox', '0 0 3200 360');
+    svg.setAttribute('viewBox', '0 0 3200 360')
+    svg.appendChild(frag);;
   }
 
   // ============ 模式三：环形时间轮 ============
   function renderRing() {
+    const frag = document.createDocumentFragment();
+
     const W = 1000, H = 1000, cx = 500, cy = 500;
     const R_OUT = 400, R_IN = 160;
     const ang = t => -Math.PI / 2 + (t - t0) / span * Math.PI * 2;
@@ -1511,7 +1531,7 @@ document.addEventListener('keydown', e => {
       t2.setAttribute('text-anchor', 'middle'); t2.setAttribute('font-size', 11);
       t2.setAttribute('font-family', 'var(--mono)'); t2.setAttribute('fill', '#8b8b93');
       t2.textContent = mk;
-      svg.appendChild(t2);
+      frag.appendChild(t2);
     });
     (G.gaps || []).forEach(([t0g, t1g, days]) => {
       const t = (t0g + t1g) / 2;
@@ -1520,7 +1540,7 @@ document.addEventListener('keydown', e => {
       tt.setAttribute('text-anchor', 'middle'); tt.setAttribute('font-size', 9);
       tt.setAttribute('font-family', 'var(--mono)'); tt.setAttribute('fill', '#c65d4e'); tt.setAttribute('opacity', .7);
       tt.textContent = days + '天';
-      svg.appendChild(tt);
+      frag.appendChild(tt);
     });
     const segArc = (tA, tB, r, w, color, op) => {
       const path = document.createElementNS(NS, 'path');
@@ -1530,7 +1550,7 @@ document.addEventListener('keydown', e => {
       path.setAttribute('d', d); path.setAttribute('fill', 'none');
       path.setAttribute('stroke', color); path.setAttribute('stroke-opacity', op);
       path.setAttribute('stroke-width', w); path.setAttribute('stroke-linecap', 'round');
-      svg.appendChild(path);
+      frag.appendChild(path);
       return path;
     };
     G.anchors.forEach(a => {
@@ -1565,7 +1585,7 @@ document.addEventListener('keydown', e => {
       path.setAttribute('stroke', l % 2 ? '#d9a257' : '#4c9aff');
       path.setAttribute('stroke-opacity', .4); path.setAttribute('stroke-width', 1.5);
       path.setAttribute('marker-end', 'url(#arr)');
-      svg.appendChild(path);
+      frag.appendChild(path);
     });
     // 箭头 defs
     (function arrowDefs() {
@@ -1604,7 +1624,7 @@ document.addEventListener('keydown', e => {
         g.appendChild(node);
       }
       bindNode(g, a);
-      svg.appendChild(g);
+      frag.appendChild(g);
     });
     (G.tags_milestone || []).forEach(([name, h]) => {
       const a = byHash[h]; if (!a) return;
@@ -1623,13 +1643,13 @@ document.addEventListener('keydown', e => {
       t.textContent = name;
       g.appendChild(t);
       bindBar(g, { name: name, meta: 'tag', desc: '版本里程碑。', links: [['Releases', 'https://github.com/dwgx/WindsurfAPI/releases/tag/' + name]] });
-      svg.appendChild(g);
+      frag.appendChild(g);
     });
     const tickRing = document.createElementNS(NS, 'circle');
     tickRing.setAttribute('cx', cx); tickRing.setAttribute('cy', cy); tickRing.setAttribute('r', R_IN - 14);
     tickRing.setAttribute('fill', 'none'); tickRing.setAttribute('stroke', 'rgba(255,255,255,.08)');
     tickRing.setAttribute('stroke-width', 1);
-    svg.appendChild(tickRing);
+    frag.appendChild(tickRing);
     (G.gaps || []).forEach(([t0g, t1g, days]) => {
       const path = document.createElementNS(NS, 'path');
       const a1 = ang(t0g), a2 = ang(t1g);
@@ -1639,7 +1659,7 @@ document.addEventListener('keydown', e => {
       path.setAttribute('fill', 'none');
       path.setAttribute('stroke', '#c65d4e'); path.setAttribute('stroke-opacity', .5);
       path.setAttribute('stroke-width', 2); path.setAttribute('stroke-dasharray', '4,4');
-      svg.appendChild(path);
+      frag.appendChild(path);
     });
     const c0 = document.createElementNS(NS, 'circle');
     c0.setAttribute('cx', cx); c0.setAttribute('cy', cy); c0.setAttribute('r', 56);
@@ -1647,23 +1667,24 @@ document.addEventListener('keydown', e => {
     c0.setAttribute('stroke-width', 1); c0.setAttribute('stroke-dasharray', '3,6');
     c0.style.animation = 'spin 40s linear infinite';
     c0.style.transformOrigin = cx + 'px ' + cy + 'px';
-    svg.appendChild(c0);
+    frag.appendChild(c0);
     const c1 = document.createElementNS(NS, 'text');
     c1.setAttribute('x', cx); c1.setAttribute('y', cy - 10); c1.setAttribute('text-anchor', 'middle');
     c1.setAttribute('font-size', 17); c1.setAttribute('font-weight', '700'); c1.setAttribute('fill', '#d97757');
     c1.textContent = '1205 commits';
-    svg.appendChild(c1);
+    frag.appendChild(c1);
     const c2 = document.createElementNS(NS, 'text');
     c2.setAttribute('x', cx); c2.setAttribute('y', cy + 14); c2.setAttribute('text-anchor', 'middle');
     c2.setAttribute('font-size', 10); c2.setAttribute('font-family', 'var(--mono)'); c2.setAttribute('fill', '#71717a');
     c2.textContent = '2026-04 → 2026-08 · 顺时针 · 59 merges';
-    svg.appendChild(c2);
+    frag.appendChild(c2);
     const c3 = document.createElementNS(NS, 'text');
     c3.setAttribute('x', cx); c3.setAttribute('y', cy + 32); c3.setAttribute('text-anchor', 'middle');
     c3.setAttribute('font-size', 9); c3.setAttribute('font-family', 'var(--mono)'); c3.setAttribute('fill', '#71717a');
     c3.textContent = (G.gaps || []).length + ' 段空窗 · 最短发版间隔 14 分钟';
-    svg.appendChild(c3);
-    svg.setAttribute('viewBox', '0 0 1000 1000');
+    frag.appendChild(c3);
+    svg.setAttribute('viewBox', '0 0 1000 1000')
+    svg.appendChild(frag);;
   }
 
   let currentMode = 'vertical';

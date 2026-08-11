@@ -1,3 +1,12 @@
+/*
+ * WindsurfAPI · DevinAPI — 把 Windsurf / Devin 的云端模型变成 OpenAI / Anthropic / Gemini 标准 API。
+ * 零 npm 运行时依赖。
+ *
+ * 项目完整历史（提交/版本/PR/issue/自伤账本）可视化：
+ *   https://dwgx.github.io/WindsurfAPI/HISTORY-LEDGER-VIZ.html
+ *   总账: docs/HISTORY-LEDGER.md · 逐条账: docs/HISTORY-LEDGER-2026-*.md
+ */
+
 // Logger must be imported first to patch log functions before other modules use them
 import './dashboard/logger.js';
 import { initAuth, isAuthenticated } from './auth.js';
