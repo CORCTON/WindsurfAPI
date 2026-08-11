@@ -36,6 +36,22 @@
   .phase div { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; font-size: 13px; }
   .phase b { color: var(--gold); }
   .phase small { display: block; color: var(--dim); margin-top: 3px; font-size: 11px; }
+  /* 自伤时间线交互 */
+  #tl-tip { position: fixed; z-index: 99; display: none; max-width: 340px; background: #1c2128;
+    border: 1px solid #444c56; border-radius: 10px; padding: 12px 14px; font-size: 12px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.5); pointer-events: none; }
+  #tl-tip .tt-title { font-size: 13px; font-weight: 700; color: var(--text); margin-bottom: 4px; }
+  #tl-tip .tt-meta { color: var(--dim); font-size: 11px; margin-bottom: 6px; }
+  #tl-tip .tt-desc { color: #adbac7; line-height: 1.55; margin-bottom: 8px; }
+  #tl-tip .tt-links { display: flex; gap: 8px; flex-wrap: wrap; }
+  #tl-tip .tt-links a { pointer-events: auto; color: var(--gold); text-decoration: none; font-size: 11px;
+    border: 1px solid #444c56; border-radius: 6px; padding: 3px 8px; background: #21262d; }
+  #tl-tip .tt-links a:hover { border-color: var(--gold); }
+  .tl-node { cursor: pointer; }
+  .tl-node:hover { opacity: .8; }
+  .tl-axis { stroke: #30363d; stroke-width: 2; }
+  .tl-tick { stroke: #21262d; stroke-width: 1; }
+  .tl-lbl { fill: var(--dim); font-size: 9px; }
 </style>
 </head>
 <body>
@@ -95,8 +111,9 @@
 
   <div class="card">
     <h2>自伤与返工（28 起，按时间）</h2>
-    <div class="sub">红色 = 事故级（烧钱/安全/生产挂）· 橙色 = 合并后自毁/返工自打脸 —— 全都写进了账本</div>
-    <svg id="selfharm" viewBox="0 0 1000 220"></svg>
+    <div class="sub">红色 = 事故级（烧钱/安全/生产挂）· 橙色 = 合并后自毁/返工自打脸 · <b style="color:var(--gold)">悬停节点看详情，可点进账本与 Git 提交</b></div>
+    <svg id="tl" viewBox="0 0 1000 240"></svg>
+    <div id="tl-tip"></div>
   </div>
 
   <div class="foot">
@@ -114,16 +131,62 @@ const D = {
   hours: {"00":65,"01":49,"02":47,"03":56,"04":29,"05":49,"06":43,"07":51,"08":43,"09":33,"10":42,"11":43,"12":39,"13":34,"14":47,"15":41,"16":66,"17":60,"18":53,"19":71,"20":70,"21":54,"22":59,"23":64},
   tags: {"2026-04":52,"2026-05":52,"2026-06":24,"2026-07":41,"2026-08":14},
   selfharm: [
-    ["04-17","PR #1 撞车+致谢反转","m"],["04-21","kimi/qwen 目录三连撤","m"],["04-22","auth bypass 自己引入","h"],
-    ["04-23","三连 revert 踩中'不能改'","m"],["04-24","GRPC_PROTOCOL 生产全挂","h"],["05-02","#115 根因误判六天四稿","m"],
-    ["05-03","NLU 七连 hotfix","m"],["05-04","#129 wnfilm 回归三连","m"],["05-25","sticky 自查风暴","m"],
-    ["06-07","假上游冷却","m"],["06-29","探针烧账户（最重事故）","h"],["06-30","cutover 双 P0","h"],
-    ["06-30","alias 漂移：要 GPT 拿 SWE","h"],["07-04","jimp 违反零依赖铁律","m"],["07-04","host/key 泄漏进公开仓","h"],
-    ["07-09","v3.0.0 页面 ban 自己","h"],["07-12","gpt-5.6-sol 烧账号","h"],["07-13","Windows 热更新致命 bug","m"],
-    ["07-27","v3.9.0 当天被打穿：全自己引入","h"],["07-28","v3.9.2 只修了 1/3","m"],["07-29","检索端点 8 小时不可用","m"],
-    ["07-31","8 条自己写的假测试清理","m"],["08-04","sticky 修复当天 revert","m"],["08-04","守卫三连崩","m"],
-    ["08-07","SWE kimi 方言过度推广","m"],["08-10","#252 两处互相抵消","h"],["08-10","'86/86 收齐'被推翻","m"],
-    ["08-11","账本自己踩 sk- 扫描坑","m"]
+    {d:"04-17", t:"PR #1 撞车+致谢反转", lv:"m", h:"4ff1baf",
+     desc:"同一 commit 走两遍 PR 流程（merge 第二父就是作者自己的 commit）；随后 credits 移除又 revert，对外部贡献的致谢决策反复横跳。"},
+    {d:"04-21", t:"kimi/qwen 目录三连撤", lv:"m", h:"ef55e7a",
+     desc:"上游目录没核实就上架。kimi-k2 六分钟内三连改（enum→string→回退）；qwen-3-coder 82 秒内三次提交全撤回。"},
+    {d:"04-22", t:"auth bypass 自己引入", lv:"h", h:"cc60746",
+     desc:"为前端免密访问加的「空 password header 放行」成为严重 Dashboard auth bypass（同日恢复原逻辑，fail-closed 深化）。"},
+    {d:"04-23", t:"三连 revert 踩中'不能改'", lv:"m", h:"410d867",
+     desc:"gRPC 压缩头 / planner READ_ONLY / 版本号——三个「聪明改动」全踩中 dfb979a 当天自己写的「不能改」清单，全部导致 LS proto wire-type 解析错误。"},
+    {d:"04-24", t:"GRPC_PROTOCOL 生产全挂", lv:"h", h:"4b555bb",
+     desc:"v2.0.19 把默认 legacy→Connect，v2.0.21 生产全挂（cascade_id 空串）回退。作者写了 postmortem：单测只验 const 取值，没起 fake LS 端到端验 Connect framing。"},
+    {d:"05-02", t:"#115 根因误判六天四稿", lv:"m", h:"1026cd3",
+     desc:"自称 root cause 是 gpt_native 方言 → 当天修的是自己引入的 body is not defined → 三稿「真修」→ 5-03 承认翻方向 → 换 NLU 层 → 6-05 以带遥测+测试+canary 的形态终章。"},
+    {d:"05-03", t:"NLU 七连 hotfix", lv:"m", h:"a4216be",
+     desc:"NLU 协议转换层引入后同一层一周 8 个补丁（allThinking 通道漏、Claude 工具卡死回归、误抠 placeholder、入口扩宽…），5-07 仍在打补丁。"},
+    {d:"05-04", t:"#129 wnfilm 回归三连", lv:"m", h:"80d6079",
+     desc:"2.0.85 上 fallback 直接打挂 wnfilm 用户 → 86 紧急默认 OFF → 87 真修（fingerprint 锁 modelKey 双挂）后才重开。"},
+    {d:"05-25", t:"sticky 自查风暴", lv:"m", h:"626f71b",
+     desc:"5-12 引入 #162，5-25 一天 11 条 debug+修复（双重打标、body.user 优先级、流式漏传 callerKey、dashboard 401）——自己实现的功能自己发现 bug 自己修。"},
+    {d:"06-07", t:"假上游冷却", lv:"m", h:"736eefb",
+     desc:"native bridge 尾巴：上片引入的「假上游冷却」换成真实冷却。"},
+    {d:"06-29", t:"探针烧账户（最重事故）", lv:"h", h:"21393b9",
+     desc:"强制探针 Step 2/3 对每个模型发真实请求，约 12 个模型扫完把活着的免费账户 free→expired——线上事故。修法：计费 canary 改 opt-in，普通探测变零额度。"},
+    {d:"06-30", t:"cutover 双 P0", lv:"h", h:"27d31de",
+     desc:"桥上线当天：P0-1 re-login 风暴无节流（force:true 绕过 60s 冷却）；P0-2 池耗尽静默降级到无记账的 env token，零 RPM 记账把单账户锤向封禁。"},
+    {d:"06-30", t:"alias 漂移：要 GPT 拿 SWE", lv:"h", h:"a8091d5",
+     desc:"catalog alias 未全量解析——客户端按广告发 gpt-5.5/gemini-3.0-flash，selector 未命中静默降级到免费 swe-1-6-slow。要 GPT 拿到 SWE。快照 fixture 同日入库防漂移。"},
+    {d:"07-04", t:"jimp 违反零依赖铁律", lv:"m", h:"6cce2ae",
+     desc:"项目核心卖点是零 npm 运行时依赖，引入 jimp 当日 CI 红，次日 vendor 化回收（jpeg-js/png.js，package-lock -796 行）。"},
+    {d:"07-04", t:"host/key 泄漏进公开仓", lv:"h", h:"413106e",
+     desc:"历史遗留：README/4 份 release notes/2 份 RE 文档/3 处测试烙有真实上游 host/key。redact 13 文件 + gitignore 屏蔽 + 删 1401 行内部笔记（内部资料反复混入公开仓）。"},
+    {d:"07-09", t:"v3.0.0 页面 ban 自己", lv:"h", h:"f8a6b95",
+     desc:"Dashboard 打开即发 ~12 个空密码 401，每个都计入失败——页面一加载自己的 IP 就被 ban。v3.0.0 发布当天暴露、v3.0.2 收口。"},
+    {d:"07-12", t:"gpt-5.6-sol 烧账号", lv:"h", h:"7a8d658",
+     desc:"live-catalog 把 family alias 也折进 selectors → 原样透传 → UPSTREAM_INTERNAL 烧 homecloud 单账号（真号坐实）。根治：只折 canonical + fail closed，2547 测试绿。"},
+    {d:"07-13", t:"Windows 热更新致命 bug", lv:"m", h:"9afc1dd",
+     desc:"v3.2.2 上线的 Windows 脚本套件热更新退出码致命（stop.ps1 杀不掉 supervisor 副 bug），v3.2.6 当天 6 个 ps1 改 114 行收掉。"},
+    {d:"07-27", t:"v3.9.0 当天被打穿", lv:"h", h:"2ced8a2",
+     desc:"对抗复核第二轮：1 blocker + 4 major 全部是 30485c3 上一批修复自己引入的（response-store 重写区 167 行 diff）。当天自伤-自愈闭环。"},
+    {d:"07-28", t:"v3.9.2 只修了 1/3", lv:"m", h:"161c88d",
+     desc:"合成终止帧漏洞只修了 responses 路由，messages/gemini 两条路由两天后补全——v3.9.2 发布说明自己承认「只修了 1/3」。"},
+    {d:"07-29", t:"检索端点 8 小时不可用", lv:"m", h:"4a4653d",
+     desc:"GET/DELETE /v1/responses/{id} 自 v3.9.1 发布起对所有客户端不可用，8 小时后才修（v3.9.4）。测试曾把 bug 固化成契约。"},
+    {d:"07-31", t:"8 条假测试清理", lv:"m", h:"50875f5",
+     desc:"「修 5 条自己写的假测试——源码 grep 冒充行为守卫 + 条件断言 + 恒真断言」。7-27 起累计清理 8 条自产假测试。"},
+    {d:"08-04", t:"sticky 修复当天 revert", lv:"m", h:"0f1d4f0",
+     desc:"60 秒 RPM 抖动永久迁走会话的修复当天就被 revert——实测「保留绑定会散射，比清绑定更贵」，结论反转（v3.9.13 notes 写明）。"},
+    {d:"08-04", t:"守卫三连崩", lv:"m", h:"a98a572",
+     desc:"默认开开关发现机制三连漏写法（某赋值形式→??→=== '0'），每次修都挖出更多未登记开关（累计 8 个，含凭证开关对守卫隐形）。"},
+    {d:"08-07", t:"SWE kimi 方言过度推广", lv:"m", h:"898af0f",
+     desc:"SWE 全家路由到 kimi_k2 方言 → 两天后排除 swe lightning（6cc2886）——过度推广的修正。"},
+    {d:"08-10", t:"#252 两处互相抵消", lv:"h", h:"0523910",
+     desc:"抑制逻辑靠检测 <tool_call> 标记触发，同一 PR 把默认值里的标记删了——抑制变永久 no-op，合并时守卫与审查都没发现，合并当天发现并修。"},
+    {d:"08-10", t:"'86/86 收齐'被推翻", lv:"m", h:"4ada929",
+     desc:"「35/35」「86/86 收齐」声明被 4ada929 一次补 47 个开关推翻（含全部 5 个 wire 坐标）；6202c34 修正则后又补 2 个，数字修正链 156→157→158。"},
+    {d:"08-11", t:"账本自己踩 sk- 坑", lv:"m", h:"2c90318",
+     desc:"账本描述 f3e0094（sk- 前缀误报修复）时原文引用了夹具 key 形态，触发 secret-scan 导致 CI 红——「审计工具与被审对象共享盲点」的第三个实例。"}
   ]
 };
 const GOLD="#f5c518", DIM="#8b949e", PANEL="#21262d", GREEN="#3fb950", RED="#f85149", ORANGE="#f0883e";
@@ -260,29 +323,89 @@ function barChart(svg, items, {color=GOLD, h=220, pad=30, label=null}={}){
   const items = Object.entries(D.tags);
   barChart(svgEl("tags"), items, {h:220});
 }
-// 自伤时间线
+// 自伤时间线（交互版：hover 跟随鼠标 tooltip + 账本/Git 链接）
 {
-  const svg = svgEl("selfharm"), W=1000, H=220, pad=30;
+  const svg = svgEl("tl"), W=1000, H=240, padL=20, padR=20;
   const items = D.selfharm;
+  const n = items.length;
+  const span = (W - padL - padR) / (n - 1 || 1);
   const colors = {"h":RED,"m":ORANGE};
-  items.forEach(([date,title,lv],i)=>{
-    const y = H-40 - (i%5)*22;
-    const x = pad + i*(W-pad*2)/items.length;
-    const c = document.createElementNS("http://www.w3.org/2000/svg","circle");
-    c.setAttribute("cx",x);c.setAttribute("cy",y);c.setAttribute("r",lv==="h"?6:4);
-    c.setAttribute("fill",colors[lv]);
-    svg.appendChild(c);
-    if (lv==="h"){
-      const t = document.createElementNS("http://www.w3.org/2000/svg","text");
-      t.setAttribute("x",x);t.setAttribute("y",y-10);t.setAttribute("text-anchor","middle");
-      t.setAttribute("fill",RED);t.setAttribute("font-size",8);t.textContent=title;
-      svg.appendChild(t);
-    }
+  const axisY = H - 46;
+
+  // 时间轴
+  const axis = svg.createElementNS("http://www.w3.org/2000/svg","line");
+  axis.setAttribute("x1",padL); axis.setAttribute("y1",axisY); axis.setAttribute("x2",W-padR); axis.setAttribute("y2",axisY);
+  axis.setAttribute("class","tl-axis");
+  svg.appendChild(axis);
+
+  // 月份刻度（4月~8月）
+  const months = [["04",padL],["05",padL+span*6],["06",padL+span*13],["07",padL+span*19.5],["08",W-padR]];
+  months.forEach(([m,x])=>{
+    const tick = svg.createElementNS("http://www.w3.org/2000/svg","line");
+    tick.setAttribute("x1",x); tick.setAttribute("y1",axisY-6); tick.setAttribute("x2",x); tick.setAttribute("y2",axisY+6);
+    tick.setAttribute("class","tl-tick");
+    svg.appendChild(tick);
+    const lbl = svg.createElementNS("http://www.w3.org/2000/svg","text");
+    lbl.setAttribute("x",x); lbl.setAttribute("y",H-28); lbl.setAttribute("text-anchor","middle");
+    lbl.setAttribute("class","tl-lbl"); lbl.textContent = "2026-"+m;
+    svg.appendChild(lbl);
   });
-  const t = document.createElementNS("http://www.w3.org/2000/svg","text");
-  t.setAttribute("x",pad);t.setAttribute("y",H-10);t.setAttribute("fill",DIM);t.setAttribute("font-size",10);
-  t.textContent = "● 事故级（烧钱/安全/生产挂） ● 合并后自毁/返工自打脸 —— 完整链条见账本";
-  svg.appendChild(t);
+
+  // 节点
+  const tip = document.getElementById("tl-tip");
+  items.forEach((ev,i)=>{
+    const x = padL + i*span;
+    const y = axisY - 30 - (i % 2) * 42;  // 上下交错
+    const g = svg.createElementNS("http://www.w3.org/2000/svg","g");
+    g.setAttribute("class","tl-node");
+    g.setAttribute("data-i",i);
+    // 连接线
+    const line = svg.createElementNS("http://www.w3.org/2000/svg","line");
+    line.setAttribute("x1",x); line.setAttribute("y1",y + (i%2? 14: -14)); line.setAttribute("x2",x); line.setAttribute("y2",axisY);
+    line.setAttribute("stroke", colors[ev.lv]); line.setAttribute("stroke-opacity",0.35); line.setAttribute("stroke-width",1);
+    g.appendChild(line);
+    // 节点圆（事故级大、返工级小）
+    const c = svg.createElementNS("http://www.w3.org/2000/svg","circle");
+    c.setAttribute("cx",x); c.setAttribute("cy",y); c.setAttribute("r", ev.lv==="h" ? 7 : 5);
+    c.setAttribute("fill", colors[ev.lv]);
+    g.appendChild(c);
+    // 日期标签
+    const t = svg.createElementNS("http://www.w3.org/2000/svg","text");
+    t.setAttribute("x",x); t.setAttribute("y", y + (i%2 ? 32 : -18));
+    t.setAttribute("text-anchor","middle"); t.setAttribute("class","tl-lbl");
+    t.textContent = ev.d;
+    g.appendChild(t);
+    // 事故级加事件名
+    if (ev.lv === "h") {
+      const nm = svg.createElementNS("http://www.w3.org/2000/svg","text");
+      nm.setAttribute("x",x); nm.setAttribute("y", y + (i%2 ? 46 : -30));
+      nm.setAttribute("text-anchor","middle"); nm.setAttribute("fill", RED); nm.setAttribute("font-size", 9);
+      nm.textContent = ev.t.length > 12 ? ev.t.slice(0,11)+"…" : ev.t;
+      g.appendChild(nm);
+    }
+    // hover 交互
+    g.addEventListener("mouseenter", ()=>{
+      const lvTxt = ev.lv==="h" ? "事故级（烧钱/安全/生产挂）" : "合并后自毁/返工自打脸";
+      tip.innerHTML =
+        `<div class="tt-title">${ev.t}</div>` +
+        `<div class="tt-meta">${ev.d} · <span style="color:${colors[ev.lv]}">${lvTxt}</span></div>` +
+        `<div class="tt-desc">${ev.desc}</div>` +
+        `<div class="tt-links">` +
+          `<a href="https://github.com/dwgx/WindsurfAPI/blob/master/docs/HISTORY-LEDGER.md" target="_blank" rel="noopener">账本详细</a>` +
+          `<a href="https://github.com/dwgx/WindsurfAPI/commit/${ev.h}" target="_blank" rel="noopener">Git 提交 ${ev.h.slice(0,7)}</a>` +
+        `</div>`;
+      tip.style.display = "block";
+    });
+    g.addEventListener("mousemove", (e)=>{
+      const tw = tip.offsetWidth || 300, th = tip.offsetHeight || 160;
+      let lx = e.clientX + 14, ly = e.clientY + 14;
+      if (lx + tw > window.innerWidth - 8) lx = e.clientX - tw - 14;
+      if (ly + th > window.innerHeight - 8) ly = e.clientY - th - 14;
+      tip.style.left = lx + "px"; tip.style.top = ly + "px";
+    });
+    g.addEventListener("mouseleave", ()=>{ tip.style.display = "none"; });
+    svg.appendChild(g);
+  });
 }
 // 统计卡
 {
