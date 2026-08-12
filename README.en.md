@@ -614,9 +614,6 @@ MIT License. See [LICENSE](LICENSE).
 
 Release automation may publish Docker images and GitHub Releases. Keep tokens, API keys, cookies, and provider credentials out of issues, pull requests, logs, and committed config. If a report needs authentication details, share only redacted metadata and reproduction steps.
 
-## Star History
-
-https://www.star-history.com/?type=date&repos=dwgx/WindsurfAPI
 ---
 
 <p align="center">

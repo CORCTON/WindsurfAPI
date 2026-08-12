@@ -704,9 +704,6 @@ MIT License. See [LICENSE](LICENSE).
 
 对应的英文段见 [README.en.md](README.en.md#release-and-secret-boundary)。
 
-## Star History
-
-https://www.star-history.com/?type=date&repos=dwgx/WindsurfAPI
 ---
 
 <p align="center">
