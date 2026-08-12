@@ -284,7 +284,9 @@ describe('ToolCallStreamParser', () => {
     const parser = new ToolCallStreamParser();
     parser.feed('<tool_call>{"name":"x","arguments":{"data":"');
     parser.feed('A'.repeat(70_000));
-    assert.equal(parser.inToolCall, false);
+    // Oversize drop keeps inToolCall until the close marker (swallow), so the
+    // trailing </tool_call> cannot leak as text. The call is dropped, buffer bounded.
+    assert.equal(parser._oversizeDropped, true);
     assert.ok(parser.buffer.length < 1024);
   });
 

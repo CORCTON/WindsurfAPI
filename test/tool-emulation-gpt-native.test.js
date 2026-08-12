@@ -21,10 +21,22 @@ describe('pickToolDialect — gpt_native gating (v2.0.62 #115)', () => {
     assert.equal(pickToolDialect('o4-preview', 'openai', 'responses'), 'gpt_native');
   });
 
-  it('GPT family + chat route → openai_json_xml (default, no surprise)', () => {
-    assert.equal(pickToolDialect('gpt-5.5-medium', 'openai', 'chat'), 'openai_json_xml');
+  it('GPT family + chat route → gpt_native for 5.4+ (XML refusal), XML below', () => {
+    // GPT-5.4+ refuses the XML protocol on chat routes too (observed 5.4 xhigh via opencode).
+    assert.equal(pickToolDialect('gpt-5.5-medium', 'openai', 'chat'), 'gpt_native');
+    assert.equal(pickToolDialect('gpt-5.5-medium', 'openai'), 'gpt_native');
+    assert.equal(pickToolDialect('gpt-5.4-xhigh', 'openai', 'chat'), 'gpt_native');
+    assert.equal(pickToolDialect('gpt-5.6-luna-medium', 'openai', 'chat'), 'gpt_native');
+    // devin_connect 传连字符形态（catalog selector）——dashed 折叠后同样命中
+    assert.equal(pickToolDialect('gpt-5-4-medium', 'openai', 'chat'), 'gpt_native');
+    assert.equal(pickToolDialect('gpt-5-4-xhigh', 'openai', 'chat'), 'gpt_native');
+    assert.equal(pickToolDialect('gpt-5-6-luna-medium', 'openai', 'chat'), 'gpt_native');
+    assert.equal(pickToolDialect('gpt-5-3-codex', 'openai', 'chat'), 'openai_json_xml', '5.3 dashed keeps XML');
+    // 5.1/5.2/5.3 and older keep the original #115 gate (chat → XML).
+    assert.equal(pickToolDialect('gpt-5.2-medium', 'openai', 'chat'), 'openai_json_xml');
+    assert.equal(pickToolDialect('gpt-5.3-codex', 'openai', 'chat'), 'openai_json_xml');
+    assert.equal(pickToolDialect('gpt-4.1-mini', 'openai', 'chat'), 'openai_json_xml');
     assert.equal(pickToolDialect('gpt-4o-mini', 'openai', null), 'openai_json_xml');
-    assert.equal(pickToolDialect('gpt-5.5-medium', 'openai'), 'openai_json_xml');
   });
 
   it('non-GPT models on responses route → openai_json_xml (gpt_native is GPT-only)', () => {
@@ -110,9 +122,15 @@ describe('gpt_native preamble — strong anti-refusal language', () => {
     assert.match(p, /NO\s+markdown|no\s+markdown|no\s+\`\`\`json|NO\s+\`\`\`/i);
   });
 
-  it('non-responses route still gets openai_json_xml preamble (XML wrapper)', () => {
+  it('non-responses route on gpt-5.2 keeps openai_json_xml preamble (XML wrapper)', () => {
+    // 5.4+ chat switched to gpt_native; 5.2 keeps the #115 back-compat gate.
+    const p = buildToolPreambleForProto(tools, 'auto', '', 'gpt-5.2-medium', 'openai', 'chat');
+    assert.match(p, /<tool_call>/, 'chat route on 5.2 must keep XML wrapper for back-compat');
+  });
+  it('non-responses route on gpt-5.5 now gets gpt_native preamble', () => {
     const p = buildToolPreambleForProto(tools, 'auto', '', 'gpt-5.5-medium', 'openai', 'chat');
-    assert.match(p, /<tool_call>/, 'chat route must keep XML wrapper for back-compat');
+    assert.match(p, /function_call/, 'chat route on 5.5 must use gpt_native (XML refusal)');
+    assert.ok(!p.includes('<tool_call>'), '5.5 chat must not use XML wrapper');
   });
 });
 

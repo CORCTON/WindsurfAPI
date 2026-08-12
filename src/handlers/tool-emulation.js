@@ -349,6 +349,7 @@ Rules:
 export function pickToolDialect(modelKey, provider, route = null) {
   const forced = process.env.WINDSURFAPI_FORCE_TOOL_DIALECT;
   if (forced && /^(glm47|openai_json_xml|kimi_k2|gpt_native)$/.test(forced)) return forced;
+  if (forced) log.warn(`pickToolDialect: unrecognized WINDSURFAPI_FORCE_TOOL_DIALECT value ${JSON.stringify(forced)} — ignored, normal routing applies`);
   const normalizedProvider = String(provider || '').toLowerCase();
   const normalizedModelKey = String(modelKey || '').toLowerCase();
   if (normalizedProvider === 'zhipu' || normalizedModelKey.startsWith('glm')) {
@@ -408,7 +409,17 @@ export function pickToolDialect(modelKey, provider, route = null) {
   const isGpt = normalizedProvider === 'openai' || /^(?:gpt-|o3|o4)/i.test(normalizedModelKey);
   if (isGpt) {
     const forceAll = process.env.WINDSURFAPI_FORCE_GPT_NATIVE_DIALECT === '1';
-    if (forceAll || route === 'responses') return 'gpt_native';
+    // GPT-5.4+ refuses the <tool_call> XML protocol on OpenAI-spec tools
+    // even on /v1/chat/completions (observed on 5.4 xhigh via opencode —
+    // the model answers "please paste the file" instead of calling tools).
+    // #115 originally gated gpt_native to responses to avoid surprising
+    // existing chat clients; the 5.4+ family is new enough that the gate
+    // no longer buys safety there. 5.1/5.2/5.3 keep the original behavior.
+    // devin_connect 路径传原始 params.model（连字符形态 gpt-5-4-medium）——
+    // 照 glm-5.2 先例先折叠 dashed 再匹配，两种拼写都覆盖。
+    const dashedKey = normalizedModelKey.replace(/\./g, '-');
+    const isGpt54Plus = /^gpt-5-[456](?:-|$)/.test(dashedKey);
+    if (forceAll || route === 'responses' || isGpt54Plus) return 'gpt_native';
   }
   return 'openai_json_xml';
 }
@@ -1208,6 +1219,10 @@ export function normalizeMessagesForCascade(messages, tools, options = {}) {
  */
 const TOOL_PARSE_MODE = process.env.TOOL_PARSE_MODE || 'auto';
 const TOOL_XML_BODY_MAX = 65_536;
+// Over-limit tool_call bodies are replaced with this placeholder instead of
+// being flushed into the text stream (raw flush pollutes the conversation
+// with an unparsed blob the client cannot use).
+export const TOOL_OVER_LIMIT_PLACEHOLDER = '[tool_call data over 65KB dropped by proxy]';
 const GLM47_TOOL_OPEN = '<tool_call>';
 const GLM47_TOOL_CLOSE = '</tool_call>';
 const KIMI_TOOL_SECTION_BEGIN = '<|tool_calls_section_begin|>';
@@ -1406,6 +1421,8 @@ function parseNonOpenAIDialectBuffer(dialect, body, startSeen) {
 }
 
 export class ToolCallStreamParser {
+  /** 超限 tool_call 后为 true：吞掉残余直到闭合标记，防裸泄漏 */
+  _oversizeDropped = false;
   constructor(options = {}) {
     this.buffer = '';
     this.inToolCall = false;
@@ -1441,8 +1458,8 @@ export class ToolCallStreamParser {
 
   _consumeJsonBlock(parseFn, pushTool, pushText) {
     if (this.buffer.length > 65_536) {
-      log.warn(`ToolCallStreamParser: JSON block exceeds 65KB (${this.buffer.length} bytes), emitting as text`);
-      pushText(this.buffer);
+      log.warn(`ToolCallStreamParser: JSON block exceeds 65KB (${this.buffer.length} bytes), emitting placeholder instead of raw text`);
+      pushText(TOOL_OVER_LIMIT_PLACEHOLDER);
       this.buffer = '';
       return true;
     }
@@ -1492,6 +1509,19 @@ export class ToolCallStreamParser {
 
   feed(delta) {
     if (!delta) return { text: '', toolCalls: [], items: [] };
+    // Oversize-drop state: swallow everything until the close marker, so the
+    // trailing `</tool_call>` / `"}` cannot leak into the text stream after
+    // an over-limit tool_call was replaced with the placeholder. Must run
+    // BEFORE sentinel detection (a rebuilt full sentinel would otherwise
+    // flush the held W's as prose).
+    if (this._oversizeDropped) {
+      this.buffer += delta;
+      const closed = this.dialect === 'gpt_native'
+        ? this._findClosingBrace() !== -1
+        : this.buffer.includes('</tool_call>') || this._findClosingBrace() !== -1;
+      if (closed) { this._oversizeDropped = false; this.buffer = ''; }
+      return { text: '', toolCalls: [], items: [] };
+    }
     if (this.dialect !== 'openai_json_xml') {
       this.buffer += delta;
       // Stream text up to the first tool-tag sentinel so plain prose
@@ -1545,10 +1575,15 @@ export class ToolCallStreamParser {
       // parseable close, flush it as ordinary text and reset so RSS stays
       // bounded.
       if (this.buffer.length > TOOL_XML_BODY_MAX) {
-        log.warn(`ToolCallStreamParser: ${this.dialect} sentinel body exceeds 65KB (${this.buffer.length} bytes), emitting as text`);
-        const text = this.buffer;
+        log.warn(`ToolCallStreamParser: ${this.dialect} sentinel body exceeds 65KB (${this.buffer.length} bytes), emitting placeholder`);
         this.buffer = '';
-        return { text, toolCalls: [], items: [{ type: 'text', text }] };
+        this._oversizeDropped = true;
+        return { text: TOOL_OVER_LIMIT_PLACEHOLDER, toolCalls: [], items: [{ type: 'text', text: TOOL_OVER_LIMIT_PLACEHOLDER }] };
+      }
+      // 超限丢弃态：吞掉残余直到 JSON 平衡闭合，防 `"}` 等裸泄漏
+      if (this._oversizeDropped) {
+        if (this._findClosingBrace() !== -1) this._oversizeDropped = false;
+        return { text: '', toolCalls: [], items: [] };
       }
       return { text: '', toolCalls: [], items: [] };
     }
@@ -1595,10 +1630,19 @@ export class ToolCallStreamParser {
       // ── Inside a <tool_call>…</tool_call> block — parse JSON body ──
       if (this.inToolCall) {
         if (this.buffer.length > TOOL_XML_BODY_MAX) {
-          log.warn(`ToolCallStreamParser: <tool_call> body exceeds 65KB (${this.buffer.length} bytes), emitting as text`);
-          pushText(`${TC_OPEN}${this.buffer}`);
+          log.warn(`ToolCallStreamParser: <tool_call> body exceeds 65KB (${this.buffer.length} bytes), emitting placeholder`);
+          pushText(TOOL_OVER_LIMIT_PLACEHOLDER);
           this.buffer = '';
+          this._oversizeDropped = true;   // 保持 inToolCall，吞掉残余直到 close，防 close 标记裸泄漏
+          continue;
+        }
+        if (this._oversizeDropped) {
+          // 超限丢弃态：等待 close 到达后整体丢弃，不再尝试解析
+          const closeIdx = this.buffer.indexOf(TC_CLOSE);
+          if (closeIdx === -1) break;
+          this.buffer = this.buffer.slice(closeIdx + TC_CLOSE.length);
           this.inToolCall = false;
+          this._oversizeDropped = false;
           continue;
         }
         const closeIdx = this.buffer.indexOf(TC_CLOSE);

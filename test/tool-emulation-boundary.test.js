@@ -126,7 +126,12 @@ describe('TOOL-2 non-XML dialect buffer ceiling', () => {
       if (r.text) lastText += r.text;
     }
     assert.ok(parser.buffer.length <= 65_536, `buffer must stay bounded, got ${parser.buffer.length}`);
-    assert.ok(lastText.length > 0, 'over-limit buffer must be emitted as text');
+    assert.ok(lastText.length > 0, 'over-limit buffer must release');
+    assert.ok(lastText.includes('[tool_call data over 65KB dropped by proxy]'), 'placeholder must appear instead');
+    // The over-limit body (up to 64KB of contiguous X) must not leak into the text stream.
+    // The oversize-swallow keeps subsequent deltas out too — a contiguous 60k+ X run
+    // would be the dumped buffer itself (or post-flush residue).
+    assert.ok(!lastText.includes('X'.repeat(60000)), 'raw over-limit body must NOT be flushed into text (pollution)');
   });
 
   it('keeps buffer bounded for glm47 dialect too', () => {
