@@ -257,7 +257,7 @@ body.clean-mode .esc-hint { color: var(--accent); border-color: rgba(217,119,87,
 .lang-btn {
   display: flex; align-items: center; gap: 6px;
   background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px;
-  color: var(--text-muted); font-size: 11px; font-weight: 600; padding: 5px 12px;
+  color: var(--text-muted); font-size: 10px; font-weight: 600; padding: 3px 8px;
   cursor: pointer; font-family: var(--mono); outline: none; transition: all .15s;
 }
 .lang-btn:hover { color: var(--ink); border-color: var(--border-strong); }
@@ -284,7 +284,7 @@ body.clean-mode .esc-hint { color: var(--accent); border-color: rgba(217,119,87,
 .ledger-nav {
   position: sticky; top: 0; z-index: 60;
   display: flex; justify-content: center;
-  padding: 10px 12px 0;
+  padding: 6px 12px 0;
   background: rgba(10,10,10,.72);
   backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
 }
@@ -296,8 +296,8 @@ body.clean-mode .esc-hint { color: var(--accent); border-color: rgba(217,119,87,
 }
 .ledger-nav-inner::-webkit-scrollbar { display: none; }
 .ledger-tab {
-  flex: 0 0 auto; padding: 6px 16px; border-radius: 999px;
-  font-size: 12px; font-weight: 600; color: var(--text-muted);
+  flex: 0 0 auto; padding: 4px 12px; border-radius: 999px;
+  font-size: 11px; font-weight: 600; color: var(--text-muted);
   text-decoration: none; white-space: nowrap;
   transition: background .18s var(--ease-smooth), color .18s var(--ease-smooth);
 }
@@ -416,7 +416,6 @@ body.clean-mode .esc-hint { color: var(--accent); border-color: rgba(217,119,87,
 
 /* ============ Git 树 ============ */
 .tree-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-.tree-scroll.tree-cam { max-height: 62vh; overflow-y: auto; scroll-behavior: smooth; }
 .tree-node { animation: tn-in .3s ease-out; }
 @keyframes tn-in { from { opacity: 0; transform: scale(.6); } }
 .tree-scroll.scrollable svg { width: 3200px; max-width: none; }
@@ -557,10 +556,10 @@ body.clean-mode .esc-hint { color: var(--accent); border-color: rgba(217,119,87,
         <button type="button" data-tree-mode="vertical" class="is-active" title="纵向时间轴" data-i18n="tree_v">竖</button>
         <button type="button" data-tree-mode="horizontal" title="横向时间轴" data-i18n="tree_h">横</button>
         <button type="button" data-tree-mode="ring" title="环形时间轮" data-i18n="tree_ring">环</button>
+        <span class="tools-sep"></span>
         <button type="button" class="tree-collapse is-active" title="竖模式收缩/展开">展开</button>
       </div>
     </div>
-    <div class="sub" data-i18n="tree_sub">1250 提交 · 59 个合并 · 主干 1063 节点 —— 悬停节点/线段看详情，点击锁定</div>
     <div class="tree-time">
       <button type="button" id="time-play" title="播放"><svg viewBox="0 0 12 12" width="10" height="10"><path d="M2 1 L10 6 L2 11 Z" fill="currentColor"/></svg></button>
       <input type="range" id="time-slider" min="0" max="1000" value="1000" aria-label="时间游标">
@@ -1937,22 +1936,6 @@ document.addEventListener('keydown', e => {
     lb.textContent = '截至 ' + d + ' · ' + n + ' 锚点';
   }
 
-  // camera：播放时镜头沿时间轴延伸（竖向下滚 / 横向右滚）
-  function cameraFollow() {
-    const sc = document.getElementById('tree-scroll');
-    if (!sc) return;
-    const svg = sc.querySelector('svg');
-    if (!svg) return;
-    const tRatio = (treeTime - G.t0) / (G.t1 - G.t0);
-    if (currentMode === 'vertical') {
-      sc.classList.add('tree-cam');
-      const h = parseFloat(svg.getAttribute('viewBox').split(' ')[3] || 4000);
-      sc.scrollTop = Math.max(0, tRatio * h - sc.clientHeight / 2);
-    } else if (currentMode === 'horizontal') {
-      const w = parseFloat(svg.getAttribute('viewBox').split(' ')[2] || 3200);
-      sc.scrollLeft = Math.max(0, tRatio * w - sc.clientWidth / 2);
-    }
-  }
   // 播放控制
   function playTime() {
     if (treePlaying) { stopTime(); return; }
@@ -1974,8 +1957,6 @@ document.addEventListener('keydown', e => {
   function stopTime() {
     treePlaying = false;
     if (treePlayTimer) { clearInterval(treePlayTimer); treePlayTimer = null; }
-    const sc = document.getElementById('tree-scroll');
-    if (sc) sc.classList.remove('tree-cam');
     const btn = document.getElementById('time-play');
     if (btn) btn.innerHTML = '<svg viewBox="0 0 12 12" width="10" height="10"><path d="M2 1 L10 6 L2 11 Z" fill="currentColor"/></svg>';
   }
