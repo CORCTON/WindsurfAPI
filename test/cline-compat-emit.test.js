@@ -94,7 +94,11 @@ describe('Cline compat emit — stream (DEVIN_CONNECT path)', () => {
     __setStreamChatForTest(fakeStream(events));
     const frames = [];
     const send = (obj) => frames.push(obj);
-    return streamChatCompletion({ model: 'swe-1-6-slow', messages: [] }, send, opts).then(() => frames);
+    // ToolGuard (allowlist): the connect stream path now filters against
+    // declared tools[] like the chat main path — declare the ones these
+    // fixtures emit.
+    const tools = ['list_files', 'do_thing'].map(name => ({ type: 'function', function: { name } }));
+    return streamChatCompletion({ model: 'swe-1-6-slow', messages: [], tools }, send, opts).then(() => frames);
   }
 
   it('WITH compat: streamed tool_call with whitespace args normalized to "{}" and counted', async () => {

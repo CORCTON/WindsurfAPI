@@ -269,7 +269,8 @@ describe('streamChatCompletion tool emulation', () => {
       { type: 'finish', reason: 'stop', usage: null },
     ]));
     const { send, frames } = collectSend();
-    const result = await streamChatCompletion({ model: 'swe-1-6-slow', messages: [] }, send, { emulateTools: true });
+    const tools = [{ type: 'function', function: { name: 'search' } }];
+    const result = await streamChatCompletion({ model: 'swe-1-6-slow', messages: [], tools }, send, { emulateTools: true });
 
     const toolFrame = frames.find(f => f.choices[0]?.delta?.tool_calls);
     assert.ok(toolFrame, 'a tool_calls delta was emitted');
@@ -302,7 +303,21 @@ describe('streamChatCompletion tool emulation', () => {
     assert.equal(result.finish_reason, 'stop');
     assert.equal(result.toolCalls.length, 0);
   });
+
+  it('ToolGuard: drops tool_calls not in declared tools[] (P1 allowlist)', async () => {
+    __setStreamChatForTest(fakeStream([
+      { type: 'content', text: '<tool_call>{"name": "search", ' },
+      { type: 'content', text: '"arguments": {"q": "cats"}}</tool_call>' },
+      { type: 'finish', reason: 'stop', usage: null },
+    ]));
+    const { send, frames } = collectSend();
+    // No tools[] declared → ToolGuard drops the parsed call entirely.
+    await streamChatCompletion({ model: 'swe-1-6-slow', messages: [] }, send, { emulateTools: true });
+    const toolFrame = frames.find(f => f.choices[0]?.delta?.tool_calls);
+    assert.ok(!toolFrame, 'undeclared tool_call must be filtered (ToolGuard parity)');
+  });
 });
+
 
 // Native tool calls: when DEVIN_CONNECT_TOOL_CALL_TAGS is calibrated, streamChat
 // surfaces real ChatToolCall structs on the terminal finish event

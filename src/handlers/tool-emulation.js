@@ -368,7 +368,7 @@ export function pickToolDialect(modelKey, provider, route = null) {
     // client waits forever for one. Every other spelling (`glm-5.2`, `glm-5.2-none`,
     // `glm-5-2-none`) already resolved correctly, which is what kept it hidden.
     const dashed = normalizedModelKey.replace(/\./g, '-');
-    if (dashed === 'glm-5-2' || dashed.startsWith('glm-5-2-')) return 'gpt_native';
+    if (/^glm-5-[2-9](?:-|$)/.test(dashed)) return 'gpt_native';
     return 'glm47';
   }
   if (normalizedProvider === 'moonshot' || normalizedModelKey.startsWith('kimi')) {
@@ -1030,7 +1030,7 @@ export function stripOrphanedToolResults(messages) {
     }
     return true;
   });
-  if (dropped) log?.info?.(`tool-pairing: dropped ${dropped} orphaned tool_result(s)`);
+  if (dropped) log?.warn?.(`tool-pairing: dropped ${dropped} orphaned tool_result(s)`);
   return dropped ? out : messages;
 }
 

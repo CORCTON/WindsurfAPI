@@ -204,6 +204,10 @@ describe('ToolCallStreamParser', () => {
     assert.equal(pickToolDialect('glm-5.2-thinking'), 'gpt_native');
     assert.equal(pickToolDialect('glm-5'), 'glm47');
     assert.equal(pickToolDialect('glm-5.1'), 'glm47');
+    // 5.2+ future SKUs (dashed or dotted) keep gpt_native
+    assert.equal(pickToolDialect('glm-5.3', 'zhipu'), 'gpt_native');
+    assert.equal(pickToolDialect('glm-5-9', 'zhipu'), 'gpt_native');
+    assert.equal(pickToolDialect('glm-5.2-x1', 'zhipu'), 'gpt_native');
   });
 
   it('honors WINDSURFAPI_FORCE_TOOL_DIALECT override (#204)', () => {

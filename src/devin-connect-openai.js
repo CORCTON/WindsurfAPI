@@ -18,6 +18,7 @@
  */
 
 import { randomUUID } from 'crypto';
+import { filterToolCallsByAllowlist } from './handlers/chat.js';
 import { streamChat as realStreamChat, isRetryable, messageText } from './devin-connect.js';
 import { ToolCallStreamParser, parseToolCallsFromText, isWeakEmulationModel } from './handlers/tool-emulation.js';
 import { log } from './config.js';
@@ -617,7 +618,12 @@ export async function streamChatCompletion(params, send, opts = {}) {
     ? new ToolCallStreamParser({ modelKey: params.model, provider: null, route: 'devin_connect' })
     : null;
   const collectedToolCalls = [];
-  const emitToolCalls = (calls) => {
+  const emitToolCalls = (calls, filter = true) => {
+    // ToolGuard: same allowlist filter the chat main path applies — the
+    // connect stream path used to emit any EMULATED call without checking it
+    // against the client's declared tools[] (audit blind spot). Native calls
+    // (structured ev.toolCalls from upstream) are trusted and pass through.
+    if (filter) calls = filterToolCallsByAllowlist(calls || [], params.tools || []);
     for (const tc of calls || []) {
       prime(); // a tool_call is a real delta — open the message before it
       const idx = collectedToolCalls.length;
@@ -691,7 +697,7 @@ export async function streamChatCompletion(params, send, opts = {}) {
   if (nativeToolCalls.length && !collectedToolCalls.length) {
     emitToolCalls(nativeToolCalls.map((tc) => ({
       id: tc.id, name: tc.name, argumentsJson: tc.arguments,
-    })));
+    })), false);   // native calls are trusted (structured upstream data), no allowlist filter
     finishReason = 'tool_calls';
   }
 
