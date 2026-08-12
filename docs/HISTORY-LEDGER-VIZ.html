@@ -358,6 +358,25 @@ body.clean-mode .esc-hint { color: var(--accent); border-color: rgba(217,119,87,
 .cc-chip { font-size: 10px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-muted); }
 
 /* ============ Git 树 ============ */
+.tree-controls { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.tree-filters { display: flex; gap: 12px; font-size: 11px; color: var(--text-muted); }
+.tree-filters label { display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; }
+.tree-filters input { accent-color: var(--accent); cursor: pointer; }
+.tree-zoom { display: flex; align-items: center; gap: 4px; }
+.tree-zoom button, #time-play {
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px;
+  color: var(--text-muted); font-size: 12px; min-width: 26px; height: 24px;
+  cursor: pointer; display: flex; align-items: center; justify-content: center; transition: all .15s;
+}
+.tree-zoom button:hover, #time-play:hover { color: var(--ink); border-color: var(--border-strong); }
+.tree-zoom button.is-active { background: var(--accent); color: #0a0a0a; }
+#zoom-val { font-family: var(--mono); font-size: 11px; color: var(--text-muted); min-width: 40px; text-align: center; }
+.tree-time { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+#time-slider { flex: 1; accent-color: var(--accent); cursor: pointer; }
+#time-label { font-family: var(--mono); font-size: 11px; color: var(--text-muted); white-space: nowrap; }
+.tree-scroll.tree-zoomed svg { transform-origin: left top; }
+
+/* ============ Git 树 ============ */
 .tree-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
 .tree-head h2 { margin-bottom: 0; }
 .tree-tools { display: flex; gap: 4px; }
@@ -512,6 +531,24 @@ body.clean-mode .esc-hint { color: var(--accent); border-color: rgba(217,119,87,
       </div>
     </div>
     <div class="sub" data-i18n="tree_sub">1250 提交 · 59 个合并 · 主干 1063 节点 —— 悬停节点/线段看详情，点击锁定</div>
+    <div class="tree-controls">
+      <div class="tree-filters" id="tree-filters">
+        <label><input type="checkbox" id="f-node" checked> 周点</label>
+        <label><input type="checkbox" id="f-tip" checked> 分支标签</label>
+        <label><input type="checkbox" id="f-tag" checked> tag 标牌</label>
+      </div>
+      <div class="tree-zoom">
+        <button type="button" id="zoom-out" title="缩小">−</button>
+        <span id="zoom-val">100%</span>
+        <button type="button" id="zoom-in" title="放大">+</button>
+        <button type="button" id="zoom-reset" title="重置">重置</button>
+      </div>
+    </div>
+    <div class="tree-time">
+      <button type="button" id="time-play" title="播放"><svg viewBox="0 0 12 12" width="10" height="10"><path d="M2 1 L10 6 L2 11 Z" fill="currentColor"/></svg></button>
+      <input type="range" id="time-slider" min="0" max="1000" value="1000" aria-label="时间游标">
+      <span id="time-label"></span>
+    </div>
     <div class="tree-legend" id="tree-legend"></div>
     <div class="tree-scroll" id="tree-scroll"><svg id="tree" viewBox="0 0 1000 4200"></svg></div>
   </section>
@@ -1348,6 +1385,7 @@ document.addEventListener('keydown', e => {
 
   // ============ 模式一：竖（时间向下） ============
   function renderVertical(collapsed) {
+    const AA = G.anchors.filter(a => !treeFiltered(a));
     const frag = document.createDocumentFragment();
 
     const W = 1000, H = collapsed ? 2200 : 4200, padT = 40, padB = 60, padL = 70;
@@ -1376,12 +1414,12 @@ document.addEventListener('keydown', e => {
       t.textContent = days + ' 天空窗';
       frag.appendChild(t);
     });
-    G.anchors.forEach(a => {
+    AA.forEach(a => {
       if (laneOf[a.h] !== 0) return;
       drawSeg(a, X(0), yOf[a.h], yOf[segInfo[a.h] && segInfo[a.h][1]] || yOf[a.h], '#d97757');
     });
     if (!collapsed) {
-    G.anchors.forEach(a => {
+    AA.forEach(a => {
       const l = laneOf[a.h];
       if (l === 0) return;
       const x = X(l), y = yOf[a.h];
@@ -1404,10 +1442,10 @@ document.addEventListener('keydown', e => {
         frag.appendChild(bt);
       }
     });
-      G.anchors.forEach(a => drawNode(a, X(laneOf[a.h]), yOf[a.h], {}));
+      AA.forEach(a => drawNode(a, X(laneOf[a.h]), yOf[a.h], {}));
     }
     if (collapsed) {
-      G.anchors.forEach(a => {
+      AA.forEach(a => {
         if (!(a.k === 'merge' || a.k === 'pr' || a.k === 'head')) return;
         const x = X(laneOf[a.h]), y = yOf[a.h];
         const login = loginOf(a);
@@ -1433,6 +1471,7 @@ document.addEventListener('keydown', e => {
       });
     }
     (G.tags_milestone || []).forEach(([name, h]) => {
+      if (treeTagFiltered(name)) return;
       const a = byHash[h]; if (!a || yOf[h] === undefined) return;
       const g = document.createElementNS(NS, 'g');
       const tw = name.length * 7 + 14;
@@ -1458,7 +1497,7 @@ document.addEventListener('keydown', e => {
       '2026-08': tr('month_desc_08'),
     };
     const monthInfo = {};
-    G.anchors.forEach(a => {
+    AA.forEach(a => {
       const d = new Date(a.t * 1000);
       const mk = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
       if (!monthInfo[mk]) monthInfo[mk] = { commits: 0, prs: 0 };
@@ -1489,12 +1528,13 @@ document.addEventListener('keydown', e => {
 
   // ============ 模式二：横（时间向右，精简可读） ============
   function renderHorizontal() {
+    const AA = G.anchors.filter(a => !treeFiltered(a));
     const frag = document.createDocumentFragment();
 
     const W = 3200, H = 360, padL = 50, padR = 80, padT = 40;
     const X = t => padL + (t - t0) / span * (W - padL - padR);
     const Y = l => padT + l * 34;
-    const yOf = {}; G.anchors.forEach(a => yOf[a.h] = Y(laneOf[a.h]));
+    const yOf = {}; AA.forEach(a => yOf[a.h] = Y(laneOf[a.h]));
     monthKeys.forEach((mk) => {
       const x = X(monthStart(mk));
       const t = document.createElementNS(NS, 'text');
@@ -1520,7 +1560,7 @@ document.addEventListener('keydown', e => {
       t.textContent = days + '天';
       frag.appendChild(t);
     });
-    G.anchors.forEach(a => {
+    AA.forEach(a => {
       if (laneOf[a.h] !== 0) return;
       const seg = segInfo[a.h];
       if (!seg) return;
@@ -1538,7 +1578,7 @@ document.addEventListener('keydown', e => {
       bindBar(line, { name: n + ' 个提交', meta: new Date(st0 * 1000).toISOString().slice(0, 10) + ' → ' + new Date(st1 * 1000).toISOString().slice(0, 10), desc: '主干折叠段。', links: [] });
       frag.appendChild(line);
     });
-    G.anchors.forEach(a => {
+    AA.forEach(a => {
       const l = laneOf[a.h];
       if (l === 0) return;
       const x = X(a.t), y = Y(l);
@@ -1548,7 +1588,7 @@ document.addEventListener('keydown', e => {
       v.setAttribute('stroke-width', 1.5);
       frag.appendChild(v);
     });
-    G.anchors.forEach(a => {
+    AA.forEach(a => {
       const l = laneOf[a.h];
       const x = X(a.t), y = yOf[a.h];
       const login = loginOf(a);
@@ -1578,6 +1618,7 @@ document.addEventListener('keydown', e => {
       }
     });
     (G.tags_milestone || []).forEach(([name, h]) => {
+      if (treeTagFiltered(name)) return;
       const a = byHash[h]; if (!a) return;
       const g = document.createElementNS(NS, 'g');
       const tw = name.length * 7 + 14;
@@ -1601,6 +1642,7 @@ document.addEventListener('keydown', e => {
 
   // ============ 模式三：环形时间轮 ============
   function renderRing() {
+    const AA = G.anchors.filter(a => !treeFiltered(a));
     const frag = document.createDocumentFragment();
 
     const W = 1000, H = 1000, cx = 500, cy = 500;
@@ -1637,7 +1679,7 @@ document.addEventListener('keydown', e => {
       frag.appendChild(path);
       return path;
     };
-    G.anchors.forEach(a => {
+    AA.forEach(a => {
       if (laneOf[a.h] !== 0) return;
       const seg = segInfo[a.h];
       if (!seg) return;
@@ -1648,7 +1690,7 @@ document.addEventListener('keydown', e => {
       bindBar(line, { name: n + ' 个提交', meta: new Date(st0 * 1000).toISOString().slice(0, 10) + ' → ' + new Date(st1 * 1000).toISOString().slice(0, 10), desc: '主干折叠段。', links: [] });
     });
     // 分支节点 → 汇入主干弧的贝塞尔曲线（终点 = 父锚点在弧上的位置，展示合并关系）
-    G.anchors.forEach(a => {
+    AA.forEach(a => {
       const l = laneOf[a.h];
       if (l === 0) return;
       const r1 = R_IN + l * 22;
@@ -1685,7 +1727,7 @@ document.addEventListener('keydown', e => {
       mk.appendChild(p); defs.appendChild(mk);
       svg.insertBefore(defs, svg.firstChild);
     })();
-    G.anchors.forEach(a => {
+    AA.forEach(a => {
       const l = laneOf[a.h];
       const r = l === 0 ? R_OUT : R_IN + l * 22;
       const x = px(a.t, r), y = py(a.t, r);
@@ -1711,6 +1753,7 @@ document.addEventListener('keydown', e => {
       frag.appendChild(g);
     });
     (G.tags_milestone || []).forEach(([name, h]) => {
+      if (treeTagFiltered(name)) return;
       const a = byHash[h]; if (!a) return;
       const x = px(a.t, R_OUT + 62), y = py(a.t, R_OUT + 62);
       const g = document.createElementNS(NS, 'g');
@@ -1773,8 +1816,96 @@ document.addEventListener('keydown', e => {
 
   let currentMode = 'vertical';
   let collapsed = true;   // 竖模式默认收缩
+  let treeTime = G.t1;                    // 时间游标（截至时间戳）
+  let treePlaying = false;
+  let treePlayTimer = null;
+  const treeFilters = { node: true, tip: true, tag: true };
+  let treeZoom = 1;
+
+  // 过滤：锚点是否显示（时间游标 + 类型开关）
+  function treeFiltered(a) {
+    if (a.t > treeTime) return true;                    // 游标之后 → 隐藏
+    if (a.k === 'node' && !treeFilters.node) return true;
+    if (a.k === 'tip' && !treeFilters.tip) return true;
+    if (a.k === 'tag' && !treeFilters.tag) return true;
+    return false;
+  }
+  function treeTagFiltered(name) { return !treeFilters.tag; }
+
+  // 缩放应用
+  function applyZoom() {
+    const sc = document.getElementById('tree-scroll');
+    if (!sc) return;
+    const svg = sc.querySelector('svg');
+    if (!svg) return;
+    svg.style.transform = treeZoom !== 1 ? 'scale(' + treeZoom + ')' : '';
+    sc.classList.toggle('tree-zoomed', treeZoom !== 1);
+    const zv = document.getElementById('zoom-val');
+    if (zv) zv.textContent = Math.round(treeZoom * 100) + '%';
+  }
+
+  // 时间标签更新
+  function updateTimeLabel() {
+    const lb = document.getElementById('time-label');
+    if (!lb) return;
+    const d = new Date(treeTime * 1000).toISOString().slice(0, 10);
+    const n = G.anchors.filter(a => a.t <= treeTime).length;
+    lb.textContent = '截至 ' + d + ' · ' + n + ' 锚点';
+  }
+
+  // 播放控制
+  function playTime() {
+    if (treePlaying) { stopTime(); return; }
+    const sl = document.getElementById('time-slider');
+    if (!sl) return;
+    treePlaying = true;
+    const btn = document.getElementById('time-play');
+    if (btn) btn.innerHTML = '<svg viewBox="0 0 12 12" width="10" height="10"><path d="M2 1 h3 v10 h-3 z M7 1 h3 v10 h-3 z" fill="currentColor"/></svg>';
+    treePlayTimer = setInterval(() => {
+      const v = parseInt(sl.value, 10) + 3;
+      if (v >= 1000) { sl.value = 1000; stopTime(); }
+      else sl.value = v;
+      treeTime = G.t0 + (G.t1 - G.t0) * (parseInt(sl.value, 10) / 1000);
+      updateTimeLabel();
+      render();
+    }, 80);
+  }
+  function stopTime() {
+    treePlaying = false;
+    if (treePlayTimer) { clearInterval(treePlayTimer); treePlayTimer = null; }
+    const btn = document.getElementById('time-play');
+    if (btn) btn.innerHTML = '<svg viewBox="0 0 12 12" width="10" height="10"><path d="M2 1 L10 6 L2 11 Z" fill="currentColor"/></svg>';
+  }
+
+  // 控件绑定
+  (function bindTreeControls() {
+    // 过滤开关
+    document.querySelectorAll('#tree-filters input').forEach(cb => {
+      cb.addEventListener('change', () => {
+        treeFilters[cb.id.replace('f-', '')] = cb.checked;
+        render();
+      });
+    });
+    // 缩放
+    const zo = document.getElementById('zoom-out'), zi = document.getElementById('zoom-in'), zr = document.getElementById('zoom-reset');
+    if (zo) zo.addEventListener('click', () => { treeZoom = Math.max(0.5, +(treeZoom - 0.25).toFixed(2)); applyZoom(); });
+    if (zi) zi.addEventListener('click', () => { treeZoom = Math.min(3, +(treeZoom + 0.25).toFixed(2)); applyZoom(); });
+    if (zr) zr.addEventListener('click', () => { treeZoom = 1; applyZoom(); });
+    // 时间游标
+    const sl = document.getElementById('time-slider');
+    if (sl) sl.addEventListener('input', () => {
+      treeTime = G.t0 + (G.t1 - G.t0) * (parseInt(sl.value, 10) / 1000);
+      updateTimeLabel();
+      render();
+    });
+    const pb = document.getElementById('time-play');
+    if (pb) pb.addEventListener('click', playTime);
+  })();
+
+
   function render() {
     svg.innerHTML = '';
+    updateTimeLabel();
     for (const k in avatarDefs) delete avatarDefs[k];
     const sc = document.getElementById('tree-scroll');
     if (sc) sc.classList.toggle('scrollable', currentMode === 'horizontal');
