@@ -14,7 +14,7 @@
   <!-- W: the gateway shape -->
   <path d="M22 40 L42 92 L60 40 L78 92 L96 40" fill="none" stroke="url(#gold)" stroke-width="11" stroke-linecap="round" stroke-linejoin="round"/>
   <!-- three protocol dots: OpenAI / Anthropic / Gemini -->
-  <circle cx="108" cy="20" r="5" fill="#10a37f"/>
-  <circle cx="124" cy="20" r="5" fill="#d97757"/>
-  <circle cx="110" cy="36" r="5" fill="#4285f4"/>
+  <circle cx="96" cy="20" r="5" fill="#10a37f"/>
+  <circle cx="112" cy="20" r="5" fill="#d97757"/>
+  <circle cx="112" cy="36" r="5" fill="#4285f4"/>
 </svg>
