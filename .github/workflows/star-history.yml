@@ -24,7 +24,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add assets/star-history.svg
+          git add docs/assets/star-history.svg
           if ! git diff --cached --quiet; then
             git commit -m "chore(assets): 更新 star 历史图"
             git push

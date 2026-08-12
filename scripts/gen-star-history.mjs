@@ -9,7 +9,7 @@ import path from 'node:path';
 import { execSync } from 'node:child_process';
 
 const REPO = 'dwgx/WindsurfAPI';
-const OUT = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'assets', 'star-history.svg');
+const OUT = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'docs', 'assets', 'star-history.svg');
 
 async function fetchStars() {
   let token = process.env.GITHUB_TOKEN || '';
