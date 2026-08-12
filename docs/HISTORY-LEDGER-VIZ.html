@@ -358,6 +358,33 @@ body.clean-mode .esc-hint { color: var(--accent); border-color: rgba(217,119,87,
 .cc-chip { font-size: 10px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-muted); }
 
 /* ============ Git 树 ============ */
+.tree-list-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
+.tree-list-head select, .tree-list-head input {
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px;
+  color: var(--text-muted); font-size: 11px; padding: 4px 8px; outline: none; font-family: var(--mono);
+}
+.tree-list-head select:focus, .tree-list-head input:focus { border-color: var(--accent); }
+.tree-list-head input { flex: 1; min-width: 140px; }
+#list-count { font-family: var(--mono); font-size: 10px; color: var(--text-dim); white-space: nowrap; }
+.tree-list { max-height: 260px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); }
+.tree-list::-webkit-scrollbar { width: 6px; }
+.tree-list::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 3px; }
+.tl-row {
+  display: grid; grid-template-columns: 60px 1fr auto; gap: 8px; align-items: center;
+  padding: 5px 10px; font-size: 11px; cursor: pointer; border-bottom: 1px solid rgba(255,255,255,.04);
+  transition: background .12s;
+}
+.tl-row:last-child { border-bottom: none; }
+.tl-row:hover { background: rgba(217,119,87,.08); }
+.tl-row .h { font-family: var(--mono); color: var(--text-dim); }
+.tl-row .s { color: var(--ink-soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tl-row .a { font-family: var(--mono); font-size: 10px; color: var(--text-dim); }
+.tl-row .k { font-size: 9px; padding: 1px 5px; border-radius: 4px; border: 1px solid var(--border); color: var(--text-dim); }
+.tl-row .k.merge { color: var(--accent); border-color: rgba(217,119,87,.4); }
+.tl-row .k.pr { color: var(--warn); border-color: rgba(217,162,87,.4); }
+.tree-node.hl { filter: drop-shadow(0 0 8px rgba(245,197,24,.8)); }
+
+/* ============ Git 树 ============ */
 .tree-controls { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
 .tree-filters { display: flex; gap: 12px; font-size: 11px; color: var(--text-muted); }
 .tree-filters label { display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; }
@@ -549,6 +576,21 @@ body.clean-mode .esc-hint { color: var(--accent); border-color: rgba(217,119,87,
       <input type="range" id="time-slider" min="0" max="1000" value="1000" aria-label="时间游标">
       <span id="time-label"></span>
     </div>
+    <div class="tree-list-head">
+      <select id="list-type" aria-label="类型筛选">
+        <option value="">全部</option>
+        <option value="merge">merge</option>
+        <option value="pr">PR</option>
+        <option value="tag">tag</option>
+        <option value="fix">修复</option>
+        <option value="feat">功能</option>
+        <option value="docs">文档</option>
+        <option value="test">测试</option>
+      </select>
+      <input type="text" id="list-q" placeholder="搜索提交…" aria-label="搜索">
+      <span id="list-count"></span>
+    </div>
+    <div class="tree-list" id="tree-list"></div>
     <div class="tree-legend" id="tree-legend"></div>
     <div class="tree-scroll" id="tree-scroll"><svg id="tree" viewBox="0 0 1000 4200"></svg></div>
   </section>
@@ -1360,6 +1402,7 @@ document.addEventListener('keydown', e => {
   function drawNode(a, x, y, cfg) {
     const g = document.createElementNS(NS, 'g');
     g.setAttribute('class', 'tree-node');
+    g.setAttribute('data-h', a.h);
     const login = loginOf(a);
     const wantAvatar = (a.k === 'merge' || a.k === 'pr' || a.k === 'head' || a.k === 'tip') && login;
     if (wantAvatar) {
@@ -1451,6 +1494,7 @@ document.addEventListener('keydown', e => {
         const login = loginOf(a);
         const g = document.createElementNS(NS, 'g');
         g.setAttribute('class', 'tree-node');
+        g.setAttribute('data-h', a.h);
         if (login) {
           g.appendChild(avatarEl(login, x, y, 8));
           const ring = document.createElementNS(NS, 'circle');
@@ -1596,6 +1640,7 @@ document.addEventListener('keydown', e => {
       if (big) {
         const g = document.createElementNS(NS, 'g');
         g.setAttribute('class', 'tree-node');
+        g.setAttribute('data-h', a.h);
         g.appendChild(avatarEl(login, x, y, 8));
         const ring = document.createElementNS(NS, 'circle');
         ring.setAttribute('cx', x); ring.setAttribute('cy', y); ring.setAttribute('r', 11);
@@ -1608,6 +1653,7 @@ document.addEventListener('keydown', e => {
       } else {
         const g = document.createElementNS(NS, 'g');
         g.setAttribute('class', 'tree-node');
+        g.setAttribute('data-h', a.h);
         const node = document.createElementNS(NS, 'circle');
         node.setAttribute('cx', x); node.setAttribute('cy', y); node.setAttribute('r', a.k === 'root' ? 5 : 3);
         node.setAttribute('fill', a.k === 'root' ? '#ededed' : 'none');
@@ -1733,6 +1779,7 @@ document.addEventListener('keydown', e => {
       const x = px(a.t, r), y = py(a.t, r);
       const g = document.createElementNS(NS, 'g');
       g.setAttribute('class', 'tree-node');
+      g.setAttribute('data-h', a.h);
       const login = loginOf(a);
       const wantAvatar = (a.k === 'merge' || a.k === 'pr' || a.k === 'head') && login;
       if (wantAvatar) {
@@ -1877,6 +1924,55 @@ document.addEventListener('keydown', e => {
     if (btn) btn.innerHTML = '<svg viewBox="0 0 12 12" width="10" height="10"><path d="M2 1 L10 6 L2 11 Z" fill="currentColor"/></svg>';
   }
 
+  // ===== 提交列表（筛选 + 树联动） =====
+  const listState = { type: '', q: '' };
+  function listRowClass(k) {
+    return k === 'merge' ? 'k merge' : k === 'pr' ? 'k pr' : 'k';
+  }
+  function renderTreeList() {
+    const host = document.getElementById('tree-list');
+    if (!host) return;
+    const q = listState.q.trim().toLowerCase();
+    const rows = G.anchors
+      .filter(a => a.t <= treeTime)                     // 时间联动
+      .filter(a => {
+        if (listState.type === 'merge' && a.k !== 'merge') return false;
+        if (listState.type === 'pr' && a.k !== 'pr') return false;
+        if (listState.type === 'tag' && a.k !== 'tag') return false;
+        if (['fix','feat','docs','test'].includes(listState.type) && !(a.s || '').startsWith(listState.type + ':')) return false;
+        return true;
+      })
+      .filter(a => !q || (a.s || '').toLowerCase().includes(q) || a.h.includes(q) || (a.a || '').toLowerCase().includes(q))
+      .sort((x, y) => y.t - x.t)
+      .slice(0, 60);
+    const cnt = document.getElementById('list-count');
+    if (cnt) cnt.textContent = rows.length + ' 条';
+    host.innerHTML = rows.map(r => {
+      const login = loginOf(r);
+      const date = new Date(r.t * 1000).toISOString().slice(0, 10);
+      return `<div class="tl-row" data-h="${r.h}">
+        <span class="h">${r.h} · ${date.slice(5)}</span>
+        <span class="s">${(r.s || '').slice(0, 70)}</span>
+        <span style="display:flex;gap:6px;align-items:center"><span class="${listRowClass(r.k)}">${r.k}</span><span class="a">${login || r.a}</span></span>
+      </div>`;
+    }).join('');
+    // hover 联动：列表行 → 树节点高亮
+    host.querySelectorAll('.tl-row').forEach(row => {
+      row.addEventListener('mouseenter', () => {
+        document.querySelectorAll('.tree-node.hl').forEach(n => n.classList.remove('hl'));
+        const node = document.querySelector('.tree-node[data-h="' + row.dataset.h + '"]');
+        if (node) node.classList.add('hl');
+      });
+      row.addEventListener('mouseleave', () => document.querySelectorAll('.tree-node.hl').forEach(n => n.classList.remove('hl')));
+    });
+  }
+  (function bindListControls() {
+    const sel = document.getElementById('list-type');
+    if (sel) sel.addEventListener('change', () => { listState.type = sel.value; renderTreeList(); });
+    const inp = document.getElementById('list-q');
+    if (inp) inp.addEventListener('input', () => { listState.q = inp.value; renderTreeList(); });
+  })();
+
   // 控件绑定
   (function bindTreeControls() {
     // 过滤开关
@@ -1906,6 +2002,7 @@ document.addEventListener('keydown', e => {
   function render() {
     svg.innerHTML = '';
     updateTimeLabel();
+    renderTreeList();
     for (const k in avatarDefs) delete avatarDefs[k];
     const sc = document.getElementById('tree-scroll');
     if (sc) sc.classList.toggle('scrollable', currentMode === 'horizontal');
