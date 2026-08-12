@@ -252,14 +252,33 @@ body.clean-mode .esc-hint { color: var(--accent); border-color: rgba(217,119,87,
   .bg-quotes { display: none; }
 }
 
-/* ============ 语言选择器 ============ */
-.lang-select {
+/* ============ 语言选择器（自定义菜单） ============ */
+.lang-wrap { position: relative; margin-left: 4px; }
+.lang-btn {
+  display: flex; align-items: center; gap: 6px;
   background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px;
-  color: var(--text-muted); font-size: 11px; font-weight: 600; padding: 4px 10px;
-  cursor: pointer; font-family: var(--mono); margin-left: 4px; outline: none;
+  color: var(--text-muted); font-size: 11px; font-weight: 600; padding: 5px 12px;
+  cursor: pointer; font-family: var(--mono); outline: none; transition: all .15s;
 }
-.lang-select:hover { color: var(--ink); border-color: var(--border-strong); }
-.lang-select:focus { border-color: var(--accent); }
+.lang-btn:hover { color: var(--ink); border-color: var(--border-strong); }
+.lang-btn svg { transition: transform .2s var(--ease-spring); }
+.lang-wrap.open .lang-btn svg { transform: rotate(180deg); }
+.lang-wrap.open .lang-btn { border-color: var(--accent); color: var(--ink); }
+.lang-menu {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 80;
+  background: rgba(28,28,30,.97); border: 1px solid var(--border-strong); border-radius: 10px;
+  padding: 4px; min-width: 120px; box-shadow: var(--shadow-lg); backdrop-filter: blur(8px);
+  display: none; transform-origin: top right;
+}
+.lang-wrap.open .lang-menu { display: block; animation: lang-in .18s var(--ease-spring); }
+@keyframes lang-in { from { opacity: 0; transform: scale(.92) translateY(-4px); } }
+.lang-menu button {
+  display: block; width: 100%; text-align: left; background: none; border: none;
+  color: var(--text-muted); font-size: 12px; padding: 7px 12px; border-radius: 7px;
+  cursor: pointer; font-family: var(--font); transition: all .12s;
+}
+.lang-menu button:hover { background: rgba(255,255,255,.06); color: var(--ink); }
+.lang-menu button.is-active { color: var(--accent); font-weight: 700; }
 
 /* ============ 顶部引导 tab ============ */
 .ledger-nav {
@@ -388,7 +407,19 @@ body.clean-mode .esc-hint { color: var(--accent); border-color: rgba(217,119,87,
 .tree-controls { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
 .tree-filters { display: flex; gap: 12px; font-size: 11px; color: var(--text-muted); }
 .tree-filters label { display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; }
-.tree-filters input { accent-color: var(--accent); cursor: pointer; }
+.tree-filters input[type="checkbox"] {
+  -webkit-appearance: none; appearance: none; width: 14px; height: 14px;
+  border: 1.5px solid var(--border-strong); border-radius: 4px; cursor: pointer;
+  position: relative; transition: all .15s var(--ease-spring); background: var(--surface-2);
+}
+.tree-filters input[type="checkbox"]:hover { border-color: var(--accent); }
+.tree-filters input[type="checkbox"]:checked { background: var(--accent); border-color: var(--accent); }
+.tree-filters input[type="checkbox"]:checked::after {
+  content: ''; position: absolute; left: 3.5px; top: 0.5px; width: 4px; height: 8px;
+  border: solid #0a0a0a; border-width: 0 2px 2px 0; transform: rotate(45deg);
+  animation: cb-pop .18s var(--ease-spring);
+}
+@keyframes cb-pop { from { transform: rotate(45deg) scale(0); } }
 .tree-zoom { display: flex; align-items: center; gap: 4px; }
 .tree-zoom button, #time-play {
   background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px;
@@ -399,7 +430,21 @@ body.clean-mode .esc-hint { color: var(--accent); border-color: rgba(217,119,87,
 .tree-zoom button.is-active { background: var(--accent); color: #0a0a0a; }
 #zoom-val { font-family: var(--mono); font-size: 11px; color: var(--text-muted); min-width: 40px; text-align: center; }
 .tree-time { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-#time-slider { flex: 1; accent-color: var(--accent); cursor: pointer; }
+#time-slider {
+  -webkit-appearance: none; appearance: none; flex: 1; height: 4px; border-radius: 2px;
+  background: linear-gradient(to right, var(--accent) var(--fill, 100%), var(--border) var(--fill, 100%));
+  cursor: pointer; outline: none;
+}
+#time-slider::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none; width: 15px; height: 15px; border-radius: 50%;
+  background: var(--accent); border: 2px solid var(--paper); box-shadow: 0 0 10px var(--accent-soft);
+  transition: transform .15s var(--ease-spring);
+}
+#time-slider::-webkit-slider-thumb:hover { transform: scale(1.2); }
+#time-slider::-moz-range-thumb {
+  width: 15px; height: 15px; border-radius: 50%;
+  background: var(--accent); border: 2px solid var(--paper); box-shadow: 0 0 10px var(--accent-soft);
+}
 #time-label { font-family: var(--mono); font-size: 11px; color: var(--text-muted); white-space: nowrap; }
 .tree-scroll.tree-zoomed svg { transform-origin: left top; }
 
@@ -416,6 +461,9 @@ body.clean-mode .esc-hint { color: var(--accent); border-color: rgba(217,119,87,
 .tree-tools button.is-active { background: var(--accent); color: #0a0a0a; border-color: var(--accent); }
 .tree-legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 11px; color: var(--text-muted); margin-bottom: 10px; }
 .tree-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.tree-scroll.tree-cam { max-height: 62vh; overflow-y: auto; scroll-behavior: smooth; }
+.tree-node { animation: tn-in .3s ease-out; }
+@keyframes tn-in { from { opacity: 0; transform: scale(.6); } }
 .tree-scroll.scrollable svg { width: 3200px; max-width: none; }
 .tree-scroll:not(.scrollable) svg { width: 100%; }
 .tree-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; vertical-align: -1px; }
@@ -442,16 +490,22 @@ body.clean-mode .esc-hint { color: var(--accent); border-color: rgba(217,119,87,
     <a class="ledger-tab" href="#contributors" data-i18n="nav_contributors">贡献者</a>
     <a class="ledger-tab" href="#gittree" data-i18n="nav_gittree">Git 树</a>
     <a class="ledger-tab" href="#tl" data-i18n="nav_selfharm">自伤</a>
-      <select class="lang-select" id="langSelect" aria-label="Language">
-        <option value="zh">中</option>
-        <option value="en">EN</option>
-        <option value="zh-TW">繁</option>
-        <option value="ja">日</option>
-        <option value="ko">한</option>
-        <option value="fr">FR</option>
-        <option value="de">DE</option>
-        <option value="es">ES</option>
-      </select>
+      <div class="lang-wrap" id="langWrap">
+        <button type="button" class="lang-btn" id="langBtn" aria-haspopup="listbox" aria-expanded="false">
+          <span id="langCur">简体中文</span>
+          <svg viewBox="0 0 10 6" width="10" height="6" aria-hidden="true"><path d="M1 1 L5 5 L9 1" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        </button>
+        <div class="lang-menu" id="langMenu" role="listbox">
+          <button type="button" data-lang="zh">简体中文</button>
+          <button type="button" data-lang="en">English</button>
+          <button type="button" data-lang="zh-TW">繁體中文</button>
+          <button type="button" data-lang="ja">日本語</button>
+          <button type="button" data-lang="ko">한국어</button>
+          <button type="button" data-lang="fr">Français</button>
+          <button type="button" data-lang="de">Deutsch</button>
+          <button type="button" data-lang="es">Español</button>
+        </div>
+      </div>
   </div>
 </nav>
 
@@ -518,12 +572,6 @@ body.clean-mode .esc-hint { color: var(--accent); border-color: rgba(217,119,87,
     <h2 data-i18n="tags_title">版本节奏</h2>
     <div class="sub" data-i18n="tags_sub">183 个 tag：4-5 月 52/52 个（每日一版），8 月 14 个（6 天 14 版）</div>
     <svg id="tags" viewBox="0 0 1000 240"></svg>
-  </section>
-
-  <section class="section card" data-reveal id="stars">
-    <h2>Star History</h2>
-    <div class="sub">2,931 星 · 四个月从 0 到近三千 —— 每天都有新面孔点下那颗星</div>
-    <img src="assets/star-history.svg" alt="Star History" style="width:100%;border-radius:8px" />
   </section>
 
   <section class="section card" data-reveal>
@@ -602,6 +650,12 @@ body.clean-mode .esc-hint { color: var(--accent); border-color: rgba(217,119,87,
   </section>
 
   <div class="esc-hint" data-i18n="esc_hint">ESC 切换纯净字幕视图</div>
+  <section class="section card" data-reveal id="stars">
+    <h2>Star History</h2>
+    <div class="sub">2,931 星 · 四个月从 0 到近三千 —— 每天都有新面孔点下那颗星</div>
+    <img src="assets/star-history.svg" alt="Star History" style="width:100%;border-radius:8px" />
+  </section>
+
   <footer class="foot">
     <span data-i18n="foot_1">数据源：git log 全量 1208 条 + 22 个并行采集 agent · 逐条账见 <code>docs/HISTORY-LEDGER-2026-*.md</code> · 总账</span> <a href="https://github.com/dwgx/WindsurfAPI/blob/master/docs/HISTORY-LEDGER.md">HISTORY-LEDGER.md</a><br>
     <span data-i18n="foot_2">零依赖纯原生 · 设计 DNA 取自仓库自带 Dashboard · 每个 hash 都可 <code>git show</code> 验证</span>
@@ -1131,13 +1185,36 @@ document.addEventListener('keydown', e => {
   document.body.classList.toggle('clean-mode');
 });
 
-/* ============ 语言切换器 ============ */
+/* ============ 语言切换器（自定义菜单） ============ */
 (() => {
-  const sel = document.getElementById('langSelect');
+  const LANG_NAMES = { zh: '简体中文', en: 'English', 'zh-TW': '繁體中文', ja: '日本語', ko: '한국어', fr: 'Français', de: 'Deutsch', es: 'Español' };
   initLang();
-  if (sel) sel.value = LANG;
   applyLang();   // 初始语言应用（浏览器检测）
-  if (sel) sel.addEventListener('change', () => setLang(sel.value));
+  const wrap = document.getElementById('langWrap');
+  const btn = document.getElementById('langBtn');
+  const menu = document.getElementById('langMenu');
+  if (!wrap || !menu) return;
+  const cur = document.getElementById('langCur');
+  function renderMenu() {
+    if (cur) cur.textContent = LANG_NAMES[LANG] || LANG;
+    menu.querySelectorAll('button').forEach(b => b.classList.toggle('is-active', b.dataset.lang === LANG));
+  }
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    wrap.classList.toggle('open');
+    btn.setAttribute('aria-expanded', wrap.classList.contains('open'));
+    renderMenu();
+  });
+  menu.addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-lang]');
+    if (!b) return;
+    setLang(b.dataset.lang);
+    wrap.classList.remove('open');
+    btn.setAttribute('aria-expanded', 'false');
+    renderMenu();
+  });
+  document.addEventListener('click', () => { wrap.classList.remove('open'); btn.setAttribute('aria-expanded', 'false'); });
+  renderMenu();
 })();
 
 /* ============ 引导 tab：scrollspy ============ */
@@ -1923,6 +2000,22 @@ document.addEventListener('keydown', e => {
     lb.textContent = '截至 ' + d + ' · ' + n + ' 锚点';
   }
 
+  // camera：播放时镜头沿时间轴延伸（竖向下滚 / 横向右滚）
+  function cameraFollow() {
+    const sc = document.getElementById('tree-scroll');
+    if (!sc) return;
+    const svg = sc.querySelector('svg');
+    if (!svg) return;
+    const tRatio = (treeTime - G.t0) / (G.t1 - G.t0);
+    if (currentMode === 'vertical') {
+      sc.classList.add('tree-cam');
+      const h = parseFloat(svg.getAttribute('viewBox').split(' ')[3] || 4000);
+      sc.scrollTop = Math.max(0, tRatio * h - sc.clientHeight / 2);
+    } else if (currentMode === 'horizontal') {
+      const w = parseFloat(svg.getAttribute('viewBox').split(' ')[2] || 3200);
+      sc.scrollLeft = Math.max(0, tRatio * w - sc.clientWidth / 2);
+    }
+  }
   // 播放控制
   function playTime() {
     if (treePlaying) { stopTime(); return; }
@@ -1938,11 +2031,14 @@ document.addEventListener('keydown', e => {
       treeTime = G.t0 + (G.t1 - G.t0) * (parseInt(sl.value, 10) / 1000);
       updateTimeLabel();
       render();
+      cameraFollow();
     }, 80);
   }
   function stopTime() {
     treePlaying = false;
     if (treePlayTimer) { clearInterval(treePlayTimer); treePlayTimer = null; }
+    const sc = document.getElementById('tree-scroll');
+    if (sc) sc.classList.remove('tree-cam');
     const btn = document.getElementById('time-play');
     if (btn) btn.innerHTML = '<svg viewBox="0 0 12 12" width="10" height="10"><path d="M2 1 L10 6 L2 11 Z" fill="currentColor"/></svg>';
   }
@@ -2016,11 +2112,19 @@ document.addEventListener('keydown', e => {
     if (zr) zr.addEventListener('click', () => { treeZoom = 1; applyZoom(); });
     // 时间游标
     const sl = document.getElementById('time-slider');
+    function sliderFill() {
+      if (!sl) return;
+      const v = parseInt(sl.value, 10) || 0;
+      sl.style.setProperty('--fill', v + '%');
+    }
     if (sl) sl.addEventListener('input', () => {
       treeTime = G.t0 + (G.t1 - G.t0) * (parseInt(sl.value, 10) / 1000);
       updateTimeLabel();
       render();
+      sliderFill();
+      cameraFollow();
     });
+    sliderFill();
     const pb = document.getElementById('time-play');
     if (pb) pb.addEventListener('click', playTime);
   })();
