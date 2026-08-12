@@ -415,6 +415,22 @@ body.clean-mode .esc-hint { color: var(--accent); border-color: rgba(217,119,87,
 .tree-node.hl { filter: drop-shadow(0 0 8px rgba(245,197,24,.8)); }
 
 /* ============ Git 树 ============ */
+.tree-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.tree-head h2 { margin-bottom: 0; }
+.tree-tools {
+  display: flex; gap: 2px; align-items: center;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px;
+  padding: 3px;
+}
+.tree-tools button {
+  background: none; border: none; border-radius: 999px;
+  color: var(--text-muted); font-size: 11px; padding: 3px 10px; cursor: pointer;
+  font-family: var(--mono); transition: all .15s;
+}
+.tree-tools button:hover { color: var(--ink); background: rgba(255,255,255,.06); }
+.tree-tools button.is-active { background: var(--accent); color: #0a0a0a; }
+.tools-sep { width: 1px; height: 14px; background: var(--border); margin: 0 4px; }
+
 .tree-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 .tree-node { animation: tn-in .3s ease-out; }
 @keyframes tn-in { from { opacity: 0; transform: scale(.6); } }
