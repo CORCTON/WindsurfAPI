@@ -1,0 +1,33 @@
+name: Star History
+
+on:
+  schedule:
+    - cron: '0 2 * * *'        # 每天 UTC 02:00 更新一次
+  workflow_dispatch: {}        # 手动触发
+
+permissions:
+  contents: write
+
+jobs:
+  gen:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: 生成 star 历史图
+        run: node scripts/gen-star-history.mjs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: 提交变更
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add assets/star-history.svg
+          if ! git diff --cached --quiet; then
+            git commit -m "chore(assets): 更新 star 历史图"
+            git push
+          else
+            echo "无变化，跳过提交"
+          fi

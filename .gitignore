@@ -16,6 +16,7 @@ deploy-us.py
 # a handoff before anyone noticed git had never seen it; it surfaced only because
 # `git status` still reported the same file count as before.
 scripts/*
+!scripts/gen-star-history.mjs
 !scripts/native-bridge-smoke.mjs
 !scripts/special-agent-smoke.mjs
 !scripts/lsp-capacity-matrix.mjs

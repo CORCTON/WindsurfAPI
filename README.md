@@ -9,7 +9,7 @@
 > **历史账本** · 把 1205 次提交、183 个版本、69 个 PR、177 个 issue 摊开给你看：时间线主账 + 贡献者分析 + Git 树三形态（竖/横/环）+ 自伤与返工全记录 —— [**打开可视化账本**](https://dwgx.github.io/WindsurfAPI/HISTORY-LEDGER-VIZ.html)（纯原生渲染，零依赖）
 
 <p align="center">
-  <img src="https://api.star-history.com/svg?repos=dwgx/WindsurfAPI&type=Date" alt="Star History" width="700" />
+  <img src="assets/star-history.svg" alt="Star History" width="700" />
 </p>
 
 <p align="center">
