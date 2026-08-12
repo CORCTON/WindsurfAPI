@@ -8,9 +8,6 @@
 
 > **History Ledger** · Every commit laid out: 1205 commits, 183 releases, 69 PRs, 177 issues — timeline, contributor analysis, Git tree (vertical / horizontal / ring), and a full account of every mistake along the way. [**Open the interactive ledger**](https://dwgx.github.io/WindsurfAPI/HISTORY-LEDGER-VIZ.html) (zero-dependency, pure vanilla).
 
-<p align="center">
-  <img src="docs/assets/star-history.svg" alt="Star History" width="700" />
-</p>
 
 <p align="center">
   <a href="https://github.com/dwgx/WindsurfAPI/stargazers"><img src="https://img.shields.io/github/stars/dwgx/WindsurfAPI?style=for-the-badge&logo=github&color=f5c518" alt="Stars"></a>&nbsp;
@@ -620,3 +617,14 @@ Release automation may publish Docker images and GitHub Releases. Keep tokens, A
 ## Star History
 
 https://www.star-history.com/?type=date&repos=dwgx/WindsurfAPI
+---
+
+<p align="center">
+  <a href="https://www.star-history.com/?type=date&repos=dwgx/WindsurfAPI">
+    <img src="docs/assets/star-history.svg" alt="Star History" width="700" />
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://www.star-history.com/?type=date&repos=dwgx/WindsurfAPI">Star History · 点击查看完整星图</a>
+</p>

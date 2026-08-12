@@ -8,9 +8,6 @@
 
 > **历史账本** · 把 1205 次提交、183 个版本、69 个 PR、177 个 issue 摊开给你看：时间线主账 + 贡献者分析 + Git 树三形态（竖/横/环）+ 自伤与返工全记录 —— [**打开可视化账本**](https://dwgx.github.io/WindsurfAPI/HISTORY-LEDGER-VIZ.html)（纯原生渲染，零依赖）
 
-<p align="center">
-  <img src="docs/assets/star-history.svg" alt="Star History" width="700" />
-</p>
 
 <p align="center">
   <a href="https://github.com/dwgx/WindsurfAPI/stargazers"><img src="https://img.shields.io/github/stars/dwgx/WindsurfAPI?style=for-the-badge&logo=github&color=f5c518" alt="Stars"></a>&nbsp;
@@ -710,3 +707,14 @@ MIT License. See [LICENSE](LICENSE).
 ## Star History
 
 https://www.star-history.com/?type=date&repos=dwgx/WindsurfAPI
+---
+
+<p align="center">
+  <a href="https://www.star-history.com/?type=date&repos=dwgx/WindsurfAPI">
+    <img src="docs/assets/star-history.svg" alt="Star History" width="700" />
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://www.star-history.com/?type=date&repos=dwgx/WindsurfAPI">Star History · 点击查看完整星图</a>
+</p>

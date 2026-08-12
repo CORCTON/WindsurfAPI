@@ -12,7 +12,7 @@
   <rect width="128" height="128" rx="26" fill="url(#bg)"/>
   <rect x="1.5" y="1.5" width="125" height="125" rx="24.5" fill="none" stroke="#30363d" stroke-width="3"/>
   <!-- W: the gateway shape -->
-  <path d="M26 92 L45 34 L64 78 L83 34 L102 92" fill="none" stroke="url(#gold)" stroke-width="11" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M26 40 L45 92 L64 40 L83 92 L102 40" fill="none" stroke="url(#gold)" stroke-width="11" stroke-linecap="round" stroke-linejoin="round"/>
   <!-- three protocol dots: OpenAI / Anthropic / Gemini -->
   <circle cx="90" cy="22" r="6" fill="#10a37f"/>
   <circle cx="102" cy="33" r="6" fill="#d97757"/>
