@@ -265,7 +265,7 @@ body.clean-mode .esc-hint { color: var(--accent); border-color: rgba(217,119,87,
 .lang-wrap.open .lang-btn svg { transform: rotate(180deg); }
 .lang-wrap.open .lang-btn { border-color: var(--accent); color: var(--ink); }
 .lang-menu {
-  position: absolute; right: 0; top: calc(100% + 5px); z-index: 80;
+  position: fixed; z-index: 95;
   background: rgba(28,28,30,.97); border: 1px solid var(--border-strong); border-radius: 8px;
   padding: 3px; min-width: 92px; box-shadow: var(--shadow-lg); backdrop-filter: blur(8px);
   display: none; transform-origin: top right;
@@ -415,62 +415,6 @@ body.clean-mode .esc-hint { color: var(--accent); border-color: rgba(217,119,87,
 .tree-node.hl { filter: drop-shadow(0 0 8px rgba(245,197,24,.8)); }
 
 /* ============ Git 树 ============ */
-.tree-controls { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
-.tree-filters { display: flex; gap: 12px; font-size: 11px; color: var(--text-muted); }
-.tree-filters label { display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; }
-.tree-filters input[type="checkbox"] {
-  -webkit-appearance: none; -moz-appearance: none; appearance: none; width: 14px; height: 14px;
-  border: 1.5px solid var(--border-strong); border-radius: 4px; cursor: pointer;
-  position: relative; transition: all .15s var(--ease-spring); background: var(--surface-2);
-}
-.tree-filters input[type="checkbox"]:hover { border-color: var(--accent); }
-.tree-filters input[type="checkbox"]:checked { background: var(--accent); border-color: var(--accent); }
-.tree-filters input[type="checkbox"]:checked::after {
-  content: ''; position: absolute; left: 3.5px; top: 0.5px; width: 4px; height: 8px;
-  border: solid #0a0a0a; border-width: 0 2px 2px 0; transform: rotate(45deg);
-  animation: cb-pop .18s var(--ease-spring);
-}
-@keyframes cb-pop { from { transform: rotate(45deg) scale(0); } }
-.tree-zoom { display: flex; align-items: center; gap: 4px; }
-.tree-zoom button, #time-play {
-  background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px;
-  color: var(--text-muted); font-size: 12px; min-width: 26px; height: 24px;
-  cursor: pointer; display: flex; align-items: center; justify-content: center; transition: all .15s;
-}
-.tree-zoom button:hover, #time-play:hover { color: var(--ink); border-color: var(--border-strong); }
-.tree-zoom button.is-active { background: var(--accent); color: #0a0a0a; }
-#zoom-val { font-family: var(--mono); font-size: 11px; color: var(--text-muted); min-width: 40px; text-align: center; }
-.tree-time { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-#time-slider {
-  -webkit-appearance: none; appearance: none; flex: 1; height: 4px; border-radius: 2px;
-  background: linear-gradient(to right, var(--accent) var(--fill, 100%), var(--border) var(--fill, 100%));
-  cursor: pointer; outline: none;
-}
-#time-slider::-webkit-slider-thumb {
-  -webkit-appearance: none; appearance: none; width: 15px; height: 15px; border-radius: 50%;
-  background: var(--accent); border: 2px solid var(--paper); box-shadow: 0 0 10px var(--accent-soft);
-  transition: transform .15s var(--ease-spring);
-}
-#time-slider::-webkit-slider-thumb:hover { transform: scale(1.2); }
-#time-slider::-moz-range-thumb {
-  width: 15px; height: 15px; border-radius: 50%;
-  background: var(--accent); border: 2px solid var(--paper); box-shadow: 0 0 10px var(--accent-soft);
-}
-#time-label { font-family: var(--mono); font-size: 11px; color: var(--text-muted); white-space: nowrap; }
-.tree-scroll.tree-zoomed svg { transform-origin: left top; }
-
-/* ============ Git 树 ============ */
-.tree-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
-.tree-head h2 { margin-bottom: 0; }
-.tree-tools { display: flex; gap: 4px; }
-.tree-tools button {
-  background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px;
-  color: var(--text-muted); font-size: 11px; padding: 3px 10px; cursor: pointer;
-  font-family: var(--mono); transition: all .15s;
-}
-.tree-tools button:hover { color: var(--ink); border-color: var(--border-strong); }
-.tree-tools button.is-active { background: var(--accent); color: #0a0a0a; border-color: var(--accent); }
-.tree-legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 11px; color: var(--text-muted); margin-bottom: 10px; }
 .tree-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 .tree-scroll.tree-cam { max-height: 62vh; overflow-y: auto; scroll-behavior: smooth; }
 .tree-node { animation: tn-in .3s ease-out; }
@@ -617,19 +561,6 @@ body.clean-mode .esc-hint { color: var(--accent); border-color: rgba(217,119,87,
       </div>
     </div>
     <div class="sub" data-i18n="tree_sub">1250 提交 · 59 个合并 · 主干 1063 节点 —— 悬停节点/线段看详情，点击锁定</div>
-    <div class="tree-controls">
-      <div class="tree-filters" id="tree-filters">
-        <label><input type="checkbox" id="f-node" checked> 周点</label>
-        <label><input type="checkbox" id="f-tip" checked> 分支标签</label>
-        <label><input type="checkbox" id="f-tag" checked> tag 标牌</label>
-      </div>
-      <div class="tree-zoom">
-        <button type="button" id="zoom-out" title="缩小">−</button>
-        <span id="zoom-val">100%</span>
-        <button type="button" id="zoom-in" title="放大">+</button>
-        <button type="button" id="zoom-reset" title="重置">重置</button>
-      </div>
-    </div>
     <div class="tree-time">
       <button type="button" id="time-play" title="播放"><svg viewBox="0 0 12 12" width="10" height="10"><path d="M2 1 L10 6 L2 11 Z" fill="currentColor"/></svg></button>
       <input type="range" id="time-slider" min="0" max="1000" value="1000" aria-label="时间游标">
@@ -1196,6 +1127,8 @@ document.addEventListener('keydown', e => {
   if (e.key !== 'Escape') return;
   const t = e.target;
   if (t && (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA')) return;
+  const wrap = document.getElementById('langWrap');
+  if (wrap && wrap.classList.contains('open')) { wrap.classList.remove('open'); return; }
   document.body.classList.toggle('clean-mode');
 });
 
@@ -1217,6 +1150,11 @@ document.addEventListener('keydown', e => {
     e.stopPropagation();
     wrap.classList.toggle('open');
     btn.setAttribute('aria-expanded', wrap.classList.contains('open'));
+    if (wrap.classList.contains('open')) {
+      const r = btn.getBoundingClientRect();
+      menu.style.left = Math.min(r.right - 110, innerWidth - 120) + 'px';
+      menu.style.top = (r.bottom + 5) + 'px';
+    }
     renderMenu();
   });
   menu.addEventListener('click', (e) => {
@@ -1981,41 +1919,13 @@ document.addEventListener('keydown', e => {
   let treeTime = G.t1;                    // 时间游标（截至时间戳）
   let treePlaying = false;
   let treePlayTimer = null;
-  const treeFilters = { node: true, tip: true, tag: true };
-  let treeZoom = 1;
-
-  // 过滤：锚点是否显示（时间游标 + 类型开关）
+  // 过滤：锚点是否显示（仅时间游标）
   function treeFiltered(a) {
-    if (a.t > treeTime) return true;                    // 游标之后 → 隐藏
-    if (a.k === 'node' && !treeFilters.node) return true;
-    if (a.k === 'tip' && !treeFilters.tip) return true;
-    if (a.k === 'tag' && !treeFilters.tag) return true;
-    return false;
+    return a.t > treeTime;                    // 游标之后 → 隐藏
   }
   function treeTagFiltered(name, h) {
-    if (!treeFilters.tag) return true;
     if (h && byHash[h] && byHash[h].t > treeTime) return true;   // 游标后的 tag 隐藏
     return false;
-  }
-
-  // 缩放应用（放大时同步容器宽度，滚动可达全内容）
-  function applyZoom() {
-    const sc = document.getElementById('tree-scroll');
-    if (!sc) return;
-    const svg = sc.querySelector('svg');
-    if (!svg) return;
-    svg.style.transform = treeZoom !== 1 ? 'scale(' + treeZoom + ')' : '';
-    sc.classList.toggle('tree-zoomed', treeZoom !== 1);
-    if (treeZoom !== 1) {
-      const w = svg.viewBox ? parseFloat(svg.viewBox.baseVal.width || 1000) : 1000;
-      sc.style.width = (w * treeZoom) + 'px';
-      sc.style.maxWidth = 'none';
-    } else {
-      sc.style.width = '';
-      sc.style.maxWidth = '';
-    }
-    const zv = document.getElementById('zoom-val');
-    if (zv) zv.textContent = Math.round(treeZoom * 100) + '%';
   }
 
   // 时间标签更新
@@ -2135,18 +2045,6 @@ document.addEventListener('keydown', e => {
 
   // 控件绑定
   (function bindTreeControls() {
-    // 过滤开关
-    document.querySelectorAll('#tree-filters input').forEach(cb => {
-      cb.addEventListener('change', () => {
-        treeFilters[cb.id.replace('f-', '')] = cb.checked;
-        render();
-      });
-    });
-    // 缩放
-    const zo = document.getElementById('zoom-out'), zi = document.getElementById('zoom-in'), zr = document.getElementById('zoom-reset');
-    if (zo) zo.addEventListener('click', () => { treeZoom = Math.max(0.5, +(treeZoom - 0.25).toFixed(2)); applyZoom(); });
-    if (zi) zi.addEventListener('click', () => { treeZoom = Math.min(3, +(treeZoom + 0.25).toFixed(2)); applyZoom(); });
-    if (zr) zr.addEventListener('click', () => { treeZoom = 1; applyZoom(); });
     // 时间游标
     const sl = document.getElementById('time-slider');
     function sliderFill() {
