@@ -1426,6 +1426,14 @@ document.addEventListener('keydown', e => {
       node.setAttribute('stroke', a.k === 'head' ? '#d97757' : '#ededed');
       node.setAttribute('stroke-width', 1.5);
       g.appendChild(node);
+      if (a.k === 'head') {
+        const hl = document.createElementNS(NS, 'text');
+        hl.setAttribute('x', x + 10); hl.setAttribute('y', y + 3);
+        hl.setAttribute('font-size', 9); hl.setAttribute('font-family', 'var(--mono)');
+        hl.setAttribute('fill', '#d97757'); hl.setAttribute('font-weight', '700');
+        hl.textContent = 'HEAD';
+        g.appendChild(hl);
+      }
     }
     bindNode(g, a);
     svg.appendChild(g);
@@ -1518,6 +1526,14 @@ document.addEventListener('keydown', e => {
           node.setAttribute('fill', a.k === 'head' ? '#d97757' : 'none');
           node.setAttribute('stroke', '#ededed'); node.setAttribute('stroke-width', 1.5);
           g.appendChild(node);
+          if (a.k === 'head') {
+            const hl = document.createElementNS(NS, 'text');
+            hl.setAttribute('x', x + 10); hl.setAttribute('y', y + 3);
+            hl.setAttribute('font-size', 9); hl.setAttribute('font-family', 'var(--mono)');
+            hl.setAttribute('fill', '#d97757'); hl.setAttribute('font-weight', '700');
+            hl.textContent = 'HEAD';
+            g.appendChild(hl);
+          }
         }
         bindNode(g, a);
         frag.appendChild(g);
