@@ -265,17 +265,17 @@ body.clean-mode .esc-hint { color: var(--accent); border-color: rgba(217,119,87,
 .lang-wrap.open .lang-btn svg { transform: rotate(180deg); }
 .lang-wrap.open .lang-btn { border-color: var(--accent); color: var(--ink); }
 .lang-menu {
-  position: absolute; right: 0; top: calc(100% + 6px); z-index: 80;
-  background: rgba(28,28,30,.97); border: 1px solid var(--border-strong); border-radius: 10px;
-  padding: 4px; min-width: 120px; box-shadow: var(--shadow-lg); backdrop-filter: blur(8px);
+  position: absolute; right: 0; top: calc(100% + 5px); z-index: 80;
+  background: rgba(28,28,30,.97); border: 1px solid var(--border-strong); border-radius: 8px;
+  padding: 3px; min-width: 92px; box-shadow: var(--shadow-lg); backdrop-filter: blur(8px);
   display: none; transform-origin: top right;
 }
 .lang-wrap.open .lang-menu { display: block; animation: lang-in .18s var(--ease-spring); }
 @keyframes lang-in { from { opacity: 0; transform: scale(.92) translateY(-4px); } }
 .lang-menu button {
   display: block; width: 100%; text-align: left; background: none; border: none;
-  color: var(--text-muted); font-size: 12px; padding: 7px 12px; border-radius: 7px;
-  cursor: pointer; font-family: var(--font); transition: all .12s;
+  color: var(--text-muted); font-size: 11px; padding: 4px 9px; border-radius: 5px;
+  cursor: pointer; font-family: var(--font); transition: all .12s; white-space: nowrap;
 }
 .lang-menu button:hover { background: rgba(255,255,255,.06); color: var(--ink); }
 .lang-menu button.is-active { color: var(--accent); font-weight: 700; }
@@ -378,6 +378,17 @@ body.clean-mode .esc-hint { color: var(--accent); border-color: rgba(217,119,87,
 
 /* ============ Git 树 ============ */
 .tree-list-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
+.tree-list-head .list-toggle {
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px;
+  color: var(--text-muted); width: 24px; height: 24px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; transition: all .15s;
+}
+.tree-list-head .list-toggle:hover { color: var(--ink); border-color: var(--border-strong); }
+.tree-list-head .list-toggle svg { transition: transform .2s var(--ease-spring); }
+.tree-list.collapsed { max-height: 34px; overflow: hidden; }
+.tree-list.collapsed .tl-row:not(:first-child) { display: none; }
+.tree-list-head.list-collapsed .list-toggle svg { transform: rotate(180deg); }
+
 .tree-list-head select, .tree-list-head input {
   background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px;
   color: var(--text-muted); font-size: 11px; padding: 4px 8px; outline: none; font-family: var(--mono);
@@ -408,7 +419,7 @@ body.clean-mode .esc-hint { color: var(--accent); border-color: rgba(217,119,87,
 .tree-filters { display: flex; gap: 12px; font-size: 11px; color: var(--text-muted); }
 .tree-filters label { display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; }
 .tree-filters input[type="checkbox"] {
-  -webkit-appearance: none; appearance: none; width: 14px; height: 14px;
+  -webkit-appearance: none; -moz-appearance: none; appearance: none; width: 14px; height: 14px;
   border: 1.5px solid var(--border-strong); border-radius: 4px; cursor: pointer;
   position: relative; transition: all .15s var(--ease-spring); background: var(--surface-2);
 }
@@ -625,6 +636,9 @@ body.clean-mode .esc-hint { color: var(--accent); border-color: rgba(217,119,87,
       <span id="time-label"></span>
     </div>
     <div class="tree-list-head">
+      <button type="button" class="list-toggle" id="listToggle" title="收起/展开">
+        <svg viewBox="0 0 10 6" width="10" height="6" aria-hidden="true"><path d="M1 1 L5 5 L9 1" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      </button>
       <select id="list-type" aria-label="类型筛选">
         <option value="">全部</option>
         <option value="merge">merge</option>
@@ -1485,6 +1499,7 @@ document.addEventListener('keydown', e => {
     const g = document.createElementNS(NS, 'g');
     g.setAttribute('class', 'tree-node');
     g.setAttribute('data-h', a.h);
+    g.setAttribute('data-t', String(a.t));
     const login = loginOf(a);
     const wantAvatar = (a.k === 'merge' || a.k === 'pr' || a.k === 'head' || a.k === 'tip') && login;
     if (wantAvatar) {
@@ -1513,9 +1528,13 @@ document.addEventListener('keydown', e => {
     const AA = G.anchors.filter(a => !treeFiltered(a));
     const frag = document.createDocumentFragment();
 
-    const W = 1000, baseH = collapsed ? 2200 : 4200;
-    const nAnchor = G.anchors.length;
-    const needH = nAnchor * (collapsed ? 14 : 20) + 140;   // minGap 推挤需要的高度
+    const W = 1000, baseH = collapsed ? 1800 : 4200;
+    // collapsed 只画 merge/PR/head/tag 里程碑，yOf 只对它们推挤（矮且全可见）
+    const drawnSet = collapsed
+      ? G.anchors.filter(a => a.k === 'merge' || a.k === 'pr' || a.k === 'head' || a.k === 'tag')
+      : G.anchors;
+    const nAnchor = drawnSet.length;
+    const needH = nAnchor * (collapsed ? 14 : 20) + 140;
     const H = Math.max(baseH, needH), padT = 40, padB = 60, padL = 70;
     const X = l => padL + l * 26;
     const rawY = t => padT + (t - t0) / span * (H - padT - padB);
@@ -1535,6 +1554,7 @@ document.addEventListener('keydown', e => {
       const r = document.createElementNS(NS, 'rect');
       r.setAttribute('x', 0); r.setAttribute('y', y0); r.setAttribute('width', W); r.setAttribute('height', y1 - y0);
       r.setAttribute('fill', 'rgba(198,93,78,.045)');
+      r.setAttribute('data-t', String(t0g));
       frag.appendChild(r);
       const t = document.createElementNS(NS, 'text');
       t.setAttribute('x', W - 190); t.setAttribute('y', yc + 4); t.setAttribute('text-anchor', 'middle');
@@ -1581,6 +1601,7 @@ document.addEventListener('keydown', e => {
         const g = document.createElementNS(NS, 'g');
         g.setAttribute('class', 'tree-node');
         g.setAttribute('data-h', a.h);
+        g.setAttribute('data-t', String(a.t));
         if (login) {
           g.appendChild(avatarEl(login, x, y, 8));
           const ring = document.createElementNS(NS, 'circle');
@@ -1604,6 +1625,7 @@ document.addEventListener('keydown', e => {
       if (treeTagFiltered(name, h)) return;
       const a = byHash[h]; if (!a || yOf[h] === undefined) return;
       const g = document.createElementNS(NS, 'g');
+      g.setAttribute('data-t', String(a.t));
       const tw = name.length * 7 + 14;
       const rect = document.createElementNS(NS, 'rect');
       rect.setAttribute('x', 810 - tw); rect.setAttribute('y', yOf[h] - 8); rect.setAttribute('width', tw); rect.setAttribute('height', 16);
@@ -1728,6 +1750,7 @@ document.addEventListener('keydown', e => {
         const g = document.createElementNS(NS, 'g');
         g.setAttribute('class', 'tree-node');
         g.setAttribute('data-h', a.h);
+        g.setAttribute('data-t', String(a.t));
         g.appendChild(avatarEl(login, x, y, 8));
         const ring = document.createElementNS(NS, 'circle');
         ring.setAttribute('cx', x); ring.setAttribute('cy', y); ring.setAttribute('r', 11);
@@ -1741,6 +1764,7 @@ document.addEventListener('keydown', e => {
         const g = document.createElementNS(NS, 'g');
         g.setAttribute('class', 'tree-node');
         g.setAttribute('data-h', a.h);
+        g.setAttribute('data-t', String(a.t));
         const node = document.createElementNS(NS, 'circle');
         node.setAttribute('cx', x); node.setAttribute('cy', y); node.setAttribute('r', a.k === 'root' ? 5 : 3);
         node.setAttribute('fill', a.k === 'root' ? '#ededed' : 'none');
@@ -1754,6 +1778,7 @@ document.addEventListener('keydown', e => {
       if (treeTagFiltered(name, h)) return;
       const a = byHash[h]; if (!a) return;
       const g = document.createElementNS(NS, 'g');
+      g.setAttribute('data-t', String(a.t));
       const tw = name.length * 7 + 14;
       const rect = document.createElementNS(NS, 'rect');
       rect.setAttribute('x', X(a.t) - tw / 2); rect.setAttribute('y', Y(0) - 30); rect.setAttribute('width', tw); rect.setAttribute('height', 17);
@@ -1867,6 +1892,7 @@ document.addEventListener('keydown', e => {
       const g = document.createElementNS(NS, 'g');
       g.setAttribute('class', 'tree-node');
       g.setAttribute('data-h', a.h);
+      g.setAttribute('data-t', String(a.t));
       const login = loginOf(a);
       const wantAvatar = (a.k === 'merge' || a.k === 'pr' || a.k === 'head') && login;
       if (wantAvatar) {
@@ -1891,6 +1917,7 @@ document.addEventListener('keydown', e => {
       const a = byHash[h]; if (!a) return;
       const x = px(a.t, R_OUT + 62), y = py(a.t, R_OUT + 62);
       const g = document.createElementNS(NS, 'g');
+      g.setAttribute('data-t', String(a.t));
       const tw = name.length * 7 + 12;
       const rect = document.createElementNS(NS, 'rect');
       rect.setAttribute('x', x - tw / 2); rect.setAttribute('y', y - 8); rect.setAttribute('width', tw); rect.setAttribute('height', 16);
@@ -2089,6 +2116,16 @@ document.addEventListener('keydown', e => {
       row.addEventListener('mouseleave', () => document.querySelectorAll('.tree-node.hl').forEach(n => n.classList.remove('hl')));
     });
   }
+  (function bindListToggle() {
+    const bt = document.getElementById('listToggle');
+    const host = document.getElementById('tree-list');
+    if (!bt || !host) return;
+    bt.addEventListener('click', () => {
+      host.classList.toggle('collapsed');
+      bt.closest('.tree-list-head').classList.toggle('list-collapsed');
+    });
+  })();
+
   (function bindListControls() {
     const sel = document.getElementById('list-type');
     if (sel) sel.addEventListener('change', () => { listState.type = sel.value; renderTreeList(); });
