@@ -9,6 +9,10 @@
 > **History Ledger** · Every commit laid out: 1205 commits, 183 releases, 69 PRs, 177 issues — timeline, contributor analysis, Git tree (vertical / horizontal / ring), and a full account of every mistake along the way. [**Open the interactive ledger**](https://dwgx.github.io/WindsurfAPI/HISTORY-LEDGER-VIZ.html) (zero-dependency, pure vanilla).
 
 <p align="center">
+  <img src="https://api.star-history.com/svg?repos=dwgx/WindsurfAPI&type=Date" alt="Star History" width="700" />
+</p>
+
+<p align="center">
   <a href="https://github.com/dwgx/WindsurfAPI/stargazers"><img src="https://img.shields.io/github/stars/dwgx/WindsurfAPI?style=for-the-badge&logo=github&color=f5c518" alt="Stars"></a>&nbsp;
   <a href="https://github.com/dwgx/WindsurfAPI/blob/master/LICENSE"><img src="https://img.shields.io/github/license/dwgx/WindsurfAPI?style=for-the-badge&color=2da44e" alt="License"></a>&nbsp;
   <a href="https://github.com/dwgx/WindsurfAPI/releases/latest"><img src="https://img.shields.io/github/v/release/dwgx/WindsurfAPI?style=for-the-badge&logo=github&color=1f6feb" alt="Release"></a>&nbsp;
