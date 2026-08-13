@@ -464,7 +464,7 @@ export async function toChatCompletion(params, opts = {}) {
     });
     if (parsed.toolCalls.length) {
       content = parsed.text;
-      toolCalls = parsed.toolCalls;
+      toolCalls = filterToolCallsByAllowlist(parsed.toolCalls, params.tools || []);   // M2 ToolGuard parity
     }
   }
 
@@ -492,10 +492,12 @@ export async function toChatCompletion(params, opts = {}) {
         modelKey: params.model, provider: null, route: 'devin_connect',
       });
       if (promotedParse.toolCalls.length) {
+        // M2 ToolGuard parity: only keep calls the client declared
+        const allowedCalls = filterToolCallsByAllowlist(promotedParse.toolCalls, params.tools || []);
         // It was a tool call all along. Deliver it as one; keep any surrounding prose
         // as content, and leave reasoning_content in place since nothing was moved
         // out of it into the answer.
-        toolCalls = promotedParse.toolCalls;
+        toolCalls = allowedCalls;
         content = promotedParse.text;
         finishReason = 'tool_calls';
         promotedReasoning = false;

@@ -115,7 +115,8 @@
     "updateLsBinaryTitle": "Download the latest language_server binary and restart the instance pool",
     "switchLang": "Switch language",
     "prev": "Prev",
-    "next": "Next"
+    "next": "Next",
+    "rollbackUpdate": "Roll back to previous version"
   },
   "batchOps": {
     "selected": "{{count}} selected",
@@ -185,7 +186,15 @@
     "workingDirDirtyHint": "The following files have local changes:<br>{{files}}<br>Continue will overwrite with remote version.",
     "notFetched": "Not fetched",
     "fetchFailed": "Fetch failed",
-    "clickToEditTier": "Click to manually edit tier (use when probe fails)"
+    "clickToEditTier": "Click to manually edit tier (use when probe fails)",
+    "updateUnreleased": "Update available, but not yet released",
+    "unreleasedHint": "Remote has {count} commit(s) newer than the latest release tag {tag} — OTA requires a release tag first.",
+    "updateFailed": "Service did not recover after update",
+    "rollbackHint": "Waiting. You can roll back to the previous version with one click.",
+    "healthOk": "Health check passed, refreshing…",
+    "rollingBack": "Rolling back to the previous version…",
+    "rolledBack": "Rolled back to {commit}, restarting service…",
+    "noRollbackPoint": "No rollback point recorded for this update."
   },
   "tier": {
     "pro": "PRO",
@@ -214,11 +223,26 @@
   },
   "section": {
     "settings": {
-      "ux": { "title": "Interface Preferences", "desc": "Shared across browsers / devices (stored on the server)" },
-      "security": { "title": "Security & Lockout", "desc": "Login-failure lockout thresholds and durations — adjustable or off" },
-      "runtimeEnv": { "title": "Runtime Backend", "desc": "These switches are set by deploy-time environment variables and need a process restart to change; shown here as read-only status" },
-      "breaker": { "title": "Circuit Breaker & Rate Limiting", "desc": "Per-account error breaker + self-healing backoff thresholds. Hot-editable; blank follows the env var / default." },
-      "serviceControl": { "title": "Service Control", "desc": "Restart the gateway process to apply restart-only config changes or recover from a stuck state. In-flight requests are drained first (up to ~10s), then the process supervisor (systemd / PM2 / docker) relaunches it." }
+      "ux": {
+        "title": "Interface Preferences",
+        "desc": "Shared across browsers / devices (stored on the server)"
+      },
+      "security": {
+        "title": "Security & Lockout",
+        "desc": "Login-failure lockout thresholds and durations — adjustable or off"
+      },
+      "runtimeEnv": {
+        "title": "Runtime Backend",
+        "desc": "These switches are set by deploy-time environment variables and need a process restart to change; shown here as read-only status"
+      },
+      "breaker": {
+        "title": "Circuit Breaker & Rate Limiting",
+        "desc": "Per-account error breaker + self-healing backoff thresholds. Hot-editable; blank follows the env var / default."
+      },
+      "serviceControl": {
+        "title": "Service Control",
+        "desc": "Restart the gateway process to apply restart-only config changes or recover from a stuck state. In-flight requests are drained first (up to ~10s), then the process supervisor (systemd / PM2 / docker) relaunches it."
+      }
     },
     "nativeBridge": {
       "title": "Native Bridge",
@@ -853,7 +877,9 @@
     "clearProxyDesc": "All outbound requests will go direct until a proxy is set again. Continue?",
     "switchSkinTitle": "Switch Dashboard Skin",
     "switchSkinDesc": "The dashboard will reload to apply the new skin. Continue?",
-    "expToggleDesc": "This changes live routing behavior immediately. Continue?"
+    "expToggleDesc": "This changes live routing behavior immediately. Continue?",
+    "rollbackTitle": "Roll back to previous version?",
+    "rollbackDesc": "git reset to the commit before the last update and restart. Uncommitted local changes are stashed (recoverable)."
   },
   "modal": {
     "blockedModels": {
@@ -1322,7 +1348,8 @@
     "ERR_LOCAL_IMPORT_LOOPBACK_ONLY": "Local import only available from 127.0.0.1 — open the dashboard from the host machine itself, not via a public domain",
     "ERR_LOCAL_IMPORT_FAILED": "Failed to scan local Windsurf credentials",
     "ERR_INTERMEDIATE_CALLBACK": "This is an intermediate callback page — its login code can't be exchanged here. Wait until the browser lands on the show-auth-token page, then paste the token shown there.",
-    "ERR_OAUTH_UPSTREAM": "The login provider returned an error. Please retry the sign-in."
+    "ERR_OAUTH_UPSTREAM": "The login provider returned an error. Please retry the sign-in.",
+    "rollbackFailed": "Rollback failed"
   },
   "footer": {
     "version": "Version",

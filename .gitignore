@@ -119,3 +119,5 @@ docs/*.bak
 /dist-windows/
 /dist-macos/
 /src/_bundle.cjs
+# OTA 回滚点（运行时记录，勿提交）
+data/self-update-before.json

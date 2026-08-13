@@ -77,6 +77,54 @@ describe('over-limit tool_call bodies → placeholder, never raw text', () => {
     assert.ok(!text.includes('"}}'), 'closing braces must NOT leak');
   });
 
+  it('B1: after XML oversize reset, subsequent model text flows normally (no zombie inToolCall)', () => {
+    const parser = new ToolCallStreamParser({ dialect: 'openai_json_xml' });
+    parser.feed('<tool_call>{"name":"X"');
+    for (let i = 0; i < 35; i++) parser.feed('W'.repeat(2000));
+    // close arrives → oversize resets
+    const r1 = parser.feed('}</tool_call>');
+    assert.equal(r1.text || '', '', 'close must be swallowed');
+    // normal prose after close must flow
+    const r2 = parser.feed('hello after the call');
+    assert.equal(r2.text, 'hello after the call', 'post-reset text must not be swallowed');
+    const f = parser.flush();
+    assert.ok(!(f.text || '').includes('<tool_call>'), 'flush must not leak unclosed prefix');
+    assert.ok(!(f.text || '').includes('W'.repeat(100)), 'flush must not leak the oversize blob');
+  });
+
+  it('B2: gpt_native oversize terminates on a lone closing brace (no infinite swallow)', () => {
+    const parser = new ToolCallStreamParser({ dialect: 'gpt_native' });
+    parser.feed('{"function_call":{"name":"X"');
+    for (let i = 0; i < 35; i++) parser.feed('V'.repeat(2000));
+    const r = parser.feed('"}}');   // unbalanced close — must terminate the drop state
+    assert.equal(parser._oversizeDropped, false, 'drop state must reset');
+    assert.ok(!(r.text || '').includes('"}}'), 'closing braces must not leak');
+    // post-reset prose flows
+    const r2 = parser.feed('ok now');
+    assert.equal(r2.text, 'ok now');
+  });
+
+  it('B3: oversize swallow caps its buffer (no unbounded growth)', () => {
+    const parser = new ToolCallStreamParser({ dialect: 'glm47' });
+    parser.feed('<tool_call>{"name":"X"');
+    for (let i = 0; i < 35; i++) parser.feed('W'.repeat(2000));
+    assert.equal(parser._oversizeDropped, true);
+    // 1MB of prose without close — buffer must stay bounded
+    for (let i = 0; i < 500; i++) parser.feed('P'.repeat(2000));
+    assert.ok(parser.buffer.length <= 65_536 * 2 + 4096, `drop-state buffer bounded, got ${parser.buffer.length}`);
+  });
+
+  it('M1: {"name" sentinel oversize → placeholder + no trailing brace leak', () => {
+    const parser = new ToolCallStreamParser({ dialect: 'gpt_native' });
+    parser.feed('{"name":"X","arguments":{"data":"');
+    let text = '';
+    for (let i = 0; i < 35; i++) { const r = parser.feed('Q'.repeat(2000)); text += r.text || ''; }
+    const r = parser.feed('"}}');
+    text += r.text || '';
+    assert.ok(text.includes(P), 'placeholder appears');
+    assert.ok(!text.includes('"}}'), 'trailing braces must not leak');
+  });
+
   it('a small complete <tool_call> still parses normally (no false positive)', () => {
     const parser = new ToolCallStreamParser({ dialect: 'glm47' });
     parser.feed('<tool_call>{"name":"Bash","arguments":{"command":"ls"}}</tool_call>');

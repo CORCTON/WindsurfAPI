@@ -768,9 +768,97 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
       return json(res, 200, { ok: false, error: err.message });
     }
   }
+  if (subpath === '/self-update/rollback' && method === 'POST') {
+    // 失败回滚：reset 到最近一次 /self-update 记录的 before commit，重启。
+    // 与 forceReset 同级保护（AUTH-1）：本地领先或脏树时同样拒绝。
+    try {
+      let beforeJson = {};
+      try {
+        beforeJson = JSON.parse(await (await import('node:fs/promises')).readFile(
+          join(process.cwd(), 'data', 'self-update-before.json'), 'utf8',
+        ));
+      } catch { beforeJson = {}; }
+      const beforeCommit = beforeJson?.commit;
+      if (!beforeCommit) {
+        return json(res, 200, { ok: false, error: 'ERR_NO_ROLLBACK_POINT', message: 'No previous update recorded.' });
+      }
+      // M2: 校验当前 HEAD 仍是更新后的 commit（before.json 记录了 after）——
+      // 若操作者更新后又提交了新代码，reset 会抹掉它，拒绝回滚。
+      if (beforeJson.after) {
+        const cur = (await runGit(['rev-parse', 'HEAD'])).trim();
+        if (cur !== beforeJson.after) {
+          return json(res, 200, { ok: false, error: 'ERR_HEAD_MOVED', message: 'HEAD moved since the update — refusing rollback that would discard newer commits.' });
+        }
+      }
+      const dirty = (await runGit(['status', '--porcelain', '-uno'])).trim();
+      if (dirty) {
+        const allowForce = !!(body && body.forceReset);
+        if (!allowForce) {
+          return json(res, 200, { ok: false, dirty: true, error: 'ERR_UNCOMMITTED_CHANGES', dirtyFiles: dirty.split('\n').slice(0, 20) });
+        }
+        try { await runGit(['stash', 'push', '--include-untracked', '-m', `rollback-forceReset ${new Date().toISOString()}`]); } catch {}
+      }
+      // M3: supervisor 预检（与 /restart 同级）——无 supervisor 时回滚会导致永久停机
+      const sup = detectSupervisor();
+      if (!sup.supervised) {
+        return json(res, 200, { ok: false, error: 'ERR_NO_SUPERVISOR', message: 'No process supervisor detected. Rollback would stop the gateway without relaunch.' });
+      }
+      await runGit(['reset', '--hard', beforeCommit]);
+      // 清掉回滚点，避免重复回滚到同一个旧版本
+      await (await import('node:fs/promises')).rm(join(process.cwd(), 'data', 'self-update-before.json'), { force: true }).catch(() => {});
+      setTimeout(() => {
+        void gracefulRestart({
+          reason: 'self-update-rollback',
+          drainMs: 10000,
+          server: getActiveServer(),
+          abortSse: abortActiveSse,
+          stopLs: () => stopLanguageServerAndWait({ perProcessTimeoutMs: 1500 }),
+          exitCode: selfUpdateRestartExitCode(),
+        });
+      }, 800);
+      return json(res, 200, { ok: true, rolledBackTo: beforeCommit.slice(0, 7) });
+    } catch (err) {
+      if (isSelfUpdateUnavailableError(err)) return json(res, 200, { ok: false, error: err.code || 'ERR_GIT_UNAVAILABLE' });
+      return json(res, 200, { ok: false, error: err.message });
+    }
+  }
   if (subpath === '/self-update' && method === 'POST') {
     try {
       const before = await gitStatus();
+      // M1: 版本门禁必须在任何写操作（forceReset 的 reset）之前——门禁失败时
+      // 工作树必须保持原样（只读 rev-list 校验）。
+      const safeBranchGate = /^[\w.\-\/]+$/.test(before.branch || '') ? before.branch : 'master';
+      const latestTag = await latestReleaseTag(safeBranchGate);
+      if (latestTag) {
+        try {
+          // 堵 fetch 失败瞬态窗口：门禁前确保 ref 最新
+          try { await runGit(['fetch', '--quiet', 'origin', safeBranchGate]); } catch {}
+          const forceGate = !!(body && body.forceUpdate);
+          const target = (await runGit(['rev-parse', `origin/${safeBranchGate}`])).trim();
+          const unreleased = parseInt((await runGit(['rev-list', '--count', `${latestTag}..${target}`])).trim(), 10) || 0;
+          if (unreleased > 0 && !forceGate) {
+            return json(res, 200, {
+              ok: false,
+              error: 'ERR_UNRELEASED',
+              latestTag,
+              unreleased,
+              message: `Remote has ${unreleased} commit(s) newer than the latest release tag ${latestTag} — not published yet. Tag a release first, or use forceUpdate to override.`,
+            });
+          }
+          // 防降级：目标落后于当前 HEAD → 拒绝
+          const downgrade = parseInt((await runGit(['rev-list', '--count', `${target}..HEAD`])).trim(), 10) || 0;
+          if (downgrade > 0 && !forceGate) {
+            return json(res, 200, {
+              ok: false,
+              error: 'ERR_DOWNGRADE',
+              message: `Target ${target.slice(0,7)} is behind current HEAD by ${downgrade} commit(s) — refusing downgrade.`,
+            });
+          }
+        } catch (err) {
+          if (isSelfUpdateUnavailableError(err)) throw err;
+          // tag 校验失败（无 tag 仓库等）不阻塞——视为无门禁
+        }
+      }
       // Guard: working tree must be clean (ignoring untracked files like
       // accounts.json, stats.json, runtime-config.json which live in the
       // repo root but aren't checked in). If the tracked files were edited
@@ -830,6 +918,14 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
       // combining stdout+stderr explicitly. runGit already pipes stderr
       // into the Error message on failure, so for success we get just
       // stdout, which is what the UI displays.
+      const beforeCommitFull = before.commitFull;
+      const afterTarget = (await runGit(['rev-parse', `origin/${safeBranch}`]).catch(() => '')).trim() || beforeCommitFull;
+      try {
+        const { mkdir, writeFile } = await import('node:fs/promises');
+        await mkdir(join(process.cwd(), 'data'), { recursive: true });
+        await writeFile(join(process.cwd(), 'data', 'self-update-before.json'),
+          JSON.stringify({ commit: beforeCommitFull, after: afterTarget, ts: Date.now() }), 'utf8');
+      } catch (e) { log.warn(`self-update: failed to persist rollback point: ${e.message}`); }
       const pull = dirty ? 'hard-reset applied' : await runGit(['pull', 'origin', safeBranch, '--ff-only']);
       const after = await gitStatus();
       const changed = before.commit !== after.commit;
@@ -2317,6 +2413,14 @@ export function runGit(args, opts = {}) {
   });
 }
 
+async function latestReleaseTag(branch) {
+  // 语义化版本排序取最新 release tag（--sort=-v:refname），且只认当前分支可达的
+  try {
+    const tags = await runGit(['tag', '--list', '--sort=-v:refname', '--merged', `origin/${branch}`]);
+    return tags.split('\n').map(t => t.trim()).filter(Boolean)[0] || '';
+  } catch { return ''; }
+}
+
 async function gitStatus() {
   const commit = (await runGit(['rev-parse', 'HEAD'])).trim();
   const branch = (await runGit(['rev-parse', '--abbrev-ref', 'HEAD'])).trim();
@@ -2328,6 +2432,20 @@ async function gitStatus() {
   const localMsg = (await runGit(['log', '-1', '--pretty=format:%s'])).trim();
   const behind = remote && remote !== commit;
   const remoteMsg = behind ? (await runGit(['log', '-1', '--pretty=format:%s', remote]).catch(() => '')).trim() : '';
+  // 版本门禁：最新 release tag + 远端目标是否已发布（tag 后代）
+  let latestTag = '';
+  let published = true;
+  let unreleasedCount = 0;
+  if (remote) {
+    latestTag = await latestReleaseTag(branch);
+    if (latestTag) {
+      try {
+        const cnt = (await runGit(['rev-list', '--count', `${latestTag}..${remote}`])).trim();
+        unreleasedCount = parseInt(cnt, 10) || 0;
+        published = unreleasedCount === 0;
+      } catch { /* tag 不可比时按已发布处理 */ }
+    }
+  }
   return {
     commit: commit.slice(0, 7),
     commitFull: commit,
@@ -2336,6 +2454,9 @@ async function gitStatus() {
     remoteCommit: remote ? remote.slice(0, 7) : '',
     remoteMessage: remoteMsg,
     behind,
+    latestTag,
+    published,          // 远端最新提交是否已打 release tag
+    unreleasedCount,    // 未发布提交数
   };
 }
 

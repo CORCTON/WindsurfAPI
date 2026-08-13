@@ -221,7 +221,7 @@ describe('toChatCompletion tool emulation', () => {
       { type: 'content', text: TOOL_ANSWER },
       { type: 'finish', reason: 'stop', usage: null },
     ]));
-    const { body } = await toChatCompletion({ model: 'swe-1-6-slow', messages: [] }, { emulateTools: true });
+    const { body } = await toChatCompletion({ model: 'swe-1-6-slow', messages: [], tools: [{ type: 'function', function: { name: 'get_weather' } }] }, { emulateTools: true });
     const msg = body.choices[0].message;
     assert.equal(body.choices[0].finish_reason, 'tool_calls');
     assert.equal(msg.content, null);
@@ -237,7 +237,7 @@ describe('toChatCompletion tool emulation', () => {
       { type: 'content', text: 'just a normal answer' },
       { type: 'finish', reason: 'stop', usage: null },
     ]));
-    const { body } = await toChatCompletion({ model: 'm', messages: [] }, { emulateTools: true });
+    const { body } = await toChatCompletion({ model: 'm', messages: [], tools: [{ type: 'function', function: { name: 'search' } }] }, { emulateTools: true });
     assert.equal(body.choices[0].finish_reason, 'stop');
     assert.equal(body.choices[0].message.content, 'just a normal answer');
     assert.equal('tool_calls' in body.choices[0].message, false);
@@ -357,7 +357,7 @@ describe('toChatCompletion native tool calls', () => {
         toolCalls: [{ id: 'call_real', name: 'real_tool', arguments: '{"a":1}' }],
       },
     ]));
-    const { body } = await toChatCompletion({ model: 'm', messages: [] }, { emulateTools: true });
+    const { body } = await toChatCompletion({ model: 'm', messages: [], tools: [{ type: 'function', function: { name: 'search' } }] }, { emulateTools: true });
     const msg = body.choices[0].message;
     assert.equal(msg.tool_calls.length, 1);
     assert.equal(msg.tool_calls[0].function.name, 'real_tool');
@@ -386,7 +386,7 @@ describe('toChatCompletion native tool calls', () => {
       { type: 'content', text: '<tool_call>{"name":"search","arguments":{"q":"x"}}</tool_call>' },
       { type: 'finish', reason: 'stop', usage: null }, // no toolCalls field
     ]));
-    const { body } = await toChatCompletion({ model: 'm', messages: [] }, { emulateTools: true });
+    const { body } = await toChatCompletion({ model: 'm', messages: [], tools: [{ type: 'function', function: { name: 'search' } }] }, { emulateTools: true });
     const msg = body.choices[0].message;
     assert.equal(msg.tool_calls.length, 1);
     assert.equal(msg.tool_calls[0].function.name, 'search');

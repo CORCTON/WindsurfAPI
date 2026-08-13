@@ -1461,6 +1461,7 @@ export class ToolCallStreamParser {
       log.warn(`ToolCallStreamParser: JSON block exceeds 65KB (${this.buffer.length} bytes), emitting placeholder instead of raw text`);
       pushText(TOOL_OVER_LIMIT_PLACEHOLDER);
       this.buffer = '';
+      this._oversizeDropped = true;   // M1: 尾部 `"}` 交给全局吞，防裸泄漏
       return true;
     }
     const endIdx = this._findClosingBrace();
@@ -1516,10 +1517,19 @@ export class ToolCallStreamParser {
     // flush the held W's as prose).
     if (this._oversizeDropped) {
       this.buffer += delta;
+      // B3: 丢弃态 buffer 硬上限 —— 超限直接清空（继续吞语义，防 OOM）
+      if (this.buffer.length > TOOL_XML_BODY_MAX * 2) this.buffer = '';
       const closed = this.dialect === 'gpt_native'
-        ? this._findClosingBrace() !== -1
-        : this.buffer.includes('</tool_call>') || this._findClosingBrace() !== -1;
-      if (closed) { this._oversizeDropped = false; this.buffer = ''; }
+        ? this.buffer.includes('}')   // B2: 丢弃态只要出现闭合即恢复（`"}}` 等裸闭合也认）
+        : this.buffer.includes('</tool_call>');
+      if (closed) {
+        this._oversizeDropped = false;
+        this.buffer = '';
+        // B1: 复位所有块状态 —— 否则 inToolCall/inToolResult 僵尸吞掉后续模型文本
+        this.inToolCall = false;
+        this.inToolResult = false;
+        this._toolResultOpenTag = '';
+      }
       return { text: '', toolCalls: [], items: [] };
     }
     if (this.dialect !== 'openai_json_xml') {

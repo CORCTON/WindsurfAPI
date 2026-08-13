@@ -2235,6 +2235,10 @@ tbody tr:hover td { background: var(--surface-2); }
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M12 2v20M2 12h20"/></svg>
           <span id="btn-apply-update-text" data-i18n="action.applyUpdate">一键更新并重启</span>
         </button>
+        <button class="btn btn-outline warn btn-sm hidden" id="btn-rollback-update" onclick="App.rollbackUpdate()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5v0a5.5 5.5 0 0 1-5.5 5.5H11"/></svg>
+          <span id="btn-rollback-update-text" data-i18n="action.rollbackUpdate">回滚到上个版本</span>
+        </button>
       </div>
     </div>
     <div id="update-status" class="section hidden" style="padding:12px;margin-bottom:12px"></div>
@@ -4600,13 +4604,25 @@ docker compose up -d --force-recreate</pre>
       }
       apply.dataset.mode = 'git';
       if (r.behind) {
-        status.innerHTML = `
-          <div style="color:var(--accent);font-weight:600;margin-bottom:6px">${I18n.t('status.updateAvailable')}</div>
-          <div class="text-sm" style="display:grid;gap:3px">
-            <div>${I18n.t('status.currentVersion')} <code>${this.esc(r.commit)}</code> <span class="text-muted">${this.esc(r.localMessage)}</span></div>
-            <div>${I18n.t('status.remoteVersion')} <code>${this.esc(r.remoteCommit)}</code> <span class="text-muted">${this.esc(r.remoteMessage || '')}</span></div>
-          </div>`;
-        apply.classList.remove('hidden');
+        if (r.published === false) {
+          // 版本门禁：远端有未打 tag 的提交 → 提示但禁用更新
+          status.innerHTML = `
+            <div style="color:var(--warn);font-weight:600;margin-bottom:6px">${I18n.t('status.updateUnreleased')}</div>
+            <div class="text-sm" style="display:grid;gap:3px">
+              <div>${I18n.t('status.currentVersion')} <code>${this.esc(r.commit)}</code> <span class="text-muted">${this.esc(r.localMessage)}</span></div>
+              <div>${I18n.t('status.remoteVersion')} <code>${this.esc(r.remoteCommit)}</code> <span class="text-muted">${this.esc(r.remoteMessage || '')}</span></div>
+              <div class="text-sm text-muted">${I18n.t('status.unreleasedHint', { count: r.unreleasedCount || 0, tag: this.esc(r.latestTag || '') })}</div>
+            </div>`;
+          apply.classList.add('hidden');
+        } else {
+          status.innerHTML = `
+            <div style="color:var(--accent);font-weight:600;margin-bottom:6px">${I18n.t('status.updateAvailable')}</div>
+            <div class="text-sm" style="display:grid;gap:3px">
+              <div>${I18n.t('status.currentVersion')} <code>${this.esc(r.commit)}</code> <span class="text-muted">${this.esc(r.localMessage)}</span></div>
+              <div>${I18n.t('status.remoteVersion')} <code>${this.esc(r.remoteCommit)}</code> <span class="text-muted">${this.esc(r.remoteMessage || '')}</span></div>
+            </div>`;
+          apply.classList.remove('hidden');
+        }
       } else {
         status.innerHTML = '<span style="color:var(--success)">✓ ' + I18n.t('status.upToDate', {commit: this.esc(r.commit), message: this.esc(r.localMessage)}) + '</span>';
         apply.classList.add('hidden');
@@ -4673,7 +4689,8 @@ docker compose up -d --force-recreate</pre>
           <div style="color:var(--success);font-weight:600;margin-bottom:6px">${I18n.t('status.updateComplete', { before: this.esc(r.before), after: this.esc(r.after) })}</div>
           <div class="text-sm text-muted">${I18n.t('status.restarting')}</div>
           <pre style="margin-top:8px;font-size:11px;max-height:200px;overflow:auto;padding:8px;background:var(--surface-2);border-radius:4px">${this.esc(r.pullOutput || '')}</pre>`;
-        setTimeout(() => location.reload(), 8000);
+        // 失败回滚：更新后轮询健康，30s 内服务未恢复 → 提示 + 一键回滚按钮
+        this._pollHealthAfterUpdate(status, apply);
       } else {
         status.innerHTML = '<span class="text-muted">' + I18n.t('status.noUpdateNeeded') + '</span>';
         apply.classList.add('hidden');
@@ -4682,6 +4699,70 @@ docker compose up -d --force-recreate</pre>
       status.innerHTML = `<span style="color:var(--error)">✗ ${this.esc(err.message)}</span>`;
     } finally {
       apply.disabled = false;
+    }
+  },
+
+  _pollHealthAfterUpdate(status, apply) {
+    let tries = 0;
+    const maxTries = 15; // 2s × 15 = 30s
+    const check = async () => {
+      try {
+        // 轮询公共 /health（不是 /dashboard/api/*）—— dashboard API 没有 /health 路由
+        const hr = await fetch('/health', { cache: 'no-store' });
+        const h = await hr.json();
+        if (h && h.status === 'ok') {
+          status.innerHTML += `<div class="text-sm" style="color:var(--success);margin-top:8px">${I18n.t('status.healthOk')}</div>`;
+          setTimeout(() => location.reload(), 1000);
+          return;
+        }
+      } catch (e) { /* service not up yet — keep polling */ }
+      tries++;
+      if (tries < maxTries) {
+        setTimeout(check, 2000);
+      } else {
+        // 30s 未恢复 → 回滚提示 + 按钮
+        const rollback = document.getElementById('btn-rollback-update');
+        status.innerHTML = `
+          <div style="color:var(--error);font-weight:600;margin-bottom:6px">${I18n.t('status.updateFailed')}</div>
+          <div class="text-sm text-muted">${I18n.t('status.rollbackHint')}</div>`;
+        if (rollback) rollback.classList.remove('hidden');
+        if (apply) apply.classList.add('hidden');
+      }
+    };
+    setTimeout(check, 2000);
+  },
+
+  async rollbackUpdate() {
+    const ok = await this.confirm(
+      I18n.t('confirm.rollbackTitle'),
+      I18n.t('confirm.rollbackDesc'),
+      { danger: true, okText: I18n.t('action.rollbackUpdate') },
+    );
+    if (!ok) return;
+    const status = document.getElementById('update-status');
+    const rollback = document.getElementById('btn-rollback-update');
+    const apply = document.getElementById('btn-apply-update');
+    rollback.disabled = true;
+    status.innerHTML = '<span class="text-muted">' + I18n.t('status.rollingBack') + '</span>';
+    try {
+      const r = await this.api('POST', '/self-update/rollback');
+      if (!r.ok) {
+        if (r.error === 'ERR_NO_ROLLBACK_POINT') {
+          status.innerHTML = `<span style="color:var(--error)">✗ ${I18n.t('status.noRollbackPoint')}</span>`;
+        } else {
+          throw new Error(this.translateError(r.error, 'error.rollbackFailed'));
+        }
+        rollback.disabled = false;
+        return;
+      }
+      status.innerHTML = `
+        <div style="color:var(--success);font-weight:600;margin-bottom:6px">${I18n.t('status.rolledBack', { commit: this.esc(r.rolledBackTo || '') })}</div>
+        <div class="text-sm text-muted">${I18n.t('status.restarting')}</div>`;
+      if (rollback) rollback.classList.add('hidden');
+      setTimeout(() => location.reload(), 3000);
+    } catch (err) {
+      status.innerHTML = `<span style="color:var(--error)">✗ ${this.esc(err.message)}</span>`;
+      rollback.disabled = false;
     }
   },
 

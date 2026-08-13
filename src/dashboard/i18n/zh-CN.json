@@ -115,7 +115,8 @@
     "updateLsBinaryTitle": "下载最新 language_server 二进制并重启实例池",
     "switchLang": "切换语言",
     "prev": "上一页",
-    "next": "下一页"
+    "next": "下一页",
+    "rollbackUpdate": "回滚到上个版本"
   },
   "batchOps": {
     "selected": "已选 {{count}} 个",
@@ -185,7 +186,15 @@
     "workingDirDirtyHint": "以下文件已被修改但未提交：<br>{{files}}<br>继续将用远程版本覆盖这些修改。",
     "notFetched": "尚未获取",
     "fetchFailed": "获取失败",
-    "clickToEditTier": "点击手动修改层级（探测异常时用）"
+    "clickToEditTier": "点击手动修改层级（探测异常时用）",
+    "updateUnreleased": "有更新，但尚未发布",
+    "unreleasedHint": "远端有 {count} 个提交晚于最新 release tag {tag}——按发布流程需先打 tag 才能 OTA。",
+    "updateFailed": "更新后服务未能恢复",
+    "rollbackHint": "已停止等待。你可以一键回滚到更新前的版本。",
+    "healthOk": "服务健康检查通过，即将刷新…",
+    "rollingBack": "正在回滚到更新前的版本…",
+    "rolledBack": "已回滚到 {commit}，正在重启服务…",
+    "noRollbackPoint": "没有可回滚的记录（本次更新未记录回滚点）。"
   },
   "tier": {
     "pro": "PRO",
@@ -214,11 +223,26 @@
   },
   "section": {
     "settings": {
-      "ux": { "title": "界面偏好", "desc": "跨浏览器/设备共享（存于服务端）" },
-      "security": { "title": "安全与锁定", "desc": "登录失败锁定阈值与时长，可调整或关闭" },
-      "runtimeEnv": { "title": "运行时后端", "desc": "这些开关由部署时的环境变量控制，改动需重启进程生效；此处仅显示当前运行状态" },
-      "breaker": { "title": "熔断与限流", "desc": "账号错误熔断与自愈退避阈值，可热调；留空回退环境变量/默认值" },
-      "serviceControl": { "title": "服务控制", "desc": "重启网关进程，让需要重启才生效的配置生效或从卡死中恢复。重启期间先排空在途请求（最多约 10 秒），再由进程守护（systemd / PM2 / docker）自动拉起。" }
+      "ux": {
+        "title": "界面偏好",
+        "desc": "跨浏览器/设备共享（存于服务端）"
+      },
+      "security": {
+        "title": "安全与锁定",
+        "desc": "登录失败锁定阈值与时长，可调整或关闭"
+      },
+      "runtimeEnv": {
+        "title": "运行时后端",
+        "desc": "这些开关由部署时的环境变量控制，改动需重启进程生效；此处仅显示当前运行状态"
+      },
+      "breaker": {
+        "title": "熔断与限流",
+        "desc": "账号错误熔断与自愈退避阈值，可热调；留空回退环境变量/默认值"
+      },
+      "serviceControl": {
+        "title": "服务控制",
+        "desc": "重启网关进程，让需要重启才生效的配置生效或从卡死中恢复。重启期间先排空在途请求（最多约 10 秒），再由进程守护（systemd / PM2 / docker）自动拉起。"
+      }
     },
     "nativeBridge": {
       "title": "Native Bridge",
@@ -853,7 +877,9 @@
     "clearProxyDesc": "在重新设置代理前，所有出站请求将直连。确定继续吗？",
     "switchSkinTitle": "切换仪表盘皮肤",
     "switchSkinDesc": "仪表盘将重新加载以应用新皮肤。确定继续吗？",
-    "expToggleDesc": "这会立即改变实时路由行为。确定继续吗？"
+    "expToggleDesc": "这会立即改变实时路由行为。确定继续吗？",
+    "rollbackTitle": "回滚到上个版本？",
+    "rollbackDesc": "将 git reset 到最近一次更新前的提交并重启服务。本地未提交的改动会被暂存（可恢复）。"
   },
   "modal": {
     "blockedModels": {
@@ -1322,7 +1348,8 @@
     "ERR_LOCAL_IMPORT_LOOPBACK_ONLY": "本地导入仅限 127.0.0.1 访问 — 请在部署服务器本机的浏览器里打开 dashboard，不要用公网域名",
     "ERR_LOCAL_IMPORT_FAILED": "扫描本地 Windsurf 凭证失败",
     "ERR_INTERMEDIATE_CALLBACK": "这是中间回调页，它的登录 code 无法在这里兑换。请等浏览器跳转到 show-auth-token 页面后，粘贴那上面显示的 token。",
-    "ERR_OAUTH_UPSTREAM": "登录提供方返回了错误，请重新登录。"
+    "ERR_OAUTH_UPSTREAM": "登录提供方返回了错误，请重新登录。",
+    "rollbackFailed": "回滚失败"
   },
   "footer": {
     "version": "版本",
