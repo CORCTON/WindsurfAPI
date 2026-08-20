@@ -28,6 +28,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { renameSync, unlinkSync, openSync, writeSync, fsyncSync, closeSync } from 'node:fs';
+import { dirname } from 'node:path';
 
 const RETRYABLE_RENAME_CODES = new Set(['EPERM', 'EBUSY']);
 
@@ -37,16 +38,53 @@ function sleepSync(ms) {
   } catch {}
 }
 
-export function renameSyncWithRetry(sourcePath, targetPath, { attempts = 6, baseDelayMs = 10 } = {}) {
+export function fsyncParentDirectorySync(targetPath) {
+  let fd;
+  try {
+    fd = openSync(dirname(targetPath), 'r');
+    fsyncSync(fd);
+  } catch (err) {
+    // Windows does not consistently allow directories to be opened/fsynced.
+    // The file itself is still fsynced before rename; POSIX hosts, where the
+    // directory-entry durability guarantee is available, must not silently
+    // ignore a real fsync failure.
+    if (process.platform === 'win32' && ['EACCES', 'EINVAL', 'EISDIR', 'EPERM'].includes(err?.code)) return;
+    throw err;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+export function renameSyncWithRetry(sourcePath, targetPath, {
+  attempts = 6,
+  baseDelayMs = 10,
+  rename = renameSync,
+  fsyncParent = fsyncParentDirectorySync,
+} = {}) {
   const maxAttempts = Math.max(1, attempts | 0);
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      renameSync(sourcePath, targetPath);
-      return;
+      rename(sourcePath, targetPath);
+      break;
     } catch (err) {
       if (!RETRYABLE_RENAME_CODES.has(err?.code) || attempt === maxAttempts) throw err;
       sleepSync(baseDelayMs * attempt);
     }
+  }
+  // fsyncing the file before rename protects its contents; fsyncing the
+  // containing directory protects the rename itself across power loss. This is
+  // deliberately outside the retry loop: once rename succeeds, replaying it
+  // after a directory-fsync error would operate on a source path that no longer
+  // exists and misreport the already-published state.
+  try {
+    fsyncParent(targetPath);
+  } catch (err) {
+    // Callers may need to distinguish "rename never happened" from "the new
+    // name is visible in this process but its directory entry could not be
+    // proven power-loss durable". Never retry the rename in this state.
+    err.renamePublished = true;
+    err.renameTarget = targetPath;
+    throw err;
   }
 }
 

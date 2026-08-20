@@ -14,7 +14,7 @@ const INSTALL_LS = readFileSync(join(__dirname, '..', 'install-ls.sh'), 'utf8');
 describe('update.sh language-server source selection', () => {
   test('fails closed on local state and gates destructive reset behind an explicit flag', () => {
     const pullStage = UPDATE_SH.slice(
-      UPDATE_SH.indexOf('git fetch --quiet origin'),
+      UPDATE_SH.indexOf('git fetch --quiet --no-tags origin master'),
       UPDATE_SH.indexOf('AFTER=$(git rev-parse HEAD)'),
     );
     assert.match(pullStage, /git status --porcelain/);

@@ -9,12 +9,9 @@
 //
 // What it refuses to do, and why each guard is here:
 //
-//   1. REFUSES TO RUN ON A DIRTY TREE. The loop's own cleanup (`git checkout -- src/`)
-//      restores tracked files from the index, so an UNCOMMITTED fix sitting next to the
-//      mutation is destroyed by the first restore. Every later mutation then measures
-//      "fix missing" instead of "mutation applied" — and that failure looks exactly like
-//      the mutation being caught, so it reads as success. Recorded in AUDIT-LEDGER round 4,
-//      then hit again in round 8 by the person who wrote it down. A tool can just check.
+//   1. REFUSES TO RUN ON a dirty tree (except the explicitly Owner-owned
+//      `.opencode/state.md`). The suite is still materialized into a disposable
+//      clone, but a clean-tree invocation is the release-grade contract.
 //
 //   2. PROVES THE BASELINE IS NON-ZERO FIRST. A mutation "SURVIVED" is only meaningful if
 //      the suite passed before it. Four false SURVIVED verdicts in round 3 came from a
@@ -24,9 +21,9 @@
 //      match is a silent no-op: tests pass, and the mutation is reported as SURVIVED when
 //      nothing was ever mutated. Anchors must match exactly once.
 //
-//   4. RESTORES FROM HEAD, NOT THE INDEX. `git checkout -- <file>` reads the INDEX, so if
-//      anything was staged mid-run the restore reinstates the staged content instead of
-//      HEAD. Round 7 lost a revert this way. This always uses `git checkout HEAD --`.
+//   4. RESTORES FROM the synthetic HEAD, not the index. `git checkout HEAD -- <file>`
+//      restores the materialized reviewed bytes after each mutation; any other side
+//      effect causes the disposable workspace to be discarded.
 //
 // Usage:
 //   node scripts/mutate-verify.mjs <spec.json> [--keep-going]
@@ -51,6 +48,11 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve, relative, isAbsolute } from 'node:path';
+import {
+  harnessEnv, repoGit, workspaceSnapshot, acquireMutationLock, assertContainedRegularFile,
+  parseMutationReporterOutput,
+  materializeMutationWorkspace,
+} from './mutation-harness-utils.mjs';
 
 const RESET = '\x1b[0m';
 const RED = '\x1b[31m';
@@ -58,9 +60,9 @@ const GREEN = '\x1b[32m';
 const YELLOW = '\x1b[33m';
 const DIM = '\x1b[2m';
 
-function git(args, opts = {}) {
-  return execFileSync('git', args, { encoding: 'utf8', ...opts }).trim();
-}
+const SOURCE_ROOT = process.cwd();
+let WORKSPACE_ROOT = SOURCE_ROOT;
+const git = (args, root = WORKSPACE_ROOT) => repoGit(root, args);
 
 /**
  * Exit 2 = the harness could not produce a trustworthy verdict (bad spec, dirty tree,
@@ -73,21 +75,21 @@ function die(msg) {
   process.exit(2);
 }
 
-/** Guard 1 + 4: a dirty tree makes every restore destructive. Refuse, do not warn. */
+/** Release-grade clean-tree preflight; the disposable clone handles restoration. */
 function assertCleanTree() {
-  const status = git(['status', '--porcelain']);
-  if (!status) return;
+  const status = git(['status', '--porcelain'], SOURCE_ROOT);
+  const unsafe = status.split('\n').filter(Boolean)
+    .filter(line => line !== '?? .opencode/state.md');
+  if (unsafe.length === 0) return;
   console.error(`${RED}mutate-verify: refusing to run — the working tree is dirty.${RESET}`);
   console.error('');
-  console.error('  Every mutation is undone with `git checkout HEAD -- <file>`, which would');
-  console.error('  destroy the uncommitted changes below. If one of them is the fix being');
-  console.error('  verified, the mutations afterwards measure "fix missing" rather than');
-  console.error('  "mutation applied" — and that failure is indistinguishable from the');
-  console.error('  mutation being caught, so it reads as success.');
+  console.error('  The release harness requires a reviewed commit before clean-tree mutation');
+  console.error('  evidence. Use mutate-verify-dirty.mjs for the current uncommitted bytes; it');
+  console.error('  runs in a disposable clone and never rewrites this checkout.');
   console.error('');
-  console.error('  Commit the fix first, then re-run. (AUDIT-LEDGER round 4, hit again in 8.)');
+  console.error('  Commit the fix first, then re-run.');
   console.error('');
-  for (const line of status.split('\n')) console.error(`    ${line}`);
+  for (const line of unsafe) console.error(`    ${line}`);
   process.exit(2);
 }
 
@@ -99,13 +101,15 @@ function assertCleanTree() {
  * `git checkout HEAD -- <path>`, which fails for both, and the failure escapes before the
  * final tree check runs. Reproduced with file: "../outside.txt".
  */
-function assertMutableTarget(file) {
+function assertMutableTarget(file, root = WORKSPACE_ROOT) {
   if (isAbsolute(file)) die(`mutation target must be a repo-relative path, got "${file}"`);
-  const rel = relative(process.cwd(), resolve(file));
+  const rel = relative(root, resolve(root, file));
   if (rel.startsWith('..')) die(`mutation target escapes the repo: "${file}"`);
+  try { assertContainedRegularFile(root, file); }
+  catch (err) { die(err.message); }
   let tracked = '';
   try {
-    tracked = git(['ls-files', '--error-unmatch', '--', rel]);
+    tracked = git(['ls-files', '--error-unmatch', '--', rel], root);
   } catch {
     die(`mutation target is not tracked by git: "${file}". The restore step is `
       + '`git checkout HEAD -- <file>`, which cannot recover an untracked file, so the '
@@ -130,9 +134,14 @@ function assertPlainTestPaths(tests) {
   }
 }
 
-/** Run the suite; return { pass, fail, total, ok }. */
+/** Run the suite through the structured reporter; never count test-authored TAP. */
 function runSuite(tests) {
-  const args = ['--import', './test/setup-env.mjs', '--test', '--test-force-exit', ...tests];
+  const args = [
+    '--import', './scripts/mutation-network-deny.mjs',
+    '--import', './test/setup-env.mjs',
+    '--test-reporter=./scripts/mutation-harness-utils.mjs',
+    '--test', '--test-force-exit', ...tests,
+  ];
   // NODE_TEST_CONTEXT must not reach the child. When this harness is itself invoked from
   // inside `node --test` — which is exactly what a regression test for the harness does —
   // the inherited variable makes the child refuse to run anything at all:
@@ -140,40 +149,41 @@ function runSuite(tests) {
   // The child then reports 0 tests, the baseline check calls that "not green", and the real
   // failure is invisible behind a message about the suite. Deleting the variable is the whole
   // fix; forcing --test-reporter does not help, because nothing runs to be reported.
-  // FORCE_COLOR must not reach the child either, for the same reason and with a worse
-  // disguise. With it set, node wraps the summary in SGR codes — `\x1b[34mℹ pass 62\x1b[39m`
-  // — so the anchored counters below match nothing, every run reports pass=0, and guard 2
-  // refuses with "baseline is not green". The suite ran perfectly; only the measurement
-  // failed. Any value forces colour EXCEPT '0' (measured: '3', '1' and the EMPTY string all
-  // colour, '0' does not), so this deletes rather than overwrites. TERM/COLORTERM alone do
-  // not colour a piped child, which is why this only shows up in harnesses that export
-  // FORCE_COLOR explicitly — CI, and some terminal wrappers.
-  const env = { ...process.env };
-  delete env.NODE_TEST_CONTEXT;
-  delete env.FORCE_COLOR;
+  // FORCE_COLOR is also deliberately absent.  The structured reporter is not
+  // colour-sensitive, but a hermetic evidence child must not inherit presentation
+  // switches (or any other ambient caller state) in the first place.
+  const env = harnessEnv();
   let out = '';
+  let errOut = '';
+  let executionFailure = null;
   try {
-    out = execFileSync(process.execPath, args, { encoding: 'utf8', env, stdio: ['ignore', 'pipe', 'pipe'] });
+    out = execFileSync(process.execPath, args, {
+      cwd: WORKSPACE_ROOT,
+      encoding: 'utf8', env, stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 15 * 60 * 1000,
+      maxBuffer: 64 * 1024 * 1024,
+    });
   } catch (e) {
     // node --test exits non-zero when tests fail; the output is still what we need.
-    out = `${e.stdout || ''}${e.stderr || ''}`;
+    out = e.stdout || '';
+    errOut = e.stderr || '';
+    executionFailure = {
+      status: e.status,
+      signal: e.signal,
+      killed: e.killed === true,
+      code: e.code,
+    };
   }
-  // Deliberate redundancy, and measured as such: EITHER the delete above OR this strip alone
-  // takes the harness's own suite from 5/9 to 14/0. Neither is load-bearing given the other,
-  // so this is not a second half of one fix — do not read it as one.
-  //
-  // Both are kept because they fail differently. The delete addresses the one colour source
-  // that exists today; this strip addresses the shape of the parse — the counters are anchored
-  // to line start/end, so ANY future SGR wrapper zeroes them again, and a zeroed count reads
-  // as "suite broken" rather than "parser broken". The vocabulary of "what can colour a piped
-  // child" was derived by testing today's node, which is exactly the kind of source the ledger
-  // warns is open-ended (round 8: where did this guard's vocabulary come from?).
-  out = out.replace(/\x1b\[[0-9;]*m/g, '');
-  const sum = (re) => [...out.matchAll(re)].reduce((n, m) => n + Number(m[1]), 0);
-  const pass = sum(/^ℹ pass (\d+)$/gm);
-  const fail = sum(/^ℹ fail (\d+)$/gm);
-  const names = [...out.matchAll(/^✖ (.+?) \(\d/gm)].map((m) => m[1]);
-  return { pass, fail, total: pass + fail, ok: fail === 0 && pass > 0, failedNames: [...new Set(names)] };
+  const measured = parseMutationReporterOutput(out, errOut, executionFailure);
+  const { pass, fail, tests: testCount, skipped, cancelled, todo } = measured;
+  return {
+    pass, fail, tests: testCount, total: testCount || pass + fail, skipped, cancelled, todo,
+    infrastructureFailure: measured.infrastructureFailure,
+    executionFailure,
+    ok: !measured.infrastructureFailure && fail === 0 && pass > 0 && testCount === pass
+      && skipped === 0 && cancelled === 0 && todo === 0,
+    failedNames: measured.failedNames,
+  };
 }
 
 function main() {
@@ -191,19 +201,35 @@ function main() {
   if (!Array.isArray(spec.tests) || spec.tests.length === 0) die('spec.tests must be a non-empty array');
   if (!Array.isArray(spec.mutations) || spec.mutations.length === 0) die('spec.mutations must be a non-empty array');
 
-  assertCleanTree();
   assertPlainTestPaths(spec.tests);
+  assertCleanTree();
   // Validate every target BEFORE running anything, so a bad path in mutation 9 does not
   // surface only after eight mutations have already run.
+  for (const m of spec.mutations) if (m?.file) assertMutableTarget(m.file, SOURCE_ROOT);
+  // The lock belongs to the Owner repository's common Git directory.  Acquiring it
+  // after materialization would put each invocation in a different disposable
+  // `.git/` and allow concurrent mutation runs to proceed against the same Owner.
+  let releaseMutationLock;
+  try { releaseMutationLock = acquireMutationLock(SOURCE_ROOT); }
+  catch (err) { die(err.message); }
+  let materialized;
+  try { materialized = materializeMutationWorkspace(SOURCE_ROOT); }
+  catch (err) { die(`could not create disposable mutation workspace: ${err.message}`); }
+  WORKSPACE_ROOT = materialized.root;
+  process.once('exit', materialized.cleanup);
   for (const m of spec.mutations) if (m?.file) assertMutableTarget(m.file);
+  const baselineWorkspace = workspaceSnapshot(WORKSPACE_ROOT);
 
   // Guard 2: a SURVIVED verdict is meaningless if the suite was not passing to begin with.
   console.log(`${DIM}baseline: ${spec.tests.join(' ')}${RESET}`);
   const base = runSuite(spec.tests);
   if (!base.ok) {
-    die(`baseline is not green (pass=${base.pass} fail=${base.fail}). `
+    die(`baseline is not green (pass=${base.pass} fail=${base.fail} tests=${base.tests}). `
       + 'Every "SURVIVED" below would be meaningless. Fix the suite first.'
       + (base.failedNames.length ? `\n  failing: ${base.failedNames.join(', ')}` : ''));
+  }
+  if (workspaceSnapshot(WORKSPACE_ROOT) !== baselineWorkspace) {
+    die('baseline test run changed repository files, refs, index, or remotes; mutation evidence is unsafe.');
   }
   if (spec.expectBaselinePass != null && base.pass !== spec.expectBaselinePass) {
     die(`baseline pass=${base.pass} but spec expects ${spec.expectBaselinePass}. `
@@ -219,7 +245,7 @@ function main() {
       die(`mutation "${label}" needs file, anchor and replacement`);
     }
     const relFile = assertMutableTarget(m.file);
-    const abs = resolve(relFile);
+    const abs = resolve(WORKSPACE_ROOT, relFile);
     const before = readFileSync(abs, 'utf8');
     // A signal kills the process outright, so the `finally` restore below never runs and
     // src/ is left mutated with nothing printed. Register a handler for the duration of the
@@ -259,29 +285,25 @@ function main() {
     // against a baseline of 4 — verdict SURVIVED, while three tests silently never ran. That
     // is the same class of lie guard 2 catches for the baseline, one level down.
     //
-    // `r.fail === 0` is load-bearing and was missing in the first version. A count change is
-    // only a problem when NOTHING failed: if the suite reported a failure, the mutation was
-    // genuinely caught and the count is beside the point. Without that condition the guard
-    // aborted on legitimate catches — measured: a syntax-error mutation reports
-    // `pass=0 fail=1` (CAUGHT, correctly), and the guard killed the run anyway, printed a
-    // message asserting "nothing failed" that was false in that very case, ignored
-    // --keep-going, and skipped every later mutation.
-    if (r.total !== base.total && r.fail === 0) {
+    if (r.infrastructureFailure) {
+      die(`mutation "${label}" produced a network/stub miss, abnormal child termination, unexpected Git, or an uncaught child error; this is infrastructure failure, not mutation evidence.`);
+    }
+    const complete = r.tests === base.tests
+      && r.pass + r.fail === base.tests
+      && r.skipped === 0 && r.cancelled === 0 && r.todo === 0;
+    if (!complete) {
       git(['checkout', 'HEAD', '--', relFile]);
-      die(`mutation "${label}" changed how many tests RAN: baseline ${base.total}, mutated `
-        + `${r.total} (pass=${r.pass} fail=${r.fail}). The verdict would be meaningless — a `
-        + 'truncated run reports SURVIVED because nothing failed, when in fact most '
-        + 'assertions never executed. Make the mutation narrower.');
+      die(`mutation "${label}" changed how many tests RAN: baseline ${base.tests}, mutated `
+        + `${r.tests} (pass=${r.pass} fail=${r.fail} skipped=${r.skipped} cancelled=${r.cancelled} todo=${r.todo}). `
+        + 'A failure from a truncated or load-broken suite is not mutation evidence; make the mutation narrower so the full suite still runs.');
     }
 
     // Guard 6: the mutation must not have left OTHER files dirty. The restore only covers
     // the file we wrote; a replacement whose test run writes elsewhere would otherwise let
     // every later mutation run under exactly the condition guard 1 forbids.
-    const strayAfter = git(['status', '--porcelain']);
-    if (strayAfter) {
-      die(`mutation "${label}" left the tree dirty after its restore:\n${strayAfter}\n`
-        + '  The mutated run wrote to a file the harness did not mutate, so it cannot be '
-        + 'undone automatically. Inspect and clean up before re-running.');
+    if (workspaceSnapshot(WORKSPACE_ROOT) !== baselineWorkspace) {
+      die(`mutation "${label}" changed repository files, refs, index, or remotes after restore. `
+        + 'Inspect the repository before re-running.');
     }
 
     const expectCaught = m.expectCaught !== false;
@@ -310,6 +332,7 @@ function main() {
   const bad = results.filter((r) => !r.asExpected);
   console.log('');
   if (bad.length === 0) {
+    releaseMutationLock?.();
     console.log(`${GREEN}all ${results.length} mutation(s) behaved as expected; tree clean${RESET}`);
     process.exit(0);
   }

@@ -1,21 +1,9 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { afterEach } from 'node:test';
 import { resolveModel, getModelInfo, listModels } from '../src/models.js';
 import { resolveConnectSelector } from '../src/devin-connect-models.js';
-import { addAccountByKey, removeAccount } from '../src/auth.js';
-import { handleChatCompletions } from '../src/handlers/chat.js';
-
-const createdAccountIds = [];
-afterEach(() => {
-  delete process.env.DEVIN_CONNECT;
-  while (createdAccountIds.length) removeAccount(createdAccountIds.pop());
-});
-function withAccount(label) {
-  const a = addAccountByKey(`issue244-${Date.now()}-${Math.random().toString(36).slice(2)}`, label);
-  createdAccountIds.push(a.id);
-  return a;
-}
+import { buildGetChatMessageRequest } from '../src/devin-connect.js';
+import { getAllFields, getField, parseFields } from '../src/proto.js';
 
 // ---------------------------------------------------------------------------
 // Issue #244 — "请同步一下最新模型 gpt5.6-luna / claude5 等...还有 swe1.7
@@ -120,66 +108,55 @@ describe('issue #244 — claude5 is fully wired', () => {
   });
 });
 
-describe('issue #244 — SWE image requests are allowed to reach the native vision path', () => {
-  function imageBody(model) {
-    return {
-      model,
-      messages: [{
-        role: 'user',
-        content: [
-          { type: 'text', text: 'what color is this?' },
-          { type: 'image_url', image_url: { url: 'data:image/png;base64,iVBORw0KGgo=' } },
-        ],
-      }],
-    };
+describe('issue #244 — SWE native vision is encoded on the captured wire shape', () => {
+  const IMAGE_BASE64 = 'iVBORw0KGgo=';
+  const TEXT = 'what color is this?';
+
+  function selectorFor(alias) {
+    const resolved = resolveConnectSelector(alias);
+    assert.equal(resolved.mapped, true, `${alias} must resolve to a DEVIN_CONNECT selector`);
+    return resolved.selector;
   }
 
-  it('swe-1-7 + image is not rejected by a hardcoded model_no_vision guard', async () => {
-    process.env.DEVIN_CONNECT = '1';
-    withAccount('issue244-swe-vision');
-    const result = await handleChatCompletions(imageBody('swe-1-7'));
-    assert.notEqual(
-      result.status === 400 && result.body?.error?.code === 'model_no_vision',
-      true,
-      'the captured upstream wire proves swe-1-7 accepts source=USER images #10',
-    );
-  });
-
-  it('swe-1-7-lightning is not rejected merely because it belongs to the SWE family', async () => {
-    process.env.DEVIN_CONNECT = '1';
-    withAccount('issue244-swe-vision-lt');
-    const result = await handleChatCompletions(imageBody('swe-1-7-lightning'));
-    assert.notEqual(
-      result.status === 400 && result.body?.error?.code === 'model_no_vision',
-      true,
-    );
-  });
-
-  it('a vision-capable model is NOT rejected by the swe guard', async () => {
-    process.env.DEVIN_CONNECT = '1';
-    withAccount('issue244-claude-vision');
-    const result = await handleChatCompletions(imageBody('claude-sonnet-4-6'));
-    // Must NOT be the swe no-vision reject; it proceeds toward the upstream path
-    // (un-stubbed here), so anything other than model_no_vision is acceptable.
-    assert.notEqual(
-      result.status === 400 && result.body?.error?.code === 'model_no_vision',
-      true,
-      'claude-sonnet-4-6 must not be rejected by a family-name heuristic',
-    );
-  });
-
-  it('swe-1-7 + text-only request is NOT rejected (text/code still fine)', async () => {
-    process.env.DEVIN_CONNECT = '1';
-    withAccount('issue244-swe-text');
-    const result = await handleChatCompletions({
-      model: 'swe-1-7',
-      messages: [{ role: 'user', content: 'write a loop' }],
+  function chatMessagesOf(alias, content) {
+    const request = buildGetChatMessageRequest({
+      token: 'issue-244-wire-fixture',
+      model: selectorFor(alias),
+      messages: [{ role: 'user', content }],
+      env: {},
     });
-    assert.notEqual(
-      result.status === 400 && result.body?.error?.code === 'model_no_vision',
-      true,
-      'text-only swe-1-7 must not trip the no-vision guard',
-    );
+    return getAllFields(parseFields(request), 3).map((field) => parseFields(field.value));
+  }
+
+  for (const alias of ['swe-1-7', 'swe-1-7-lightning']) {
+    it(`${alias} keeps one image on the source=USER message at repeated field #10`, () => {
+      const messages = chatMessagesOf(alias, [
+        { type: 'text', text: TEXT },
+        { type: 'image_url', image_url: { url: `data:image/png;base64,${IMAGE_BASE64}` } },
+      ]);
+
+      assert.equal(messages.length, 1, 'one caller message must remain one wire message');
+      const [user] = messages;
+      assert.equal(Number(getField(user, 2, 0)?.value), 1, 'ChatMessage.source #2 = USER');
+      assert.equal(getField(user, 3, 2)?.value.toString('utf8'), TEXT, 'ChatMessage.text #3');
+      assert.equal(getField(user, 6, 2), null, 'no synthetic read tool call');
+      assert.equal(getField(user, 7, 2), null, 'no synthetic tool_call_id');
+
+      const images = getAllFields(user, 10).map((field) => parseFields(field.value));
+      assert.equal(images.length, 1, 'ChatMessage.images is repeated field #10');
+      assert.equal(getField(images[0], 1, 2)?.value.toString('utf8'), IMAGE_BASE64,
+        'ImageData.base64_data #1');
+      assert.equal(getField(images[0], 2, 2)?.value.toString('utf8'), 'image/png',
+        'ImageData.mime_type #2');
+    });
+  }
+
+  it('swe-1-7 text-only turns keep the same USER wire shape without an image field', () => {
+    const messages = chatMessagesOf('swe-1-7', 'write a loop');
+    assert.equal(messages.length, 1);
+    assert.equal(Number(getField(messages[0], 2, 0)?.value), 1);
+    assert.equal(getField(messages[0], 3, 2)?.value.toString('utf8'), 'write a loop');
+    assert.equal(getField(messages[0], 10, 2), null);
   });
 });
 

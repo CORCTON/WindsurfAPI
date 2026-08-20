@@ -4569,6 +4569,7 @@ docker compose up -d --force-recreate</pre>
     const status = document.getElementById('update-status');
     const apply = document.getElementById('btn-apply-update');
     btn.disabled = true;
+    apply.disabled = true;
     status.classList.remove('hidden');
     status.innerHTML = '<span class="text-muted">' + I18n.t('status.checkingUpdate') + '</span>';
     try {
@@ -4585,6 +4586,8 @@ docker compose up -d --force-recreate</pre>
           apply.classList.add('hidden');
           return;
         }
+        apply.classList.add('hidden');
+        apply.disabled = true;
         throw new Error(this.translateError(r.error, 'error.apiError'));
       }
       if (r.mode === 'docker') {
@@ -4599,6 +4602,7 @@ docker compose up -d --force-recreate</pre>
             <div>${I18n.t('status.dockerProject')} <code>${this.esc(r.project || '')}</code></div>
           </div>`;
         apply.classList.remove('hidden');
+        apply.disabled = false;
         apply.dataset.mode = 'docker';
         return;
       }
@@ -4611,6 +4615,7 @@ docker compose up -d --force-recreate</pre>
             target: this.esc(r.remoteCommit || ''),
           })}</div>`;
         apply.classList.add('hidden');
+        apply.disabled = true;
       } else if (r.behind) {
         const unreleasedNote = r.unreleasedCount > 0
           ? `<div class="text-sm text-muted">${I18n.t('status.unreleasedHint', { count: r.unreleasedCount, tag: this.esc(r.latestTag || '') })}</div>`
@@ -4623,12 +4628,14 @@ docker compose up -d --force-recreate</pre>
             ${unreleasedNote}
           </div>`;
         apply.classList.remove('hidden');
+        apply.disabled = false;
       } else {
         const unreleasedNote = r.unreleasedCount > 0
           ? `<div class="text-sm text-muted" style="margin-top:6px">${I18n.t('status.unreleasedHint', { count: r.unreleasedCount, tag: this.esc(r.latestTag || '') })}</div>`
           : '';
         status.innerHTML = '<span style="color:var(--success)">✓ ' + I18n.t('status.upToDate', {commit: this.esc(r.commit), message: this.esc(r.localMessage)}) + '</span>' + unreleasedNote;
         apply.classList.add('hidden');
+        apply.disabled = true;
       }
     } catch (err) {
       status.innerHTML = `<span style="color:var(--error)">✗ ${this.esc(err.message)}</span>`;
@@ -4645,6 +4652,15 @@ docker compose up -d --force-recreate</pre>
     apply.disabled = true;
     status.innerHTML = '<span class="text-muted">' + I18n.t('status.pullingRestarting') + '</span>';
     try {
+      // Capture the old process identity before the update schedules its
+      // restart.  Commit-only polling can be fooled by an unrelated listener
+      // serving the new tree, and a same-PID response can be the old process
+      // that never restarted at all.
+      let previousHealth = null;
+      try {
+        const previousResponse = await fetch('/health', { cache: 'no-store' });
+        if (previousResponse.ok) previousHealth = await previousResponse.json();
+      } catch { /* the update endpoint remains the source of truth for start */ }
       let r = await this.api('POST', '/self-update');
       if (r.dirty) {
         const filesList = (r.dirtyFiles || []).slice(0, 10).map(f => this.esc(f)).join('<br>');
@@ -4685,7 +4701,11 @@ docker compose up -d --force-recreate</pre>
           this.showSelfUpdateUnavailable(status, apply, r);
           return;
         }
-        throw new Error(this.translateError(r.error, 'error.updateFailed'));
+        const conflicts = r.error === 'ERR_IGNORED_PATH_CONFLICT' && Array.isArray(r.conflictPaths)
+          ? r.conflictPaths.slice(0, 10).join(', ')
+          : '';
+        const message = this.translateError(r.error, 'error.updateFailed');
+        throw new Error(conflicts ? `${message}: ${conflicts}` : message);
       }
       if (r.changed) {
         status.innerHTML = `
@@ -4693,7 +4713,10 @@ docker compose up -d --force-recreate</pre>
           <div class="text-sm text-muted">${I18n.t('status.restarting')}</div>
           <pre style="margin-top:8px;font-size:11px;max-height:200px;overflow:auto;padding:8px;background:var(--surface-2);border-radius:4px">${this.esc(r.pullOutput || '')}</pre>`;
         // 失败回滚：更新后轮询健康，30s 内服务未恢复 → 提示 + 一键回滚按钮
-        this._pollHealthAfterUpdate(status, apply);
+        this._pollHealthAfterUpdate(status, apply, {
+          expectedCommit: r.after,
+          previousPid: previousHealth?.pid,
+        });
       } else {
         status.innerHTML = '<span class="text-muted">' + I18n.t('status.noUpdateNeeded') + '</span>';
         apply.classList.add('hidden');
@@ -4705,15 +4728,36 @@ docker compose up -d --force-recreate</pre>
     }
   },
 
-  _pollHealthAfterUpdate(status, apply) {
+  _pollHealthAfterUpdate(status, apply, { expectedCommit = '', previousPid = null } = {}) {
     let tries = 0;
     const maxTries = 15; // 2s × 15 = 30s
+    const expected = typeof expectedCommit === 'string'
+      ? expectedCommit.trim().toLowerCase()
+      : '';
+    const oldPid = Number.isSafeInteger(previousPid) && previousPid > 0
+      ? previousPid
+      : null;
+    const isCommitId = value => /^[0-9a-f]{7,64}$/.test(value);
+    const healthMatchesUpdate = (h) => {
+      if (!h || h.status !== 'ok' || !expected) return false;
+      const actual = typeof h.commit === 'string' ? h.commit.trim().toLowerCase() : '';
+      const abbreviated = Math.min(actual.length, expected.length) <= 12;
+      const commitsCorrespond = actual === expected
+        || (abbreviated && (actual.startsWith(expected) || expected.startsWith(actual)));
+      if (!isCommitId(expected) || !isCommitId(actual) || !commitsCorrespond) return false;
+      const pid = h.pid;
+      if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+      // When the old process identity was observable, require a genuinely new
+      // process.  This closes the same-commit/same-listener false-success path.
+      return oldPid === null || pid !== oldPid;
+    };
     const check = async () => {
       try {
         // 轮询公共 /health（不是 /dashboard/api/*）—— dashboard API 没有 /health 路由
         const hr = await fetch('/health', { cache: 'no-store' });
+        if (!hr.ok) throw new Error(`health ${hr.status}`);
         const h = await hr.json();
-        if (h && h.status === 'ok') {
+        if (healthMatchesUpdate(h)) {
           status.innerHTML += `<div class="text-sm" style="color:var(--success);margin-top:8px">${I18n.t('status.healthOk')}</div>`;
           setTimeout(() => location.reload(), 1000);
           return;
@@ -4748,12 +4792,35 @@ docker compose up -d --force-recreate</pre>
     rollback.disabled = true;
     status.innerHTML = '<span class="text-muted">' + I18n.t('status.rollingBack') + '</span>';
     try {
-      const r = await this.api('POST', '/self-update/rollback');
+      let previousHealth = null;
+      try {
+        const previousResponse = await fetch('/health', { cache: 'no-store' });
+        if (previousResponse.ok) previousHealth = await previousResponse.json();
+      } catch { /* rollback endpoint still performs its own verified reset */ }
+      let r = await this.api('POST', '/self-update/rollback');
+      if (!r.ok && r.error === 'ERR_UNCOMMITTED_CHANGES' && r.dirty) {
+        const filesList = (r.dirtyFiles || []).slice(0, 10).map(f => this.esc(f)).join('<br>');
+        const force = await this.confirm(
+          I18n.t('confirm.rollbackDirtyTitle'),
+          I18n.t('confirm.rollbackDirtyHint', { files: filesList }),
+          { okText: I18n.t('confirm.rollbackDirtyOk'), danger: true, html: true },
+        );
+        if (!force) {
+          status.innerHTML = '<span class="text-muted">' + I18n.t('status.cancelled') + '</span>';
+          rollback.disabled = false;
+          return;
+        }
+        r = await this.api('POST', '/self-update/rollback', { forceReset: true });
+      }
       if (!r.ok) {
         if (r.error === 'ERR_NO_ROLLBACK_POINT') {
           status.innerHTML = `<span style="color:var(--error)">✗ ${I18n.t('status.noRollbackPoint')}</span>`;
         } else {
-          throw new Error(this.translateError(r.error, 'error.rollbackFailed'));
+          const conflicts = r.error === 'ERR_IGNORED_PATH_CONFLICT' && Array.isArray(r.conflictPaths)
+            ? r.conflictPaths.slice(0, 10).join(', ')
+            : '';
+          const message = this.translateError(r.error, 'error.rollbackFailed');
+          throw new Error(conflicts ? `${message}: ${conflicts}` : message);
         }
         rollback.disabled = false;
         return;
@@ -4762,7 +4829,10 @@ docker compose up -d --force-recreate</pre>
         <div style="color:var(--success);font-weight:600;margin-bottom:6px">${I18n.t('status.rolledBack', { commit: this.esc(r.rolledBackTo || '') })}</div>
         <div class="text-sm text-muted">${I18n.t('status.restarting')}</div>`;
       if (rollback) rollback.classList.add('hidden');
-      setTimeout(() => location.reload(), 3000);
+      this._pollHealthAfterUpdate(status, apply, {
+        expectedCommit: r.rolledBackTo,
+        previousPid: previousHealth?.pid,
+      });
     } catch (err) {
       status.innerHTML = `<span style="color:var(--error)">✗ ${this.esc(err.message)}</span>`;
       rollback.disabled = false;

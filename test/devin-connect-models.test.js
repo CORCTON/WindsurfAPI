@@ -1,6 +1,21 @@
-import { describe, it } from 'node:test';
+import { afterEach, beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { resolveConnectSelector, FREE_TIER_SELECTOR } from '../src/devin-connect-models.js';
+
+const SAVED_CONNECT_TOKEN = process.env.DEVIN_CONNECT_TOKEN;
+const SAVED_WINDSURF_API_KEY = process.env.WINDSURF_API_KEY;
+
+beforeEach(() => {
+  delete process.env.DEVIN_CONNECT_TOKEN;
+  delete process.env.WINDSURF_API_KEY;
+});
+
+afterEach(() => {
+  if (SAVED_CONNECT_TOKEN === undefined) delete process.env.DEVIN_CONNECT_TOKEN;
+  else process.env.DEVIN_CONNECT_TOKEN = SAVED_CONNECT_TOKEN;
+  if (SAVED_WINDSURF_API_KEY === undefined) delete process.env.WINDSURF_API_KEY;
+  else process.env.WINDSURF_API_KEY = SAVED_WINDSURF_API_KEY;
+});
 
 describe('resolveConnectSelector', () => {
   it('resolves the free-tier swe selector (dash and dot forms)', () => {
@@ -54,7 +69,9 @@ describe('resolveConnectSelector — live catalog (audit 2026-07-12 snapshot sta
   // after it was captured (proven on a live account 2026-07-12: qwen-3, glm-5,
   // kimi-k2.5, deepseek-v3, minimax-*) were absent from CATALOG_SELECTORS and
   // got mapped:false → 400'd by the strict gate despite being runnable. The live
-  // catalog set (populated from GetCliModelConfigs) fixes this as "snapshot ∪ live".
+  // catalog set (populated from GetCliModelConfigs) becomes authoritative after
+  // every active contributor has a successful sync; the snapshot remains the
+  // cold-start and partial-sync fallback.
   const STALE = ['qwen-3', 'glm-5', 'kimi-k2.5', 'deepseek-v3'];
 
   it('cold start (no live sync): a genuinely-runnable-but-unsnapshotted selector is mapped:false', async () => {
@@ -102,6 +119,62 @@ describe('resolveConnectSelector — live catalog (audit 2026-07-12 snapshot sta
     assert.equal(m.resolveConnectSelector('glm-5.2').selector, 'glm-5-2');
   });
 
+  it('retires a snapshot alias when its target is absent from a complete live catalog', async () => {
+    const m = await import(`../src/devin-connect-models.js?fresh=${Date.now()}-c3`);
+    m.setLiveCatalogSelectors([
+      { selector: 'claude-opus-4-8-medium', alias: 'claude-opus-4.8' },
+    ]);
+
+    assert.equal(m.resolveConnectSelector('claude-opus-4.8').mapped, true,
+      'precondition: an alias targeting a live selector remains valid');
+    const retired = m.resolveConnectSelector('gpt-5.5', { warnOnFallback: false });
+    assert.deepEqual(retired, { selector: m.FREE_TIER_SELECTOR, mapped: false },
+      'chat preflight must not keep a snapshot-only alias routable after complete live sync');
+  });
+
+  it('keeps snapshot aliases during an explicitly incomplete mixed-pool sync', async () => {
+    const m = await import(`../src/devin-connect-models.js?fresh=${Date.now()}-partial`);
+    m.setLiveCatalogSelectors([
+      { selector: 'claude-opus-4-8-medium' },
+    ], { includeSnapshotFallback: true });
+
+    assert.deepEqual(
+      m.resolveConnectSelector('gpt-5.5', { warnOnFallback: false }),
+      { selector: 'gpt-5-5-low', mapped: true },
+      'an account without LKG rows still contributes the frozen snapshot fallback',
+    );
+  });
+
+  it('keeps snapshot aliases for the process env-token fallback beside live rows', async () => {
+    const savedToken = process.env.DEVIN_CONNECT_TOKEN;
+    const savedKey = process.env.WINDSURF_API_KEY;
+    const m = await import(`../src/devin-connect-models.js?fresh=${Date.now()}-env-token`);
+    try {
+      delete process.env.WINDSURF_API_KEY;
+      process.env.DEVIN_CONNECT_TOKEN = 'env-token-fallback-test';
+      m.setLiveCatalogSelectors([{ selector: 'claude-opus-4-8-medium' }]);
+      assert.deepEqual(
+        m.resolveConnectSelector('gpt-5.5', { warnOnFallback: false }),
+        { selector: 'gpt-5-5-low', mapped: true },
+      );
+    } finally {
+      if (savedToken === undefined) delete process.env.DEVIN_CONNECT_TOKEN;
+      else process.env.DEVIN_CONNECT_TOKEN = savedToken;
+      if (savedKey === undefined) delete process.env.WINDSURF_API_KEY;
+      else process.env.WINDSURF_API_KEY = savedKey;
+    }
+  });
+
+  it('keeps catalog-independent synthetic selectors valid after live sync', async () => {
+    const m = await import(`../src/devin-connect-models.js?fresh=${Date.now()}-synthetic`);
+    m.setLiveCatalogSelectors([{ selector: 'claude-opus-4-8-medium' }]);
+
+    assert.deepEqual(
+      m.resolveConnectSelector('subagent-default'),
+      { selector: 'subagent-default', mapped: true },
+    );
+  });
+
   it('a bad/empty sync never blanks out a good live set', async () => {
     const m = await import(`../src/devin-connect-models.js?fresh=${Date.now()}-d`);
     m.setLiveCatalogSelectors([{ selector: 'qwen-3' }]);
@@ -109,6 +182,26 @@ describe('resolveConnectSelector — live catalog (audit 2026-07-12 snapshot sta
     m.setLiveCatalogSelectors([]);          // empty → no-op
     m.setLiveCatalogSelectors(null);        // garbage → no-op
     assert.equal(m.resolveConnectSelector('qwen-3').mapped, true, 'prior good set survives a bad sync');
+  });
+
+  it('normalizes string-only seam rows into the readable live catalog', async () => {
+    const m = await import(`../src/devin-connect-models.js?fresh=${Date.now()}-strings`);
+    m.setLiveCatalogSelectors(['  qwen-3  ', '']);
+
+    assert.deepEqual(m.getLiveCatalog(), [{ selector: 'qwen-3' }]);
+    assert.deepEqual(m.resolveConnectSelector('qwen-3'), { selector: 'qwen-3', mapped: true });
+  });
+
+  it('normalizes object selectors without dropping their catalog metadata', async () => {
+    const m = await import(`../src/devin-connect-models.js?fresh=${Date.now()}-objects`);
+    m.setLiveCatalogSelectors([
+      { selector: '  qwen-3  ', label: 'Qwen 3', provider: 'alibaba' },
+    ]);
+
+    assert.deepEqual(m.getLiveCatalog(), [
+      { selector: 'qwen-3', label: 'Qwen 3', provider: 'alibaba' },
+    ]);
+    assert.deepEqual(m.resolveConnectSelector('qwen-3'), { selector: 'qwen-3', mapped: true });
   });
 
   it('genuine junk still degrades even with a live catalog present', async () => {

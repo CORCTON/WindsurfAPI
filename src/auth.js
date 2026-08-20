@@ -31,7 +31,12 @@ import {
   forgetCloudModelCatalog,
   setActiveCloudCatalogAccounts,
 } from './models.js';
-import { FREE_REACHABLE_SELECTORS, setLiveCatalogSelectors, clearLiveCatalogSelectors } from './devin-connect-models.js';
+import {
+  FREE_REACHABLE_SELECTORS,
+  setLiveCatalogSelectors,
+  clearLiveCatalogSelectors,
+  isConnectSelectorCatalogIndependent,
+} from './devin-connect-models.js';
 import { getLsAdmissionStatus, getLsMaintenanceRequests } from './langserver.js';
 import { bumpConnect } from './devin-connect-metrics.js';
 
@@ -832,8 +837,11 @@ const MODEL_CATALOG_CONFIRM_RETRY_MS = 30_000;
 const _connectCatalogRowsByAccount = new Map(); // account id → decoded catalog rows
 const _connectCatalogSyncedKeys = new Map();    // account id → apiKey already synced
 const _connectCatalogSyncedAt = new Map();       // account id → successful refresh timestamp
-const _connectCatalogSyncPromises = new Map();  // account id → { apiKey, promise }
+const _connectCatalogSyncPromises = new Map();  // account id → request identity { apiKey, promise }
+const _connectCatalogRetryState = new Map();    // account id → { apiKey, failureCount, retryAt }
 const DEFAULT_CONNECT_CATALOG_TTL_MS = 5 * 60 * 1000;
+const CONNECT_CATALOG_RETRY_BASE_MS = 30 * 1000;
+const CONNECT_CATALOG_RETRY_MAX_MS = 5 * 60 * 1000;
 let _modelCatalogDeps = null;
 
 /** Test seams for deterministic catalog synchronization without network calls. */
@@ -908,6 +916,8 @@ export function __resetModelCatalogState() {
   _connectCatalogSyncedKeys.clear();
   _connectCatalogSyncedAt.clear();
   _connectCatalogSyncPromises.clear();
+  _connectCatalogRetryState.clear();
+  clearLiveCatalogSelectors();
   clearCloudModelCatalogs();
 }
 
@@ -929,13 +939,27 @@ function reconcileModelCatalogAccounts() {
     cancelModelCatalogRetry(accountId);
     removeCloudModelCatalog(accountId);
   }
-  // Same reconciliation for the connect selector union. Without this an account
-  // that left the active set keeps contributing selectors to pool-wide discovery,
-  // so /v1/models advertises models nothing in the pool can still reach.
-  for (const accountId of [..._connectCatalogRowsByAccount.keys()]) {
+  // Same reconciliation for every part of the connect state machine. Looking only
+  // at accepted rows misses the exact dangerous window: an account can leave the
+  // active set while its FIRST request is still in flight, or while an empty/error
+  // response has armed backoff. Both must lose their request identity immediately,
+  // otherwise a same-key disable→enable cycle can revive the old request (ABA), and
+  // a re-enabled account can inherit a cooldown from its previous lifecycle.
+  const trackedConnectAccounts = new Set([
+    ..._connectCatalogRowsByAccount.keys(),
+    ..._connectCatalogSyncedKeys.keys(),
+    ..._connectCatalogSyncedAt.keys(),
+    ..._connectCatalogSyncPromises.keys(),
+    ..._connectCatalogRetryState.keys(),
+  ]);
+  for (const accountId of trackedConnectAccounts) {
     if (activeIds.has(accountId)) continue;
     forgetConnectCatalogForAccount(accountId);
   }
+  // A newly active account has no LKG rows yet. Publish that incompleteness
+  // synchronously, before its async fetch settles, so another account's live
+  // catalog cannot globally disable the newcomer's snapshot fallback.
+  publishConnectCatalogUnion(active);
   return active;
 }
 
@@ -965,6 +989,30 @@ function unionConnectCatalogRows() {
   return [...bySelector.values()];
 }
 
+/**
+ * Publish the pool-wide live union together with whether the frozen snapshot is
+ * still needed by any active account that lacks last-known-good rows.
+ *
+ * Live rows remain authoritative per account in isConnectSelectorAllowedForAccount.
+ * The snapshot fallback only keeps selectors resolvable so an unsynced/failed
+ * account can be considered by that separate entitlement gate.
+ */
+function publishConnectCatalogUnion(activeAccounts = activeModelCatalogAccounts()) {
+  const union = unionConnectCatalogRows();
+  const includeSnapshotFallback = activeAccounts.length === 0
+    || activeAccounts.some(account => !_connectCatalogRowsByAccount.has(account.id));
+  if (!union.length) {
+    const clearLiveSelectors = _modelCatalogDeps?.clearLiveCatalogSelectors
+      || clearLiveCatalogSelectors;
+    clearLiveSelectors();
+    return union;
+  }
+  const applyLiveSelectors = _modelCatalogDeps?.setLiveCatalogSelectors
+    || setLiveCatalogSelectors;
+  applyLiveSelectors(union, { includeSnapshotFallback });
+  return union;
+}
+
 function connectCatalogNow() {
   return _modelCatalogDeps?.now?.() ?? Date.now();
 }
@@ -986,54 +1034,120 @@ function connectCatalogPollMs(env = process.env) {
   return Math.max(1_000, Math.min(10_000, Math.floor(ttl / 2)));
 }
 
+function connectCatalogRetryJitterBasisPoints(accountId, apiKey) {
+  const injected = _modelCatalogDeps?.connectCatalogRetryJitterBasisPoints;
+  if (typeof injected === 'function') {
+    const value = Number(injected({ accountId, apiKey }));
+    if (Number.isFinite(value)) return Math.max(8_000, Math.min(10_000, Math.floor(value)));
+  }
+
+  // Stable FNV-1a over the credential identity spreads a fleet without using
+  // Math.random or clock state. The value never leaves this module or logs the
+  // credential; a key rotation naturally chooses a fresh schedule.
+  const identity = String(apiKey || accountId || 'connect-catalog');
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < identity.length; index += 1) {
+    hash ^= identity.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return 8_000 + ((hash >>> 0) % 2_001);
+}
+
+function connectCatalogRetryDelayMs(failureCount, accountId, apiKey) {
+  // Deterministic per-account jitter avoids a synchronized retry wave while
+  // preserving replayable tests and a monotonic exponential ladder per key.
+  // Cap the exponent before Math.pow so a permanently broken upstream cannot
+  // overflow even though the final delay is capped much earlier.
+  const exponent = Math.max(0, Math.min(30, failureCount - 1));
+  const cappedDelay = Math.min(CONNECT_CATALOG_RETRY_MAX_MS,
+    CONNECT_CATALOG_RETRY_BASE_MS * Math.pow(2, exponent));
+  const jitterBasisPoints = connectCatalogRetryJitterBasisPoints(accountId, apiKey);
+  return Math.max(1_000, Math.floor(cappedDelay * jitterBasisPoints / 10_000));
+}
+
+function recordConnectCatalogRetryFailure(accountId, apiKey) {
+  const previous = _connectCatalogRetryState.get(accountId);
+  const failureCount = previous?.apiKey === apiKey ? previous.failureCount + 1 : 1;
+  const delayMs = connectCatalogRetryDelayMs(failureCount, accountId, apiKey);
+  _connectCatalogRetryState.set(accountId, {
+    apiKey,
+    failureCount,
+    retryAt: connectCatalogNow() + delayMs,
+  });
+  return { failureCount, delayMs };
+}
+
+function isCurrentConnectCatalogAttempt(accountId, apiKey, attempt) {
+  // Account/key/status equality alone is not strong enough. After
+  // active(A)→disabled→active(A), the old request sees the same values again and
+  // would commit across the lifecycle boundary. The per-account attempt object is
+  // replaced/deleted synchronously on every invalidation, making identity the ABA
+  // guard while still allowing a fresh same-key request to start immediately.
+  if (_connectCatalogSyncPromises.get(accountId) !== attempt) return false;
+  return accounts.some((account) => (
+    account.id === accountId
+    && account.status === 'active'
+    && account.apiKey === apiKey
+  ));
+}
+
 function trySyncConnectCatalog(acct) {
   if (_modelCatalogDeps?.disableConnectSync) return;
   const now = connectCatalogNow();
   const sameKey = _connectCatalogSyncedKeys.get(acct.id) === acct.apiKey;
   const age = now - (_connectCatalogSyncedAt.get(acct.id) || 0);
   if (sameKey && age >= 0 && age < connectCatalogTtlMs()) return;
+  const backoff = _connectCatalogRetryState.get(acct.id);
+  if (backoff && backoff.apiKey !== acct.apiKey) {
+    _connectCatalogRetryState.delete(acct.id);
+  }
+  if (backoff?.apiKey === acct.apiKey && now < backoff.retryAt) return;
   const inFlight = _connectCatalogSyncPromises.get(acct.id);
   if (inFlight?.apiKey === acct.apiKey) return inFlight.promise;
   const accountId = acct.id;
   const apiKey = acct.apiKey;
+  const attempt = { apiKey, promise: null };
+  // Publish the identity BEFORE invoking an injected fetch implementation. Test
+  // seams (and real adapters) are allowed to throw synchronously; publishing first
+  // means even that path can safely decide whether it is still current.
+  _connectCatalogSyncPromises.set(accountId, attempt);
   const promise = (async () => {
     try {
       const { fetchCatalog } = _modelCatalogDeps?.fetchConnectCatalog
         ? { fetchCatalog: _modelCatalogDeps.fetchConnectCatalog }
         : await import('./devin-connect-catalog.js');
-      // Same resolution as forgetConnectCatalogForAccount: injected seam if the
-      // tests provided one, otherwise the static import. Previously this shadowed
-      // the static import with a dynamic one, so the two paths could diverge.
-      const applyLiveSelectors = _modelCatalogDeps?.setLiveCatalogSelectors || setLiveCatalogSelectors;
       const connectModels = await fetchCatalog({ token: apiKey });
-      const current = accounts.find((account) => (
-        account.id === accountId
-        && account.status === 'active'
-        && account.apiKey === apiKey
-      ));
-      if (!current) return;
+      if (!isCurrentConnectCatalogAttempt(accountId, apiKey, attempt)) return;
       // Only record a NON-EMPTY response. An empty one is no data, and storing it
       // would let the union shrink — the same fail-open shape as the Cascade
       // empty-catalog defect (models.js mergeCloudCatalogSnapshot).
-      const rows = Array.isArray(connectModels) ? connectModels : [];
+      const rows = Array.isArray(connectModels)
+        ? connectModels.filter((row) => {
+          const selector = typeof row === 'string' ? row : row?.selector;
+          return typeof selector === 'string' && selector.trim();
+        })
+        : [];
       if (rows.length) {
+        _connectCatalogRetryState.delete(accountId);
         _connectCatalogRowsByAccount.set(accountId, rows);
         _connectCatalogSyncedKeys.set(accountId, apiKey);
         _connectCatalogSyncedAt.set(accountId, connectCatalogNow());
-        const union = unionConnectCatalogRows();
-        applyLiveSelectors(union);
+        const union = publishConnectCatalogUnion();
         log.info(`DEVIN_CONNECT live catalog: account ${accountId} contributed ${rows.length} selectors, pool union now ${union.length}`);
       } else {
-        log.warn(`DEVIN_CONNECT catalog sync for ${accountId} returned no selectors — keeping the existing union`);
+        const retry = recordConnectCatalogRetryFailure(accountId, apiKey);
+        log.warn(`DEVIN_CONNECT catalog sync for ${accountId} returned no selectors — keeping the existing union; retry ${retry.failureCount} in ${retry.delayMs}ms`);
       }
     } catch (e) {
-      log.warn(`DEVIN_CONNECT catalog sync failed (snapshot fallback stays in effect): ${e.message}`);
+      if (!isCurrentConnectCatalogAttempt(accountId, apiKey, attempt)) return;
+      const retry = recordConnectCatalogRetryFailure(accountId, apiKey);
+      log.warn(`DEVIN_CONNECT catalog sync failed (snapshot fallback stays in effect; retry ${retry.failureCount} in ${retry.delayMs}ms): ${e.message}`);
     }
   })().finally(() => {
     const current = _connectCatalogSyncPromises.get(accountId);
-    if (current?.promise === promise) _connectCatalogSyncPromises.delete(accountId);
+    if (current === attempt) _connectCatalogSyncPromises.delete(accountId);
   });
-  _connectCatalogSyncPromises.set(accountId, { apiKey, promise });
+  attempt.promise = promise;
   return promise;
 }
 
@@ -1047,18 +1161,15 @@ function trySyncConnectCatalog(acct) {
  * injected seam to the real module.
  */
 function forgetConnectCatalogForAccount(accountId) {
-  const had = _connectCatalogRowsByAccount.delete(accountId);
+  _connectCatalogRowsByAccount.delete(accountId);
   _connectCatalogSyncedKeys.delete(accountId);
   _connectCatalogSyncedAt.delete(accountId);
   _connectCatalogSyncPromises.delete(accountId);
-  if (!had) return;
-  const union = unionConnectCatalogRows();
-  const applyLiveSelectors = _modelCatalogDeps?.setLiveCatalogSelectors || setLiveCatalogSelectors;
-  // setLiveCatalogSelectors ignores empty input by design ("never blank out a good
-  // set on a bad fetch"), so when the last contributor leaves, clear explicitly
-  // instead of calling it with nothing and silently keeping the stale set.
-  if (union.length) applyLiveSelectors(union);
-  else clearLiveCatalogSelectors();
+  _connectCatalogRetryState.delete(accountId);
+  // Even an account that never produced rows affects policy: removing the last
+  // unsynced/failed contributor can make the remaining live union fully
+  // authoritative. Always republish instead of returning early on `had === false`.
+  publishConnectCatalogUnion();
 }
 
 async function fetchAndMergeModelCatalog(accountId, apiKey) {
@@ -1409,7 +1520,24 @@ export function isConnectSelectorAllowedForAccount(account, selector) {
   // Paid selector: require a paid bucket. 'unknown' (unprobed new account) is
   // allowed — it self-heals to 'free' after a probe, then gets blocked here on
   // the next request, matching MODEL_TIER_ACCESS.unknown's optimistic policy.
-  return bucket === 'pro' || bucket === 'unknown';
+  if (bucket !== 'pro' && bucket !== 'unknown') return false;
+
+  // Some internal selectors are intentionally valid without appearing in
+  // GetCliModelConfigs. Keep their historical tier gate, but do not subject them
+  // to a catalog-membership test that can never succeed.
+  if (isConnectSelectorCatalogIndependent(selector)) return true;
+
+  // A successful non-empty GetCliModelConfigs response is authoritative for
+  // THIS account. Paid tier alone is not proof that every selector in the frozen
+  // snapshot still exists for it. Mixed pools expose the union (plus snapshot
+  // fallback while any account lacks LKG rows), then this check keeps routing
+  // within each synced account's own contribution.
+  const rows = _connectCatalogRowsByAccount.get(account.id);
+  if (!Array.isArray(rows) || rows.length === 0) return true;
+  return rows.some((row) => {
+    const candidate = typeof row === 'string' ? row : row?.selector;
+    return typeof candidate === 'string' && candidate.trim() === selector;
+  });
 }
 
 // True if at least one active account is entitled to this connect selector.

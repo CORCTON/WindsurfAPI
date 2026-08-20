@@ -99,9 +99,9 @@ describe('neutralizeCascadeIdentity', () => {
     assert.equal(neutralizeCascadeIdentity(json, model), json);
   });
 
-  it('returns text unchanged when modelName has no known provider mapping', () => {
+  it('neutralizes Cascade self-name when modelName has no known provider mapping', () => {
     const text = 'I am Cascade.';
-    assert.equal(neutralizeCascadeIdentity(text, 'mystery-model'), text);
+    assert.equal(neutralizeCascadeIdentity(text, 'mystery-model'), 'I am mystery-model.');
   });
 
   it('returns falsy inputs unchanged', () => {

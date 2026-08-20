@@ -27,7 +27,7 @@ merge second.
 
 ```bash
 npm run test:release          # per-file process isolation; this is the authoritative count
-node scripts/secret-scan.mjs  # EXIT=0. Scope: TRACKED files only, and it skips test/
+node scripts/secret-scan.mjs  # EXIT=0. Scope: tracked files; test/ is scanned except test/_research/
 git diff --check              # no whitespace damage
 ```
 

@@ -26,9 +26,15 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, cpSync } from 'node:fs';
+import {
+  chmodSync, mkdtempSync, rmSync, writeFileSync, mkdirSync, cpSync, statSync, readFileSync,
+  existsSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import {
+  acquireMutationLock, harnessEnv, materializeMutationWorkspace, workspaceSnapshot,
+} from '../scripts/mutation-harness-utils.mjs';
 
 const REPO = process.cwd();
 let clone;
@@ -41,9 +47,12 @@ before(() => {
   mkdirSync(join(clone, 'scripts'));
   mkdirSync(join(clone, 'test'));
   cpSync(join(REPO, 'scripts/mutate-verify.mjs'), join(clone, 'scripts/mutate-verify.mjs'));
+  cpSync(join(REPO, 'scripts/mutation-harness-utils.mjs'), join(clone, 'scripts/mutation-harness-utils.mjs'));
+  cpSync(join(REPO, 'scripts/mutation-network-deny.mjs'), join(clone, 'scripts/mutation-network-deny.mjs'));
   // setup-env.mjs is loaded via --import by the harness; a stub keeps the clone standalone.
   writeFileSync(join(clone, 'test/setup-env.mjs'), 'export {};\n');
   writeFileSync(join(clone, 'src.mjs'), `
+import { writeFileSync } from 'node:fs';
 export function alpha() { return 'a'; }
 export function beta() { return 'b'; }
 export function gamma() { return 'c'; }
@@ -94,10 +103,11 @@ function runHarness(spec, extraArgs = [], envOverrides = null) {
 
 const strip = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
 
-describe('a genuine catch is reported even when it changes the test count', () => {
-  it('a syntax-error mutation is CAUGHT, not aborted', () => {
-    // The exact case the count guard broke. pass=0 fail=1 — the suite failed, so the
-    // mutation was caught; the count difference is beside the point.
+describe('a failure from a truncated or load-broken suite is never mutation evidence', () => {
+  it('a syntax-error mutation is UNTRUSTWORTHY, not CAUGHT', () => {
+    // Node reports one file-level failure for this load break, while the baseline
+    // contains four tests. A nonzero fail count is not proof that the real guard
+    // assertions ran.
     const r = runHarness({
       tests: ['test/fixture.test.js'],
       expectBaselinePass: 4,
@@ -109,15 +119,12 @@ describe('a genuine catch is reported even when it changes the test count', () =
       }],
     });
     const out = strip(r.out);
-    assert.match(out, /CAUGHT/,
-      `expected CAUGHT; the harness said:\n${out}`);
-    assert.doesNotMatch(out, /changed how many tests RAN/,
-      'the count guard must not fire when the suite reported a failure — that is a catch');
-    assert.equal(r.code, 0, 'and the run must succeed, since the mutation behaved as expected');
+    assert.doesNotMatch(out, /^\s*CAUGHT\b/m, `truncated failure was blessed:\n${out}`);
+    assert.match(out, /infrastructure failure|changed how many tests RAN/);
+    assert.equal(r.code, 2, 'load-broken mutation evidence must be infrastructure failure');
   });
 
-  it('--keep-going still reaches later mutations after such a catch', () => {
-    // The count guard used to `die()` here, which skipped everything after it.
+  it('--keep-going cannot continue after untrustworthy evidence', () => {
     const r = runHarness({
       tests: ['test/fixture.test.js'],
       expectBaselinePass: 4,
@@ -137,8 +144,9 @@ describe('a genuine catch is reported even when it changes the test count', () =
       ],
     }, ['--keep-going']);
     const out = strip(r.out);
-    assert.match(out, /second: must still run/,
-      `the second mutation never ran:\n${out}`);
+    assert.doesNotMatch(out, /^\s*(?:CAUGHT|SURVIVED).*second: must still run/m,
+      'keep-going applies to real verdict mismatches, not infrastructure failure');
+    assert.equal(r.code, 2);
   });
 });
 
@@ -166,6 +174,46 @@ describe('a truncated run is never reported as a clean survivor', () => {
     assert.match(out, /changed how many tests RAN/,
       'and the abort must say why, so the reader narrows the mutation instead of trusting it');
     assert.equal(r.code, 2, 'harness-cannot-produce-a-verdict is exit 2, not 1');
+  });
+
+  it('cannot bless a truncated run through allowTruncatedCatch', () => {
+    const r = runHarness({
+      tests: ['test/fixture.test.js'],
+      expectBaselinePass: 4,
+      mutations: [{
+        name: 'truncates despite the legacy override',
+        file: 'src.mjs',
+        anchor: "export function gamma() { return 'c'; }",
+        replacement: "export function gamma() { process.exit(0); }",
+        allowTruncatedCatch: true,
+      }],
+    });
+    const out = strip(r.out);
+    assert.doesNotMatch(out, /SURVIVED/);
+    assert.match(out, /changed how many tests RAN/);
+    assert.equal(r.code, 2);
+  });
+
+  it('cannot forge a complete caught run with test-authored TAP', () => {
+    // The old human TAP parser accepted these lines as the missing aggregate:
+    // a process exit after writing pass/fail/tests made a truncated mutation
+    // look like a legitimate CAUGHT result.  The structured reporter never
+    // yields ordinary test stdout and therefore has no summary to trust.
+    const r = runHarness({
+      tests: ['test/fixture.test.js'],
+      expectBaselinePass: 4,
+      mutations: [{
+        name: 'forged TAP plus truncation',
+        file: 'src.mjs',
+        anchor: "export function gamma() { return 'c'; }",
+        replacement: "export function gamma() { process.stdout.write('ℹ pass 3\\nℹ fail 1\\nℹ tests 4\\n'); process.exit(0); }",
+      }],
+    });
+    const out = strip(r.out);
+    const verdictLines = out.split('\n').filter((l) => /^\s*(CAUGHT|SURVIVED)\b/.test(l.trim()));
+    assert.deepEqual(verdictLines, [], `forged TAP produced a verdict:\n${out}`);
+    assert.match(out, /changed how many tests RAN|infrastructure failure/);
+    assert.equal(r.code, 2);
   });
 });
 
@@ -304,5 +352,221 @@ describe('the measurement survives a colour-forcing caller', () => {
     const out = strip(r.out);
     assert.match(out, /baseline 4 pass \/ 0 fail/);
     assert.equal(r.code, 0);
+  });
+});
+
+describe('the mutation child environment is hermetic', () => {
+  it('does not carry credentials, proxies, auth switches, or real data paths', () => {
+    const env = harnessEnv({
+      API_KEY: 'sentinel-api-key',
+      DASHBOARD_PASSWORD: 'sentinel-password',
+      DEVIN_CONNECT_TOKEN: 'sentinel-token',
+      WINDSURF_API_KEY: 'sentinel-windsurf-key',
+      CODEIUM_AUTH_TOKEN: 'sentinel-codeium-token',
+      GITHUB_PERSONAL_ACCESS_TOKEN: 'sentinel-github-token',
+      HTTP_PROXY: 'http://sentinel.invalid:8080',
+      HTTPS_PROXY: 'http://sentinel.invalid:8080',
+      ALL_PROXY: 'http://sentinel.invalid:8080',
+      DATA_DIR: '/sentinel/real-data',
+      WINDSURFAPI_ALLOW_UNAUTHENTICATED: '1',
+      NODE_OPTIONS: '--require=/sentinel/preload.cjs',
+      PATH: '/sentinel/bin',
+      HOME: '/sentinel/home',
+      FORCE_COLOR: '3',
+    });
+
+    for (const key of [
+      'API_KEY', 'DASHBOARD_PASSWORD', 'DEVIN_CONNECT_TOKEN', 'WINDSURF_API_KEY',
+      'CODEIUM_AUTH_TOKEN', 'GITHUB_PERSONAL_ACCESS_TOKEN', 'HTTP_PROXY', 'HTTPS_PROXY',
+      'ALL_PROXY', 'DATA_DIR', 'WINDSURFAPI_ALLOW_UNAUTHENTICATED', 'NODE_OPTIONS',
+      'FORCE_COLOR',
+    ]) assert.equal(env[key], undefined, `${key} must not cross the harness boundary`);
+
+    assert.notEqual(env.PATH, '/sentinel/bin');
+    assert.notEqual(env.HOME, '/sentinel/home');
+    assert.equal(env.GIT_CONFIG_NOSYSTEM, '1');
+    assert.equal(env.GIT_CONFIG_GLOBAL, '/dev/null');
+    assert.equal(env.GIT_CONFIG_SYSTEM, '/dev/null');
+    assert.equal(env.WINDSURFAPI_SKIP_DOTENV, '1');
+    assert.equal(env.LANG, 'C');
+    assert.equal(env.LC_ALL, 'C');
+    assert.equal(env.TZ, 'UTC');
+    assert.equal(env.NO_COLOR, '1');
+  });
+
+  it('blocks hard-coded non-loopback fetch before it can become mutation evidence', () => {
+    const r = runHarness({
+      tests: ['test/fixture.test.js'],
+      expectBaselinePass: 4,
+      mutations: [{
+        name: 'attempts a real external fetch',
+        file: 'src.mjs',
+        anchor: "export function alpha() { return 'a'; }",
+        replacement: "export function alpha() { return fetch('https://example.com/'); }",
+      }],
+    });
+    const out = strip(r.out);
+    assert.match(out, /NETWORK_STUB_MISS|infrastructure failure/);
+    assert.doesNotMatch(out, /^\s*CAUGHT\b/m);
+    assert.equal(r.code, 2);
+  });
+
+  it('discards non-target test side effects instead of leaving them in the Owner checkout', () => {
+    const outside = join(clone, 'non-target-side-effect.txt');
+    const r = runHarness({
+      tests: ['test/fixture.test.js'],
+      expectBaselinePass: 4,
+      mutations: [{
+        name: 'writes a non-target file',
+        file: 'src.mjs',
+        anchor: "export function alpha() { return 'a'; }",
+        replacement: "export function alpha() { writeFileSync('non-target-side-effect.txt', 'mutated\\n'); return 'WRONG'; }",
+      }],
+    });
+    assert.equal(r.code, 2, `side effect must make the scratch verdict unsafe:\n${strip(r.out)}`);
+    assert.equal(existsSync(outside), false, 'the source checkout must remain byte-for-byte untouched');
+  });
+
+  it('snapshots every ref namespace and Git pseudoref state', () => {
+    const gitOut = (...args) => execFileSync('git', args, { cwd: clone, encoding: 'utf8' }).trim();
+    const head = gitOut('rev-parse', 'HEAD');
+    const originalBlob = gitOut('hash-object', '-w', '--stdin');
+    const replacementBlob = execFileSync('git', ['hash-object', '-w', '--stdin'], {
+      cwd: clone, encoding: 'utf8', input: 'replacement\n',
+    }).trim();
+    const refs = [
+      ['refs/custom/review', head],
+      ['refs/notes/review', head],
+      [`refs/replace/${originalBlob}`, replacementBlob],
+    ];
+    for (const [ref, oid] of refs) {
+      const before = workspaceSnapshot(clone);
+      gitOut('update-ref', ref, oid);
+      assert.notEqual(workspaceSnapshot(clone), before, `${ref} must change the snapshot`);
+      gitOut('update-ref', '-d', ref);
+    }
+    const beforePseudo = workspaceSnapshot(clone);
+    writeFileSync(join(clone, '.git', 'ORIG_HEAD'), `${head}\n`);
+    assert.notEqual(workspaceSnapshot(clone), beforePseudo, 'ORIG_HEAD must change the snapshot');
+    rmSync(join(clone, '.git', 'ORIG_HEAD'), { force: true });
+
+    const emptyAdmin = join(clone, '.git', 'sequencer');
+    const beforeEmptyAdmin = workspaceSnapshot(clone);
+    mkdirSync(emptyAdmin, { recursive: true });
+    assert.notEqual(workspaceSnapshot(clone), beforeEmptyAdmin, 'empty admin dirs must change the snapshot');
+    rmSync(emptyAdmin, { recursive: true, force: true });
+
+    const emptyRefs = join(clone, '.git', 'refs', 'custom-empty');
+    const beforeEmptyRefs = workspaceSnapshot(clone);
+    mkdirSync(emptyRefs, { recursive: true });
+    assert.notEqual(workspaceSnapshot(clone), beforeEmptyRefs, 'empty ref namespaces must change the snapshot');
+    rmSync(emptyRefs, { recursive: true, force: true });
+  });
+
+  it('ignores index stat-cache churn but still detects staged index semantics', () => {
+    const gitOut = (...args) => execFileSync('git', args, { cwd: clone, encoding: 'utf8' }).trim();
+    const target = join(clone, 'src.mjs');
+    const original = readFileSync(target, 'utf8');
+    const baseline = workspaceSnapshot(clone);
+
+    // Restoring a worktree-only mutation legitimately rewrites the raw Git
+    // index stat cache. That is not a repository side effect when the cached
+    // diff and staged entries are unchanged.
+    writeFileSync(target, `${original}\n// transient worktree mutation\n`);
+    gitOut('checkout', 'HEAD', '--', 'src.mjs');
+    assert.equal(workspaceSnapshot(clone), baseline,
+      'a complete checkout restore must not fail only because index stat-cache bytes changed');
+
+    // A real staged content change remains observable through the semantic
+    // cached diff / stage-entry snapshot even though the raw index bytes are
+    // intentionally ignored.
+    writeFileSync(target, `${original}\n// staged mutation\n`);
+    gitOut('add', 'src.mjs');
+    assert.notEqual(workspaceSnapshot(clone), baseline,
+      'a staged content change must still change the workspace snapshot');
+    gitOut('checkout', 'HEAD', '--', 'src.mjs');
+    assert.equal(workspaceSnapshot(clone), baseline, 'fixture must return to the exact baseline');
+  });
+
+  it('snapshots ignored owner files and executable mode changes', () => {
+    const ignored = join(clone, 'ignored-owner.txt');
+    writeFileSync(join(clone, '.gitignore'), 'ignored-owner.txt\n');
+    writeFileSync(ignored, 'owner bytes\n');
+    const before = workspaceSnapshot(clone);
+    writeFileSync(ignored, 'mutated owner bytes\n');
+    const afterBytes = workspaceSnapshot(clone);
+    assert.notEqual(afterBytes, before, 'ignored file byte changes must be visible to the snapshot');
+    writeFileSync(ignored, 'owner bytes\n');
+    const beforeMode = workspaceSnapshot(clone);
+    const mode = statSync(ignored).mode;
+    chmodSync(ignored, mode ^ 0o111);
+    const afterMode = workspaceSnapshot(clone);
+    assert.notEqual(afterMode, beforeMode, 'ignored file mode changes must be visible to the snapshot');
+    chmodSync(ignored, mode);
+    rmSync(ignored, { force: true });
+    rmSync(join(clone, '.gitignore'), { force: true });
+  });
+
+  it('materializes the network preload but never copies forbidden state trees', () => {
+    const opencode = join(clone, '.opencode');
+    const oldWorktree = join(clone, '.claude', 'worktrees', 'old');
+    mkdirSync(opencode, { recursive: true });
+    mkdirSync(oldWorktree, { recursive: true });
+    writeFileSync(join(opencode, 'state.md'), 'owner-only\n');
+    writeFileSync(join(oldWorktree, 'state.md'), 'legacy-owner-only\n');
+    let materialized;
+    try {
+      materialized = materializeMutationWorkspace(clone);
+      assert.equal(
+        readFileSync(join(materialized.root, 'scripts', 'mutation-network-deny.mjs'), 'utf8'),
+        readFileSync(join(clone, 'scripts', 'mutation-network-deny.mjs'), 'utf8'),
+        'the disposable clone must carry the exact network preload bytes',
+      );
+      assert.equal(existsSync(join(materialized.root, '.opencode')), false);
+      assert.equal(existsSync(join(materialized.root, '.claude', 'worktrees')), false);
+    } finally {
+      materialized?.cleanup();
+      rmSync(opencode, { recursive: true, force: true });
+      rmSync(join(clone, '.claude'), { recursive: true, force: true });
+    }
+  });
+});
+
+describe('the mutation harness stale-lock recovery is claim-safe', () => {
+  it('takes the lock in the Owner repo before materializing a clone', () => {
+    const release = acquireMutationLock(clone);
+    try {
+      const r = runHarness({
+        tests: ['test/fixture.test.js'],
+        expectBaselinePass: 4,
+        mutations: [{
+          name: 'lock is owner-global',
+          file: 'src.mjs',
+          anchor: "return 'b';",
+          replacement: "return 'z';",
+        }],
+      });
+      assert.equal(r.code, 2, `a held Owner lock must block the harness:\n${strip(r.out)}`);
+      assert.match(strip(r.out), /mutation harness lock is already held|LOCK_FAILURE|already held/i);
+    } finally {
+      release();
+    }
+  });
+
+  it('refuses a stale lock that already has a competing recovery claim', () => {
+    const lockDir = join(clone, '.git', 'codex', 'mutation-harness.lock');
+    mkdirSync(lockDir, { recursive: true, mode: 0o700 });
+    writeFileSync(join(lockDir, 'owner'), '999999999\n', 'utf8');
+    writeFileSync(join(lockDir, 'recovery'), 'another-contender\n', 'utf8');
+    try {
+      assert.throws(
+        () => acquireMutationLock(clone),
+        /claim stale mutation harness lock|already held|recover/i,
+      );
+      assert.equal(readFileSync(join(lockDir, 'owner'), 'utf8'), '999999999\n');
+      assert.equal(readFileSync(join(lockDir, 'recovery'), 'utf8'), 'another-contender\n');
+    } finally {
+      rmSync(join(clone, '.git', 'codex'), { recursive: true, force: true });
+    }
   });
 });

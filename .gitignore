@@ -39,6 +39,8 @@ scripts/*
 !scripts/verify-release-version.mjs
 !scripts/mutate-verify.mjs
 !scripts/mutate-verify-dirty.mjs
+!scripts/mutation-harness-utils.mjs
+!scripts/mutation-network-deny.mjs
 src/get-token.js
 src/test-cascade.js
 src/runtime-config.json
@@ -122,3 +124,8 @@ docs/*.bak
 /src/_bundle.cjs
 # OTA 回滚点（运行时记录，勿提交）
 data/self-update-before.json
+data/self-update-before.pending.json
+
+# Machine-local; never product
+.DS_Store
+.codegraph/

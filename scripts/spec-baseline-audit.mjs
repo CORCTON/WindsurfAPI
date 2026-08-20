@@ -19,36 +19,57 @@
 //   node scripts/spec-baseline-audit.mjs [spec-name-filter]
 //
 // Exit 0: every spec's baseline matches measured. Exit 1: drift found (prints the fix).
+// Exit 2: at least one suite could not produce trustworthy structured evidence.
 // Intended to run on master after merges (release workflow or post-merge gate).
 
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
+import {
+  acquireMutationLock, harnessEnv, materializeMutationWorkspace,
+  parseMutationReporterOutput,
+} from './mutation-harness-utils.mjs';
 
-const SPEC_DIR = join(process.cwd(), 'test', 'mutations');
+const SOURCE_ROOT = process.cwd();
+const SPEC_DIR = join(SOURCE_ROOT, 'test', 'mutations');
 const filter = process.argv[2];
 
 const C = process.stdout.isTTY
   ? { red: '\x1b[31m', green: '\x1b[32m', yellow: '\x1b[33m', dim: '\x1b[2m', bold: '\x1b[1m', reset: '\x1b[0m' }
   : { red: '', green: '', yellow: '', dim: '', bold: '', reset: '' };
 
-// Same invocation and same regex as mutate-verify's runSuite and pr-gate's measureBaseline.
-// If this measured a count differently, a disagreement with the harness would be
+// Same invocation and same structured reporter as mutate-verify's runSuite. If
+// this measured a count differently, a disagreement with the harness would be
 // unexplainable — and the whole point is to report the TRUE number.
 function measure(tests) {
-  const env = { ...process.env };
-  delete env.NODE_TEST_CONTEXT;
-  delete env.FORCE_COLOR;
-  let out = '';
+  const workspace = materializeMutationWorkspace(SOURCE_ROOT);
+  let stdout = '';
+  let stderr = '';
+  let executionFailure = null;
   try {
-    out = execFileSync(process.execPath,
-      ['--import', './test/setup-env.mjs', '--test', '--test-force-exit', ...tests],
-      { encoding: 'utf8', env, stdio: ['ignore', 'pipe', 'pipe'] });
+    stdout = execFileSync(process.execPath,
+      [
+        '--import', './scripts/mutation-network-deny.mjs',
+        '--import', './test/setup-env.mjs',
+        '--test-reporter=./scripts/mutation-harness-utils.mjs',
+        '--test', '--test-force-exit', ...tests,
+      ],
+      {
+        cwd: workspace.root,
+        encoding: 'utf8', env: harnessEnv(), stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 15 * 60 * 1000,
+        maxBuffer: 64 * 1024 * 1024,
+      });
   } catch (e) {
-    out = `${e.stdout || ''}${e.stderr || ''}`;
+    stdout = e.stdout || '';
+    stderr = e.stderr || '';
+    executionFailure = {
+      status: e.status, signal: e.signal, killed: e.killed === true, code: e.code,
+    };
+  } finally {
+    workspace.cleanup();
   }
-  const sum = (re) => [...out.matchAll(re)].reduce((n, m) => n + Number(m[1]), 0);
-  return { pass: sum(/^ℹ pass (\d+)$/gm), fail: sum(/^ℹ fail (\d+)$/gm) };
+  return parseMutationReporterOutput(stdout, stderr, executionFailure);
 }
 
 const specs = readdirSync(SPEC_DIR)
@@ -57,7 +78,18 @@ const specs = readdirSync(SPEC_DIR)
   .sort();
 
 let drift = 0;
+let untrustworthy = 0;
 let total = 0;
+
+// Lock the Owner repo once for the whole audit.  A clone-local lock would give
+// every measured spec its own namespace and would not exclude another mutation
+// harness running against the same checkout.
+let releaseMutationLock;
+try { releaseMutationLock = acquireMutationLock(SOURCE_ROOT); }
+catch (err) {
+  console.error(`${C.red}!${C.reset} spec-baseline-audit lock failure: ${err.message}`);
+  process.exit(2);
+}
 
 for (const name of specs) {
   const spec = JSON.parse(readFileSync(join(SPEC_DIR, name), 'utf8'));
@@ -72,7 +104,21 @@ for (const name of specs) {
     continue;
   }
 
-  const { pass, fail } = measure(tests);
+  let measured;
+  try { measured = measure(tests); }
+  catch (err) {
+    untrustworthy++;
+    console.log(`${C.red}!${C.reset} ${name}  (workspace failure: ${err.message})`);
+    continue;
+  }
+  const { pass, fail, tests: testCount, skipped, cancelled, todo, infrastructureFailure } = measured;
+  if (infrastructureFailure || testCount === 0 || testCount !== pass
+      || fail !== 0 || skipped !== 0 || cancelled !== 0 || todo !== 0) {
+    untrustworthy++;
+    console.log(`${C.red}!${C.reset} ${name}  measurement untrustworthy `
+      + `(pass=${pass} fail=${fail} tests=${testCount} skipped=${skipped} cancelled=${cancelled} todo=${todo})`);
+    continue;
+  }
   const ok = pass === spec.expectBaselinePass && fail === 0;
   if (ok) {
     console.log(`${C.green}✓${C.reset} ${name}  (${pass})`);
@@ -83,5 +129,6 @@ for (const name of specs) {
   }
 }
 
-console.log(`\n${C.bold}spec-baseline-audit${C.reset}: ${total - drift}/${total} match, ${drift} drifted`);
-process.exit(drift ? 1 : 0);
+releaseMutationLock?.();
+console.log(`\n${C.bold}spec-baseline-audit${C.reset}: ${total - drift - untrustworthy}/${total} match, ${drift} drifted, ${untrustworthy} untrustworthy`);
+process.exit(untrustworthy ? 2 : drift ? 1 : 0);

@@ -62,6 +62,11 @@ import { bumpConnect } from '../devin-connect-metrics.js';
 import { resolveSessionId as resolveConnectSessionId, commitAfterResponse as commitConnectSession, getSessionModelConfig as getSessionConnectModelConfig, getSessionReasoningTrail as getSessionConnectReasoningTrail } from '../session-continuity.js';
 import { newTraceId, traceClientRequest, traceRouting, traceClientResponse, traceEnabled } from '../trace.js';
 import { sanitizeText, sanitizeToolCall, PathSanitizeStream } from '../sanitize.js';
+import {
+  CascadeMetadataEgressStream,
+  neutralizeCascadeIdentity,
+  transformCascadeEgressText,
+} from './cascade-metadata-egress.js';
 import { systemFingerprint } from '../system-fingerprint.js';
 import { registerSseController } from '../sse-registry.js';
 import { createStreamReasoningDedup, isReasoningDedupEnabled } from '../reasoning-dedup.js';
@@ -81,6 +86,10 @@ const HEARTBEAT_MS = 15_000;
 const QUEUE_RETRY_MS = 1_000;
 const QUEUE_MAX_WAIT_MS = 30_000;
 const IP_RATE_LIMIT_BURST_FLOOR_MS = 30_000;
+
+// Kept as a chat.js export for existing callers/tests; implementation lives in
+// the focused egress module so the streaming and one-shot paths share it.
+export { neutralizeCascadeIdentity } from './cascade-metadata-egress.js';
 
 // #250 — reroute a LEADING think-tagged span out of the CONTENT channel into
 // reasoning on the Cascade stream path, using the same ThinkTextClassifier the
@@ -154,6 +163,29 @@ function isCompletedReadUrlNativeResult(raw) {
     && raw.hasWebDocument
     && typeof raw.result === 'string'
     && raw.result.length > 0);
+}
+
+function hasCallerVisibleCascadeTailToolCall(rawCalls, nativeOpts, declaredTools) {
+  if (!Array.isArray(rawCalls) || rawCalls.length === 0) return false;
+  const lookup = nativeOpts?.callerLookup || new Map();
+  const mapped = [];
+  for (const raw of rawCalls) {
+    if (!raw?.cascade_native || isCompletedReadUrlNativeResult(raw)) continue;
+    const callerName = (lookup.get(raw.name) || [])[0];
+    if (!callerName) continue;
+    const reverseFn = TOOL_MAP[callerName]?.reverse;
+    let cascadeArgs;
+    try { cascadeArgs = JSON.parse(raw.argumentsJson || '{}'); } catch { cascadeArgs = {}; }
+    let openaiArgs;
+    try { openaiArgs = reverseFn ? reverseFn(cascadeArgs) : cascadeArgs; }
+    catch { openaiArgs = cascadeArgs; }
+    mapped.push({
+      id: raw.id || `preview_${mapped.length}`,
+      name: callerName,
+      argumentsJson: JSON.stringify(openaiArgs ?? {}),
+    });
+  }
+  return filterToolCallsByAllowlist(mapped, declaredTools).length > 0;
 }
 
 // Cap exponential backoff before falling over to the next account when
@@ -725,11 +757,231 @@ function latestRealUserText(messages) {
 export function isExplicitJsonRequested(messages) {
   const text = latestRealUserText(messages);
   if (!text) return false;
-  if (/\b(?:compact\s+)?JSON\b/i.test(text) && /\b(?:answer|respond|return|output|containing|with|only|valid)\b/i.test(text)) {
+  const clauses = text
+    .split(/[,，;；:：.!?！？。]+/)
+    .map(part => part.trim())
+    .filter(Boolean);
+  const jsonOnlyContract = clause => (
+    /\b(?:(?:answer|respond|return|output)\s+)?nothing\s+(?:except|but)\s+(?:valid\s+)?JSON\b/i.test(clause)
+    || /\b(?:do\s+not|don['’]?t|never)\s+(?:answer|respond|return|output|produce|provide|emit)\s+anything\s+(?:except|but)\s+(?:valid\s+)?JSON\b/i.test(clause)
+    || /\b(?:do\s+not|don['’]?t|never)\s+(?:answer|respond|return|output|produce|provide|emit)\s+(?:any\s+)?non[-\s]?JSON(?:\s+(?:content|text|output|response|data))?\b/i.test(clause)
+    || /(?:不要|请勿|别|禁止)\s*(?:返回|输出|生成|提供)\s*JSON\s*(?:以外|之外)\s*的?\s*任何(?:内容|格式|文本)/.test(clause)
+    || /(?:除|除了)\s*JSON\s*(?:以外|之外|外)?\s*(?:不要|请勿|别|禁止)\s*(?:返回|输出|生成|提供)\s*任何(?:内容|格式|文本)/.test(clause)
+    || /(?:不要|请勿|别|禁止|不得)\s*(?:返回|输出|生成|提供)\s*(?:任何)?\s*非\s*JSON\s*(?:内容|文本|格式|数据)?/.test(clause)
+  );
+  const jsonContractSuffix = (suffix, { allowContentSpec = false } = {}) => {
+    const rest = String(suffix || '').trim();
+    if (!rest || /^(?:only|please)$/i.test(rest)) return true;
+    if (/^(?:[-\u2014\u2013]\s*)?(?:and\s+)?nothing\s+else$/i.test(rest)) return true;
+    if (/^(?:(?:[-\u2014\u2013]\s*)|\(\s*)?(?:and\s+)?(?:without|no)\s+(?:any\s+)?(?:prose|plain\s+text|text|explanation|commentary|markdown(?:\s+fences?)?|code\s+fences?)(?:\s*\))?$/i.test(rest)) return true;
+    return allowContentSpec && /^(?:with|containing)\b[\s\S]*$/i.test(rest);
+  };
+  const commandJsonContract = clause => {
+    const match = clause.match(/\b(?:return|output|produce|provide|emit|(?:give|send)\s+me)\s+(?:only\s+)?(?:(?:a|an)\s+)?(?:(?:valid|compact|raw|strict|minified|well[-\s]?formed)\s+)*JSON(?:\s+(?:object|format|response|payload|document|data))?\b([\s\S]*)$/i);
+    return !!match && jsonContractSuffix(match[1], { allowContentSpec: true });
+  };
+  const useJsonContract = clause => {
+    const match = clause.match(/\buse\s+(?:(only)\s+)?(?:(?:a|an)\s+)?((?:(?:valid|compact|raw|strict|minified|well[-\s]?formed)\s+)*)JSON(?:\s+(object|format|response|payload|document|data))?\b([\s\S]*)$/i);
+    if (!match) return false;
+    const hasStrongCue = !!(match[1] || match[2].trim() || match[3]);
+    return jsonContractSuffix(match[4], { allowContentSpec: hasStrongCue });
+  };
+  const answerJsonContract = clause => {
+    const preposition = clause.match(/\b(?:answer|respond|reply)\s+(?:only\s+)?(?:with|in|as|using)\s+(?:only\s+)?(?:(?:a|an)\s+)?(?:(?:valid|compact|raw|strict|minified|well[-\s]?formed)\s+)*JSON(?:\s+(?:object|format|response|payload|document|data))?\b([\s\S]*)$/i);
+    if (preposition) return jsonContractSuffix(preposition[1], { allowContentSpec: true });
+
+    const direct = clause.match(/\b(?:answer|respond|reply)\s+(?:(only)\s+)?(?:(?:a|an)\s+)?((?:(?:valid|compact|raw|strict|minified|well[-\s]?formed)\s+)*)JSON(?:\s+(object|format|response|payload|document|data))?\b([\s\S]*)$/i);
+    if (!direct) return false;
+    const hasStrongCue = !!(direct[1] || direct[2].trim() || direct[3]);
+    return jsonContractSuffix(direct[4], { allowContentSpec: hasStrongCue });
+  };
+  const modalJsonContract = clause => {
+    const match = clause.match(/\b(?:(?:your|the)\s+)?(?:answer|response|reply|output|result)\s+(?:must|should|shall)\s+be\s+(?:only\s+)?(?:(?:a|an)\s+)?(?:(?:valid|compact|raw|strict|minified|well[-\s]?formed)\s+)*JSON(?:\s+(?:object|format|response|payload|document|data))?\b([\s\S]*)$/i);
+    return !!match && jsonContractSuffix(match[1], { allowContentSpec: true });
+  };
+  const formattedJsonContract = clause => {
+    const match = clause.match(/\b(?:format|encode)\s+(?:the\s+)?(?:answer|response|result|output)\s+as\s+(?:(?:valid|compact|raw|strict|minified|well[-\s]?formed)\s+)*JSON(?:\s+(?:object|format|response|payload|document|data))?\b([\s\S]*)$/i);
+    return !!match && jsonContractSuffix(match[1], { allowContentSpec: true });
+  };
+  const positiveJsonContract = clause => (
+    commandJsonContract(clause)
+    || useJsonContract(clause)
+    || answerJsonContract(clause)
+    || modalJsonContract(clause)
+    || formattedJsonContract(clause)
+    || /^\s*(?:only\s+)?(?:(?:valid|compact|raw|strict|minified|well[-\s]?formed)\s+)*JSON(?:\s+(?:object|format|response|payload|document|data))?\s+only\s*$/i.test(clause)
+    || /^\s*(?:(?:a|an|valid|compact|raw|strict|minified|well[-\s]?formed)\s+)*JSON\s+(?:object|format|response|payload|document|data)\s*$/i.test(clause)
+    || /^\s*(?:(?:a|an|valid|compact|raw|strict|minified|well[-\s]?formed)\s+)*JSON(?:\s+(?:object|format|response|payload|document|data))?\s*,?\s*please[.!?]?\s*$/i.test(clause)
+    // Chinese contracts require format/output adjacency. Merely answering the
+    // meaning of “JSON” in text is not a structured-output request.
+    || /(?:仅|只)\s*(?:以|用)\s*JSON\s*(?:格式|对象)?\s*(?:返回|输出|回答|响应)?/.test(clause)
+    || /(?:仅|只)\s*(?:返回|输出|生成|提供)\s*(?:有效|合法|紧凑)?\s*JSON\s*(?:格式|对象)?(?=\s*(?:$|(?:即可|就好|就行)\s*$|(?:包含|含有|带有)))/.test(clause)
+    || /(?:返回|输出|生成|提供)\s*(?:仅|只|必须)\s*(?:有效|合法|紧凑)?\s*JSON\s*(?:格式|对象)?(?=\s*(?:$|(?:即可|就好|就行)\s*$|(?:包含|含有|带有)))/.test(clause)
+    || /(?:返回|输出|生成|提供)\s*(?:有效|合法|紧凑)\s*JSON\s*(?:格式|对象)?(?=\s*(?:$|(?:即可|就好|就行)\s*$|(?:包含|含有|带有)))/.test(clause)
+    || /(?:返回|输出|生成|提供)\s*JSON\s*(?:格式|对象)(?=\s*(?:$|(?:即可|就好|就行)\s*$|(?:包含|含有|带有)))/.test(clause)
+    || /(?:返回|输出|生成|提供)\s*JSON(?=\s*(?:$|(?:即可|就好|就行)\s*$|(?:包含|含有|带有)))/.test(clause)
+    || /(?:以|用)\s*JSON\s*(?:格式)?\s*(?:返回|输出|回答|回复|响应)/.test(clause)
+    || /(?:答案|回答|回复|响应|输出|结果)\s*(?:必须|应当|应该|应|须|需)\s*(?:是|为)\s*(?:有效|合法|紧凑)?\s*JSON\s*(?:格式|对象)?(?=\s*(?:$|(?:即可|就好|就行)\s*$|(?:包含|含有|带有)))/.test(clause)
+  );
+  const stripNegativeJsonSpans = clause => {
+    let matched = false;
+    const remaining = clause
+      .replace(/\b(?:answer|respond|return|output|produce|provide|emit)\s+anything\s+(?:except|but)\s+(?:valid\s+)?JSON\b/gi, () => {
+        matched = true;
+        return ' ';
+      })
+      .replace(/\b(?:(?:your|the)\s+)?(?:answer|response|reply|output|result)\s+(?:(?:must|should|shall)\s+(?:not|never)|cannot|can['’]?t)\s+be\s+(?:only\s+)?(?:(?:a|an)\s+)?(?:(?:valid|compact|raw|strict|minified|well[-\s]?formed)\s+)*JSON(?:\s+(?:object|format|response|payload|document|data))?\b/gi, () => {
+        matched = true;
+        return ' ';
+      })
+      .replace(/\b(?:do\s+not|don['’]?t|never)\s+(?:only\s+)?(?:answer|respond|reply|return|output|use|produce|provide|emit|give|send|format|encode)(?:\s+me)?\s+(?:(?:in|with|using|as)\s+)?(?:(?:any|a|an|valid|compact|raw|strict|minified|well[-\s]?formed|only)\s+)*JSON(?:\s+(?:object|format|response|payload|document|data))?\b/gi, () => {
+        matched = true;
+        return ' ';
+      })
+      .replace(/\b(?:answer|respond|return|output|use|produce|provide|emit)\s+without\s+(?:(?:any|a|an|valid|compact|raw|strict|minified|well[-\s]?formed)\s+)*JSON(?:\s+(?:object|format|response|payload|document|data))?\b/gi, () => {
+        matched = true;
+        return ' ';
+      })
+      .replace(/\bavoid\s+(?:using\s+)?(?:(?:any|a|an|valid|compact|raw|strict|minified|well[-\s]?formed)\s+)*JSON(?:\s+(?:object|format|response|payload|document|data))?\b/gi, () => {
+        matched = true;
+        return ' ';
+      })
+      .replace(/\bno\s+(?:(?:any|valid|compact|raw|strict|minified|well[-\s]?formed)\s+)*JSON(?:\s+(?:output|response|object|format|payload|document|data))?\b/gi, () => {
+        matched = true;
+        return ' ';
+      })
+      .replace(/(?:答案|回答|回复|响应|输出|结果)\s*(?:不应当|不应该|不应|不能|不可|不得)\s*(?:是|为)?\s*(?:有效|合法|紧凑)?\s*JSON\s*(?:格式|对象)?/gi, () => {
+        matched = true;
+        return ' ';
+      })
+      .replace(/(?:不要|无需|不需要|禁止|请勿|勿|别|避免).{0,12}?JSON\s*(?:格式|对象)?/gi, () => {
+        matched = true;
+        return ' ';
+      });
+    return { matched, remaining };
+  };
+
+  let sawPositive = false;
+  let sawNegative = false;
+  for (const clause of clauses) {
+    // A negated noun phrase can itself be the positive contract: “return
+    // nothing except JSON”. Check it before classifying the clause as a ban.
+    if (jsonOnlyContract(clause)) {
+      sawPositive = true;
+      continue;
+    }
+    const stripped = stripNegativeJsonSpans(clause);
+    if (stripped.matched) {
+      sawNegative = true;
+      // Conjunctions are content too, so do not split blindly on but/and/但.
+      // Instead remove only the local rejection span and let an independent
+      // contract in the remainder keep structured output authoritative.
+      if (jsonOnlyContract(stripped.remaining) || positiveJsonContract(stripped.remaining)) {
+        sawPositive = true;
+      }
+      continue;
+    }
+    if (positiveJsonContract(clause)) sawPositive = true;
+  }
+  if (sawPositive) return true;
+  if (sawNegative) return false;
+
+  // Preserve historical cross-line phrasing (for example, an action on one
+  // line and “with JSON” on the next) when no clause explicitly rejected it.
+  return jsonOnlyContract(text) || positiveJsonContract(text);
+}
+
+const CASCADE_METADATA_FIELD_NAMES = ['name', 'provider', 'model', 'description'];
+
+function isExplicitStructuredShapeRequestText(text) {
+  const source = String(text || '').trim();
+  if (!source) return false;
+
+  // Topic questions that merely discuss objects/schemas must not disable the
+  // #185 repair. Only an output command or an exact requested field shape is
+  // authoritative.
+  if (/^(?:(?:please|kindly)\s+)?(?:explain|discuss|compare|define|what|why|how)\b/i.test(source)) {
+    return false;
+  }
+  if (/^(?:(?:please|kindly)\s+)?(?:provide|give(?:\s+me)?|return|answer|respond|reply|output|emit|produce|present)(?:\s+(?:with|using))?\s+(?:(?:a|an|the)\s+)?(?:explanation|tutorial|discussion|comparison|definition)\b/i.test(source)) {
+    return false;
+  }
+
+  const outputFormatDeclaration = /^(?:(?:the\s+)?(?:answer|response|reply|output|result)\s+format|output\s+format)\s*(?::|=|\bis\b)\s*(?:only\s+)?(?:(?:a|an)\s+)?(?:(?:valid|strict|raw|compact|well[-\s]?formed|structured)\s+)*(?:JSON(?:\s+(?:object|format|response|payload|document|data))?|object|record|payload)\s*$/i;
+  const declarativeStructuredOutput = /^(?:(?:all|every|each|your|the)\s+)?(?:answers?|responses?|replies|outputs?|results?)\s+(?:are|is)\s+(?:only\s+)?(?:(?:a|an)\s+)?(?:(?:valid|strict|raw|compact|well[-\s]?formed|structured)\s+)*(?:JSON(?:\s+(?:object|format|response|payload|document|data))?|objects?|records?|payloads?)\s*$/i;
+  const namedFormatDeclaration = /^(?:(?:the\s+)?(?:answer|response|reply|output|result)\s+format|output\s+format)\s*(?::|=|\bis\b)\s*(?:only\s+)?(?:(?:a|an)\s+)?(?:(?:valid|strict|raw|compact|well[-\s]?formed|structured)\s+)*(?:YAML(?:\s+(?:object|mapping|document|record|payload|format))?|XML(?:\s+(?:object|mapping|document|record|payload|format))?)\s*[.!?]?\s*$/i;
+  const declarativeNamedFormat = /^(?:(?:all|every|each|your|the)\s+)?(?:answers?|responses?|replies|outputs?|results?)\s+(?:are|is)\s+(?:only\s+)?(?:(?:a|an)\s+)?(?:(?:valid|strict|raw|compact|well[-\s]?formed|structured)\s+)*(?:YAML(?:\s+(?:objects?|mappings?|documents?|records?|payloads?|format))?|XML(?:\s+(?:objects?|mappings?|documents?|records?|payloads?|format))?)\s*[.!?]?\s*$/i;
+  if (outputFormatDeclaration.test(source) || declarativeStructuredOutput.test(source)
+      || namedFormatDeclaration.test(source) || declarativeNamedFormat.test(source)) return true;
+
+  // A structured-output noun must end the command or introduce a shape cue.
+  // A bare word boundary is too broad: `object-oriented`, `object-storage`, and
+  // `object detector` are ordinary implementation topics, not output contracts.
+  const directObject = /^(?:(?:please|kindly)\s+)?(?:(?:(?:can|could|would|will)\s+you|you\s+(?:must|shall|should|are\s+required\s+to|have\s+to))\s+)?(?:always\s+)?(?:return|output|emit|provide|produce|send|give(?:\s+me)?|create|generate|build|construct)\s+(?:only\s+)?(?:(?:a|an|the)\s+)?(?:(?:valid|structured|JSON)\s+)*(?:object|record|payload)(?=\s*(?:[.!?]?\s*$|(?:with|containing|including|having|matching|using|following|conforming(?:\s+to)?)\b))/i;
+  const answerWithObject = /^(?:(?:please|kindly)\s+)?(?:(?:(?:can|could|would|will)\s+you|you\s+(?:must|shall|should|are\s+required\s+to|have\s+to))\s+)?(?:always\s+)?(?:answer|respond|reply)\s+(?:only\s+)?(?:with|as|using|in(?:\s+the)?\s+form\s+of)\s+(?:(?:a|an|the)\s+)?(?:(?:valid|structured|JSON)\s+)*(?:object|record|payload)(?=\s*(?:[.!?]?\s*$|(?:with|containing|including|having|matching|using|following|conforming(?:\s+to)?)\b))/i;
+  const directNamedFormat = /^(?:(?:please|kindly)\s+)?(?:(?:(?:can|could|would|will)\s+you|you\s+(?:must|shall|should|are\s+required\s+to|have\s+to))\s+)?(?:always\s+)?(?:return|output|emit|provide|produce|send|give(?:\s+me)?)\s+(?:only\s+)?(?:(?:a|an|the)\s+)?(?:(?:valid|strict|raw|compact|well[-\s]?formed|structured)\s+)*(?:YAML(?:\s+(?:object|mapping|document|record|payload|format))?|XML(?:\s+(?:object|mapping|document|record|payload|format))?)(?=\s*(?:[.!?]?\s*$|(?:with|containing|including|having|matching|using|following|conforming(?:\s+to)?)\b))/i;
+  const answerWithNamedFormat = /^(?:(?:please|kindly)\s+)?(?:(?:(?:can|could|would|will)\s+you|you\s+(?:must|shall|should|are\s+required\s+to|have\s+to))\s+)?(?:always\s+)?(?:answer|respond|reply)\s+(?:only\s+)?(?:with|as|using|in(?:\s+the)?\s+form\s+of)\s+(?:(?:a|an|the)\s+)?(?:(?:valid|strict|raw|compact|well[-\s]?formed|structured)\s+)*(?:YAML(?:\s+(?:object|mapping|document|record|payload|format))?|XML(?:\s+(?:object|mapping|document|record|payload|format))?)(?=\s*(?:[.!?]?\s*$|(?:with|containing|including|having|matching|using|following|conforming(?:\s+to)?)\b))/i;
+  const resultAsNamedFormat = /^(?:(?:please|kindly)\s+)?(?:(?:(?:can|could|would|will)\s+you|you\s+(?:must|shall|should|are\s+required\s+to|have\s+to))\s+)?(?:always\s+)?(?:return|output|emit|provide|produce|present|send|give(?:\s+me)?|structure|format|encode|render|represent|serialize)\s+(?:the\s+)?(?:answer|response|result|output|data|object|record|payload)\s+(?:as|into|using|in\s+the\s+form\s+of)\s+(?:(?:a|an)\s+)?(?:(?:valid|strict|raw|compact|well[-\s]?formed|structured)\s+)*(?:YAML|XML)(?=\s*[.!?]?\s*$)/i;
+  const resultAsObject = /^(?:(?:please|kindly)\s+)?(?:(?:(?:can|could|would|will)\s+you|you\s+(?:must|shall|should|are\s+required\s+to|have\s+to))\s+)?(?:always\s+)?(?:return|output|emit|provide|produce|present|send|give(?:\s+me)?|structure|format|encode)\s+(?:the\s+)?(?:answer|response|result|output|data)\s+(?:as|into|in\s+the\s+form\s+of)\s+(?:(?:a|an)\s+)?(?:(?:valid|structured|JSON)\s+)*(?:object|record|payload)(?=\s*(?:[.!?]?\s*$|(?:with|containing|including|having|matching|using|following|conforming(?:\s+to)?)\b))/i;
+  const representationAsObject = /^(?:(?:please|kindly)\s+)?(?:(?:(?:can|could|would|will)\s+you|you\s+(?:must|shall|should|are\s+required\s+to|have\s+to))\s+)?(?:always\s+)?(?:render|represent|serialize)\s+(?:the\s+)?(?:answer|response|result|output|data)\s+(?:as|into|in\s+the\s+form\s+of)\s+(?:(?:a|an)\s+)?(?:(?:valid|structured|JSON)\s+)*(?:object|record|payload)(?=\s*(?:[.!?]?\s*$|(?:with|containing|including|having|matching|using|following|conforming(?:\s+to)?)\b))/i;
+  const representationAsSchema = /^(?:(?:please|kindly)\s+)?(?:(?:(?:can|could|would|will)\s+you|you\s+(?:must|shall|should|are\s+required\s+to|have\s+to))\s+)?(?:always\s+)?(?:render|represent|serialize|format|encode)\s+(?:the\s+)?(?:answer|response|result|output|data)\s+(?:as|into|in\s+the\s+form\s+of)\s+(?:(?:a|an)\s+)?(?:JSON\s+)?schema\b/i;
+  const schemaCommand = /^(?:(?:please|kindly)\s+)?(?:(?:(?:can|could|would|will)\s+you|you\s+(?:must|shall|should|are\s+required\s+to|have\s+to))\s+)?(?:always\s+)?(?:(?:answer|respond|reply|return|output|emit|provide|produce|present|send|give(?:\s+me)?|format|encode)\b[\s\S]{0,80}?\b(?:matching|using|following|conforming\s+to)\s+|(?:use|follow|match|conform\s+to)\s+)(?:(?:this|the|following)\s+)?(?:JSON\s+)?schema\b/i;
+  const applySchema = /^(?:(?:please|kindly)\s+)?(?:(?:(?:can|could|would|will)\s+you|you\s+(?:must|shall|should|are\s+required\s+to|have\s+to))\s+)?(?:always\s+)?apply\s+(?:(?:this|the)\s+)?(?:following\s+)?(?:JSON\s+)?schema\s+(?:to|for)\s+(?:the\s+)?(?:answer|response|reply|result|output|data)\b/i;
+  const modalSchema = /^(?:(?:all|every|each|your|the)\s+)?(?:answers?|responses?|replies|outputs?|results?)\s+(?:must|shall|should|are\s+required\s+to|have\s+to)\s+(?:match|follow|use|conform\s+to)\s+(?:(?:this|the|following)\s+)?(?:JSON\s+)?schema\b/i;
+  const modalObject = /^(?:(?:all|every|each|your|the)\s+)?(?:answers?|responses?|replies|outputs?|results?)\s+(?:must|shall|should|are\s+required\s+to|have\s+to)\s+be\s+(?:only\s+)?(?:(?:a|an)\s+)?(?:(?:valid|strict|raw|compact|well[-\s]?formed|structured|JSON)\s+)*(?:objects?|records?|payloads?)(?=\s*(?:[.!?]?\s*$|(?:with|containing|including|having|matching|using|following|conforming(?:\s+to)?)\b))/i;
+  const describeAsObject = /^(?:(?:please|kindly)\s+)?(?:(?:(?:can|could|would|will)\s+you|you\s+(?:must|shall|should|are\s+required\s+to|have\s+to))\s+)?describe\b[\s\S]{0,120}\b(?:as|in)\s+(?:(?:a|an)\s+)?(?:object|record|payload)(?=\s*(?:[.!?]?\s*$|(?:with|containing|including|having|matching|using|following|conforming(?:\s+to)?)\b))/i;
+  if (directObject.test(source) || answerWithObject.test(source) || directNamedFormat.test(source) || answerWithNamedFormat.test(source) || resultAsNamedFormat.test(source) || resultAsObject.test(source) || representationAsObject.test(source) || representationAsSchema.test(source) || schemaCommand.test(source) || applySchema.test(source) || modalSchema.test(source) || modalObject.test(source) || describeAsObject.test(source)) {
     return true;
   }
-  if (/\bJSON\s+(?:object|only|format)\b/i.test(text)) return true;
-  if (/\b(?:answer|respond|return|output)\s+only\s+(?:with\s+)?(?:valid\s+)?JSON\b/i.test(text)) return true;
+
+  const hasExactMetadataFieldSet = CASCADE_METADATA_FIELD_NAMES.every((field) => (
+    new RegExp('(?:^|[^A-Za-z0-9_])' + field + '(?:$|[^A-Za-z0-9_])', 'i').test(source)
+  ));
+  if (!hasExactMetadataFieldSet) return false;
+  const describeCommand = /^(?:(?:please|kindly)\s+)?(?:(?:(?:can|could|would|will)\s+you|you\s+(?:must|shall|should|are\s+required\s+to|have\s+to))\s+)?describe\b/i.test(source);
+  const firstFieldOffset = Math.min(...CASCADE_METADATA_FIELD_NAMES.map(field => source.search(new RegExp('\\b' + field + '\\b', 'i'))));
+  const beforeFirstField = source.slice(0, firstFieldOffset);
+  const leadingFieldCue = /\b(?:with|containing|including|include)\s+(?:(?:the|these|following|exact)\s+)*(?:(?:fields?|keys?|properties)\s*)?(?::|[-\u2014\u2013])?\s*$/i.test(source.slice(0, firstFieldOffset));
+  const directFieldListCommand = /^(?:(?:please|kindly)\s+)?(?:(?:(?:can|could|would|will)\s+you|you\s+(?:must|shall|should|are\s+required\s+to|have\s+to))\s+)?(?:always\s+)?(?:answer|respond|reply|return|output|emit|provide|produce|present|render|represent|serialize|send|give(?:\s+me)?|format|encode)\s+(?:only\s+|exactly\s+)?(?:(?:(?:the|these|following|exact)\s+)*(?:fields?|keys?|properties)\s*(?::|[-\u2014\u2013])?\s*)?$/i.test(beforeFirstField)
+    || /^use\s+(?:(?:only|exactly)\s+)?(?:(?:the|these|following|exact)\s+)*(?:fields?|keys?|properties)\s*(?::|[-\u2014\u2013])?\s*$/i.test(beforeFirstField);
+  const responseFieldListContract = /^(?:(?:the|your)\s+)?(?:answer|response|reply|output|result|payload)\s+(?:(?:must|shall|should|is\s+required\s+to|has\s+to)\s+)?(?:contain|include|have|use)\s+(?:(?:only|exactly)\s+)?(?:(?:(?:the|these|following|exact)\s+)*(?:fields?|keys?|properties)\s*)?(?::|[-\u2014\u2013])?\s*$/i.test(beforeFirstField);
+  if (directFieldListCommand || responseFieldListContract) return true;
+
+  // A bare structural noun is not enough to establish an output contract.
+  // Implementation verbs (create/build/generate/construct) stay neutral unless
+  // one of the explicit object/schema contracts above matched first. This keeps
+  // “build an object detector with …” and “create a class with …” conversational
+  // while preserving descriptive field-shape requests such as “render with …”.
+  const implementationCommand = /^(?:(?:please|kindly)\s+)?(?:(?:(?:can|could|would|will)\s+you|you\s+(?:must|shall|should|are\s+required\s+to|have\s+to))\s+)?(?:always\s+)?(?:create|generate|build|construct)\b/i.test(source);
+  if (implementationCommand) return false;
+  const descriptiveFieldCommand = /^(?:(?:please|kindly)\s+)?(?:(?:(?:can|could|would|will)\s+you|you\s+(?:must|shall|should|are\s+required\s+to|have\s+to))\s+)?(?:always\s+)?(?:describe|serialize|render|represent)\b/i.test(source);
+  const outputFieldCommand = /^(?:(?:please|kindly)\s+)?(?:(?:(?:can|could|would|will)\s+you|you\s+(?:must|shall|should|are\s+required\s+to|have\s+to))\s+)?(?:always\s+)?(?:answer|respond|reply|return|output|emit|provide|produce|present|send|give(?:\s+me)?|format|encode|create|generate|build|construct)\b/i.test(source);
+  return (describeCommand || descriptiveFieldCommand || outputFieldCommand) && leadingFieldCue;
+}
+
+function hasStrongSystemOrDeveloperStructuredOutputContract(messages) {
+  if (!Array.isArray(messages)) return false;
+  for (const message of messages) {
+    if (message?.role !== 'system' && message?.role !== 'developer') continue;
+    const text = textFromMessageContent(message.content);
+    if (!text) continue;
+    const clauses = text
+      .split(/[;；.!?！？。]+/)
+      .map(part => part.trim())
+      .filter(Boolean);
+    for (const clause of clauses) {
+      if (isExplicitStructuredShapeRequestText(clause)) return true;
+      const explicitJson = isExplicitJsonRequested([{ role: 'user', content: clause }]);
+      const pluralModalJson = /^(?:(?:all|every|each|your|the)\s+)?(?:answers?|responses?|replies|outputs?|results?)\s+(?:must|shall|should|are\s+required\s+to|have\s+to)\s+be\s+(?:only\s+)?(?:(?:a|an)\s+)?(?:(?:valid|strict|raw|compact|well[-\s]?formed)\s+)*JSON(?:\s+(?:object|format|response|payload|document|data))?\b/i.test(clause);
+      if (pluralModalJson) return true;
+      if (!explicitJson) continue;
+      const imperative = /^(?:(?:please|kindly)\s+)?(?:always\s+)?(?:answer|respond|reply|return|output|produce|provide|emit|use|format|encode)\b/i.test(clause);
+      const modal = /^(?:(?:all|every|each|your|the)\s+)?(?:answers?|responses?|replies|outputs?|results?)\s+(?:must|shall|should|are\s+required\s+to|have\s+to)\b/i.test(clause);
+      const standalone = /^(?:only\s+)?(?:(?:valid|strict|raw|compact|well[-\s]?formed)\s+)*JSON(?:\s+(?:object|format|response|payload|document|data))?\s+only$/i.test(clause);
+      const chinese = /^(?:请)?(?:始终|总是)?(?:仅|只)?(?:以|用|返回|输出|生成|提供)|^(?:答案|回答|回复|响应|输出|结果)\s*(?:必须|应当|应该|应|须|需)/.test(clause);
+      if (imperative || modal || standalone || chinese) return true;
+    }
+  }
   return false;
 }
 
@@ -1362,57 +1614,6 @@ export function clientRetryAfterSeconds(retryAfterMs, env = process.env) {
 
 function genId() {
   return 'chatcmpl-' + randomUUID().replace(/-/g, '').slice(0, 29);
-}
-
-const MODEL_PROVIDERS = {
-  claude: 'Anthropic', gpt: 'OpenAI', gemini: 'Google', deepseek: 'DeepSeek',
-  grok: 'xAI', qwen: 'Alibaba', kimi: 'Moonshot', glm: 'Zhipu', swe: 'Windsurf',
-  o3: 'OpenAI', o4: 'OpenAI',
-};
-
-export function neutralizeCascadeIdentity(text, modelName) {
-  if (!text || !modelName) return text;
-  if (looksLikeJsonPayload(text)) return text;
-  const provider = MODEL_PROVIDERS[Object.keys(MODEL_PROVIDERS).find(k => modelName.toLowerCase().startsWith(k)) || ''];
-  if (!provider) return text;
-  return text
-    // First-person identity claims
-    .replace(/\bI am Cascade\b/gi, `I am ${modelName}`)
-    .replace(/\bI'm Cascade\b/gi, `I'm ${modelName}`)
-    .replace(/\bmy name is Cascade\b/gi, `my name is ${modelName}`)
-    // Third-person self-reference common in Cascade prose
-    .replace(/\bCascade, an AI coding assistant\b/gi, `${modelName}, an AI assistant`)
-    .replace(/\bCascade is an? (?:AI )?(?:coding )?assistant\b/gi, `${modelName} is an AI assistant`)
-    .replace(/\b(?:As|Acting as) Cascade\b/g, `As ${modelName}`)
-    // Provider attribution
-    .replace(/\bCascade, made by (?:Codeium|Windsurf)\b/gi, `${modelName}, made by ${provider}`)
-    .replace(/\b(?:Codeium|Windsurf)(?:['’]s)? Cascade\b/g, modelName)
-    .replace(/\bdeveloped by (?:Codeium|Windsurf)\b/gi, `developed by ${provider}`)
-    .replace(/\bcreated by (?:Codeium|Windsurf)\b/gi, `created by ${provider}`)
-    .replace(/\bbuilt by (?:Codeium|Windsurf)\b/gi, `built by ${provider}`)
-    // Cascade-flavoured workspace narration. The model regularly says things
-    // like "Cascade's workspace at /tmp/windsurf-workspace" — sanitizeText
-    // already scrubs the path; this strips the lingering "Cascade's" /
-    // "the Cascade" prefix so the sentence reads naturally. The leading
-    // "the " is consumed by the same regex so we don't end up with the
-    // double-article artefact ("the the workspace").
-    .replace(/\b(?:the )?Cascade(?:['’]s)? workspace\b/gi, 'the workspace');
-}
-
-function looksLikeJsonPayload(text) {
-  if (typeof text !== 'string') return false;
-  const s = text.trim();
-  if (!s) return false;
-  if ((s.startsWith('{') && s.endsWith('}')) || (s.startsWith('[') && s.endsWith(']'))) {
-    return safeJsonParse(s) !== undefined;
-  }
-  const fenced = s.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
-  if (!fenced) return false;
-  const inner = fenced[1].trim();
-  if (!((inner.startsWith('{') && inner.endsWith('}')) || (inner.startsWith('[') && inner.endsWith(']')))) {
-    return false;
-  }
-  return safeJsonParse(inner) !== undefined;
 }
 
 /**
@@ -2793,6 +2994,17 @@ async function _handleChatCompletionsInner(body, context = {}) {
 
   const explicitJson = isExplicitJsonRequested(messages);
   const wantJson = response_format?.type === 'json_object' || response_format?.type === 'json_schema' || explicitJson;
+  const strongSystemStructuredOutput = hasStrongSystemOrDeveloperStructuredOutputContract(messages);
+  const latestUserStructuredShape = isExplicitStructuredShapeRequestText(latestRealUserText(messages));
+  const preserveCascadeStructuredPayload = explicitJson
+    || strongSystemStructuredOutput
+    || latestUserStructuredShape;
+  // #185: only an unqualified conversational turn may unwrap Cascade's
+  // accidental metadata envelope. Any explicit response_format (including a
+  // future/non-JSON format we do not interpret here), a strong system/developer
+  // output contract, or a clear latest-user structured shape means the object
+  // is intentional and must stay verbatim.
+  const allowCascadeMetadataUnwrap = response_format == null && !preserveCascadeStructuredPayload;
   if (wantJson) {
     messages = applyJsonResponseHint(messages, response_format);
   }
@@ -4193,6 +4405,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
       tools: effectiveTools,
       route: body.__route || 'chat',
       nativeOpts,
+      allowCascadeMetadataUnwrap,
       context,
       ensureLs: context.ensureLs,
       getLsFor: context.getLsFor,
@@ -4429,6 +4642,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
       reqId,
       cacheShareable ? (context.__originalCkey || null) : null,
       clineCompatActive,
+      allowCascadeMetadataUnwrap,
     );
     if (result.status === 200) return result;
     reuseEntry = null; // don't try to reuse on the retry
@@ -4587,7 +4801,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
   return lastErr || { status: 503, body: { error: { message: 'No active accounts available', type: 'pool_exhausted' } } };
 }
 
-async function nonStreamResponse(client, id, created, model, modelKey, messages, cascadeMessages, modelEnum, modelUid, useCascade, apiKey, ckey, poolCtx, provider, emulateTools, toolPreamble, wantJson = false, cachePolicy = null, wantThinking = false, tools = [], route = 'chat', nativeOpts = null, reqId = 'non-stream', aliasCkey = null, clineCompatActive = false) {
+async function nonStreamResponse(client, id, created, model, modelKey, messages, cascadeMessages, modelEnum, modelUid, useCascade, apiKey, ckey, poolCtx, provider, emulateTools, toolPreamble, wantJson = false, cachePolicy = null, wantThinking = false, tools = [], route = 'chat', nativeOpts = null, reqId = 'non-stream', aliasCkey = null, clineCompatActive = false, allowCascadeMetadataUnwrap = true) {
   const startTime = Date.now();
   const nativeBridgeOn = !!nativeOpts?.enabled;
   try {
@@ -4596,6 +4810,7 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
     let cascadeMeta = null;
     let toolCalls = [];
     let hasCompletedNativeReadUrlResult = false;
+    let usedNativeReadUrlFallback = false;
     const bridgeDiag = {
       bridgeEnabled: nativeBridgeOn,
       requestedTools: Array.isArray(tools) && tools.length > 0,
@@ -4647,7 +4862,6 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
         const lookup = nativeOpts?.callerLookup || new Map();
         const nativeCalls = [];
         const nativeResults = [];
-        let usedNativeReadUrlFallback = false;
         for (const raw of (chunks.toolCalls || [])) {
           if (!raw?.cascade_native) continue;
           bridgeDiag.cascadeToolCalls++;
@@ -4702,7 +4916,7 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
         // planner sometimes narrates "I'm going to look at X" alongside
         // emitting the cascade step, and the caller doesn't want that
         // noise.
-        allText = stripToolMarkupFromText(allText);
+        if (!usedNativeReadUrlFallback) allText = stripToolMarkupFromText(allText);
         if (toolCalls.length === 0 && nativeResults.length === 0 && (chunks.toolCalls || []).length > 0) {
           log.info(`Chat[non-stream]: nativeBridge=true received ${chunks.toolCalls.length} cascade tool calls but none mapped to caller tools (kinds=${chunks.toolCalls.map(tc => tc.name).join(',')})`);
         }
@@ -4931,11 +5145,23 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
       }
     }
 
-    // Scrub server-internal filesystem paths from everything we're about to
-    // return. See src/sanitize.js for the patterns and rationale.
-    allText = sanitizeText(allText);
-    allText = neutralizeCascadeIdentity(allText, model);
-    if (wantJson && allText) {
+    // #185 egress hotfix. The shared transform preserves all ordinary JSON,
+    // unwraps only the exact Cascade metadata record on an unqualified chat
+    // turn, then applies the same path + identity neutralizers ordinary prose
+    // has always used. A real tool-call turn is an explicit structured result,
+    // so its JSON is never treated as an accidental metadata envelope.
+    if (usedNativeReadUrlFallback) {
+      // A completed WebFetch document is caller-requested external data, not
+      // model narration. Preserve its identity-bearing prose exactly; only the
+      // established server-path redaction boundary applies.
+      allText = sanitizeText(allText);
+    } else {
+      allText = transformCascadeEgressText(allText, model, {
+        allowMetadataUnwrap: useCascade && allowCascadeMetadataUnwrap,
+        hasToolCalls: toolCalls.length > 0,
+      });
+    }
+    if (wantJson && allText && !usedNativeReadUrlFallback) {
       allText = stabilizeJsonPayload(allText, messages);
     }
     allThinking = sanitizeText(allThinking);
@@ -5379,6 +5605,7 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
       }) : null;
       const collectedToolCalls = [];
       const completedNativeReadUrlResults = [];
+      let usedNativeReadUrlFallback = false;
       const bridgeDiagCascadeSeen = new Set();
       const bridgeDiag = {
         bridgeEnabled: nativeBridgeOn,
@@ -5408,11 +5635,15 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
         return true;
       };
 
-      // Streaming path sanitizers. Every text/thinking delta flows through a
-      // PathSanitizeStream before leaving the server so /tmp/windsurf-workspace,
-      // /opt/windsurf and /root/WindsurfAPI literals can never slip out even
-      // if a path straddles a chunk boundary. See src/sanitize.js.
-      let pathStreamText = new PathSanitizeStream();
+      // Streaming text egress. Ordinary prose still flows through the existing
+      // PathSanitizeStream immediately; a syntactically possible JSON object,
+      // array, or fenced JSON candidate is bounded-buffered until EOF can prove
+      // its caller-visible structure. Only the exact #185 internal envelope is
+      // eligible for unwrapping. Thinking keeps its independent path sanitizer.
+      let pathStreamText = new CascadeMetadataEgressStream({
+        modelName: model,
+        allowMetadataUnwrap: useCascade && deps.allowCascadeMetadataUnwrap !== false,
+      });
       let pathStreamThinking = new PathSanitizeStream();
       let nativeFunctionParser = nativeBridgeOn
         ? new NativeFunctionCallStreamParser(nativeOpts?.callerLookup || new Map())
@@ -5481,6 +5712,18 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
           return;
         }
         // dedup off — pass through untouched
+        emittedClientPayload = true;
+        send({ id, object: 'chat.completion.chunk', created, model,
+          choices: [{ index: 0, delta: { content: clean }, finish_reason: null }] });
+      };
+      const emitExternalContent = (raw) => {
+        const clean = sanitizeText(raw);
+        if (!clean) return;
+        // Completed WebFetch data is caller-requested external content. It is
+        // not model narration, so it bypasses tool parsing, metadata/identity
+        // transforms, think classification, reasoning dedup, and JSON shaping.
+        usedNativeReadUrlFallback = true;
+        accText += clean;
         emittedClientPayload = true;
         send({ id, object: 'chat.completion.chunk', created, model,
           choices: [{ index: 0, delta: { content: clean }, finish_reason: null }] });
@@ -5677,7 +5920,10 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
                 route: deps?.route || 'chat',
               });
             }
-            pathStreamText = new PathSanitizeStream();
+            pathStreamText = new CascadeMetadataEgressStream({
+              modelName: model,
+              allowMetadataUnwrap: useCascade && deps.allowCascadeMetadataUnwrap !== false,
+            });
             pathStreamThinking = new PathSanitizeStream();
             thinkClassifier = (useCascade && isCascadeThinkRerouteEnabled() && !wantJson)
               ? new ThinkTextClassifier()
@@ -5914,7 +6160,20 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
                 }
               }
             }
-            emitContent(pathStreamText.flush());
+            // Some real tool calls are only discoverable after cascadeChat
+            // resolves: provider-native tail calls live on cascadeResult, while
+            // emulated calls can be recovered from the accumulated thinking
+            // channel below. The metadata gate must see that completed-turn
+            // fact before deciding whether an exact JSON envelope is accidental.
+            let lateThinkingHasToolCalls = false;
+            if (emulateTools && collectedToolCalls.length === 0 && accThinking?.trim()) {
+              const preview = parseToolCallsFromText(accThinking, { modelKey, provider, route: deps?.route || 'chat' });
+              lateThinkingHasToolCalls = filterToolCallsByAllowlist(preview.toolCalls, declaredTools).length > 0;
+            }
+            const completedTurnHasToolCalls = collectedToolCalls.length > 0
+              || (nativeBridgeOn && hasCallerVisibleCascadeTailToolCall(cascadeResult?.toolCalls, nativeOpts, declaredTools))
+              || lateThinkingHasToolCalls;
+            emitContent(pathStreamText.flush({ hasToolCalls: completedTurnHasToolCalls }));
             // #250 — flush the think classifier BEFORE the thinking flush below:
             // an unterminated/undecided tail is delivered as text (visible beats
             // dropped), and doing it here lets the ACCUMULATE=true pathStreamThinking
@@ -6043,8 +6302,11 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             }
             if (accText.length === 0 && collectedToolCalls.length === 0 && completedNativeReadUrlResults.length) {
               const fallbackText = completedNativeReadUrlResults.map(raw => raw.result).filter(Boolean).join('\n');
-              if (fallbackText) emitContent(pathStreamText.feed(fallbackText));
-              emitContent(pathStreamText.flush());
+              // pathStreamText is already flushed above to preserve SSE block
+              // ordering. A completed WebFetch document is not model metadata;
+              // apply the same established path redaction directly instead of
+              // feeding a closed gate.
+              if (fallbackText) emitExternalContent(fallbackText);
             }
             if (nativeBridgeOn && collectedToolCalls.length === 0 && completedNativeReadUrlResults.length === 0) recordNativeBridgeNoToolCallResponse();
             bridgeDiag.totalToolCalls = collectedToolCalls.length;
@@ -6097,7 +6359,7 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             // trimmed original when nothing parses).
             // A verbatim duplicate of the reasoning is suppressed here too
             // (degenerate echo, not JSON).
-            if (wantJson && accText && !(accThinking && accText === accThinking)) {
+            if (wantJson && accText && !usedNativeReadUrlFallback && !(accThinking && accText === accThinking)) {
               const cleaned = stabilizeJsonPayload(accText, messages);
               if (cleaned) {
                 send({ id, object: 'chat.completion.chunk', created, model,
@@ -6345,6 +6607,17 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
           } else if (!hadSuccess && reuseEntryDead) {
             log.info(`Chat[${reqId}]: stream reuse entry was invalidated (cascade not_found upstream); not restoring to pool`);
           }
+
+          // #185 failure tail: a candidate object may still be wholly buffered
+          // because no terminal chunk arrived to prove it was the exact metadata
+          // envelope. On an incomplete stream we must fail open and release those
+          // bytes verbatim; otherwise a mismatch split across chunks disappears
+          // and the client receives only an error frame.
+          const egressTail = pathStreamText.flush({
+            hasToolCalls: collectedToolCalls.length > 0,
+            incomplete: true,
+          });
+          if (egressTail) emitContent(egressTail);
 
           // #250 failure path: release whatever the think classifier still holds
           // so an undecided/unterminated span is delivered as text rather than

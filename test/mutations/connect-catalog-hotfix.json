@@ -1,0 +1,165 @@
+{
+  "tests": [
+    "test/connect-catalog-delatch.test.js",
+    "test/devin-connect-models.test.js"
+  ],
+  "expectBaselinePass": 40,
+  "mutations": [
+    {
+      "name": "failed and empty catalog requests hot-loop because the retry deadline is ignored",
+      "file": "src/auth.js",
+      "anchor": "  if (backoff?.apiKey === acct.apiKey && now < backoff.retryAt) return;",
+      "replacement": "  if (false) return;"
+    },
+    {
+      "name": "the retry ladder is constant instead of exponential",
+      "file": "src/auth.js",
+      "anchor": "    CONNECT_CATALOG_RETRY_BASE_MS * Math.pow(2, exponent));",
+      "replacement": "    CONNECT_CATALOG_RETRY_BASE_MS);"
+    },
+    {
+      "name": "the retry ladder has no upper bound",
+      "file": "src/auth.js",
+      "anchor": "  const cappedDelay = Math.min(CONNECT_CATALOG_RETRY_MAX_MS,\n    CONNECT_CATALOG_RETRY_BASE_MS * Math.pow(2, exponent));",
+      "replacement": "  const cappedDelay =\n    CONNECT_CATALOG_RETRY_BASE_MS * Math.pow(2, exponent);"
+    },
+    {
+      "name": "deterministic per-credential jitter is disconnected from the retry delay",
+      "file": "src/auth.js",
+      "anchor": "  const jitterBasisPoints = connectCatalogRetryJitterBasisPoints(accountId, apiKey);\n  return Math.max(1_000, Math.floor(cappedDelay * jitterBasisPoints / 10_000));",
+      "replacement": "  const jitterBasisPoints = 10_000;\n  return Math.max(1_000, Math.floor(cappedDelay * jitterBasisPoints / 10_000));"
+    },
+    {
+      "name": "retry jitter is derived from the transient account id instead of credential identity",
+      "file": "src/auth.js",
+      "anchor": "  const identity = String(apiKey || accountId || 'connect-catalog');",
+      "replacement": "  const identity = String(accountId || 'connect-catalog');"
+    },
+    {
+      "name": "thrown catalog failures no longer arm backoff",
+      "file": "src/auth.js",
+      "anchor": "      if (!isCurrentConnectCatalogAttempt(accountId, apiKey, attempt)) return;\n      const retry = recordConnectCatalogRetryFailure(accountId, apiKey);\n      log.warn(`DEVIN_CONNECT catalog sync failed (snapshot fallback stays in effect; retry ${retry.failureCount} in ${retry.delayMs}ms): ${e.message}`);",
+      "replacement": "      if (!isCurrentConnectCatalogAttempt(accountId, apiKey, attempt)) return;\n      const retry = { failureCount: 0, delayMs: 0 };\n      log.warn(`DEVIN_CONNECT catalog sync failed (snapshot fallback stays in effect; retry ${retry.failureCount} in ${retry.delayMs}ms): ${e.message}`);"
+    },
+    {
+      "name": "empty catalog responses no longer arm backoff",
+      "file": "src/auth.js",
+      "anchor": "      } else {\n        const retry = recordConnectCatalogRetryFailure(accountId, apiKey);\n        log.warn(`DEVIN_CONNECT catalog sync for ${accountId} returned no selectors — keeping the existing union; retry ${retry.failureCount} in ${retry.delayMs}ms`);\n      }",
+      "replacement": "      } else {\n        const retry = { failureCount: 0, delayMs: 0 };\n        log.warn(`DEVIN_CONNECT catalog sync for ${accountId} returned no selectors — keeping the existing union; retry ${retry.failureCount} in ${retry.delayMs}ms`);\n      }"
+    },
+    {
+      "name": "a successful response leaves the old failure streak armed",
+      "file": "src/auth.js",
+      "anchor": "        _connectCatalogRetryState.delete(accountId);\n        _connectCatalogRowsByAccount.set(accountId, rows);",
+      "replacement": "        _connectCatalogRowsByAccount.set(accountId, rows);"
+    },
+    {
+      "name": "the ABA guard falls back to status and key equality only",
+      "file": "src/auth.js",
+      "anchor": "  if (_connectCatalogSyncPromises.get(accountId) !== attempt) return false;",
+      "replacement": "  if (false) return false;"
+    },
+    {
+      "name": "disable and remove leave the old in-flight request identity installed",
+      "file": "src/auth.js",
+      "anchor": "  _connectCatalogSyncedAt.delete(accountId);\n  _connectCatalogSyncPromises.delete(accountId);\n  _connectCatalogRetryState.delete(accountId);",
+      "replacement": "  _connectCatalogSyncedAt.delete(accountId);\n  _connectCatalogRetryState.delete(accountId);"
+    },
+    {
+      "name": "disable and remove leave the previous lifecycle retry deadline installed",
+      "file": "src/auth.js",
+      "anchor": "  _connectCatalogSyncedAt.delete(accountId);\n  _connectCatalogSyncPromises.delete(accountId);\n  _connectCatalogRetryState.delete(accountId);",
+      "replacement": "  _connectCatalogSyncedAt.delete(accountId);\n  _connectCatalogSyncPromises.delete(accountId);"
+    },
+    {
+      "name": "reconciliation only notices accepted rows and misses first-flight or backoff-only accounts",
+      "file": "src/auth.js",
+      "anchor": "  const trackedConnectAccounts = new Set([\n    ..._connectCatalogRowsByAccount.keys(),\n    ..._connectCatalogSyncedKeys.keys(),\n    ..._connectCatalogSyncedAt.keys(),\n    ..._connectCatalogSyncPromises.keys(),\n    ..._connectCatalogRetryState.keys(),\n  ]);",
+      "replacement": "  const trackedConnectAccounts = new Set(_connectCatalogRowsByAccount.keys());"
+    },
+    {
+      "name": "an old request finalizer deletes the replacement request without checking identity",
+      "file": "src/auth.js",
+      "anchor": "    if (current === attempt) _connectCatalogSyncPromises.delete(accountId);",
+      "replacement": "    _connectCatalogSyncPromises.delete(accountId);"
+    },
+    {
+      "name": "key rotation leaves selectors accepted under the retired credential in the pool union",
+      "file": "src/auth.js",
+      "anchor": "  // The connect selector union is a separate namespace with its own per-account\n  // rows. A key rotation or account removal has to withdraw that contribution as\n  // well, or a departed account keeps widening pool-wide discovery.\n  forgetConnectCatalogForAccount(accountId);",
+      "replacement": "  // Connect catalog invalidation accidentally omitted."
+    },
+    {
+      "name": "a retired lifecycle rejection increments the replacement lifecycle backoff",
+      "file": "src/auth.js",
+      "anchor": "    } catch (e) {\n      if (!isCurrentConnectCatalogAttempt(accountId, apiKey, attempt)) return;\n      const retry = recordConnectCatalogRetryFailure(accountId, apiKey);",
+      "replacement": "    } catch (e) {\n      const retry = recordConnectCatalogRetryFailure(accountId, apiKey);"
+    },
+    {
+      "name": "a mixed pool loses snapshot fallback as soon as any account has live rows",
+      "file": "src/auth.js",
+      "anchor": "  const includeSnapshotFallback = activeAccounts.length === 0\n    || activeAccounts.some(account => !_connectCatalogRowsByAccount.has(account.id));",
+      "replacement": "  const includeSnapshotFallback = activeAccounts.length === 0;"
+    },
+    {
+      "name": "a newly active contributor is not published until its asynchronous catalog finishes",
+      "file": "src/auth.js",
+      "anchor": "  publishConnectCatalogUnion(active);",
+      "replacement": "  // incomplete contributor publication accidentally omitted"
+    },
+    {
+      "name": "a synchronized account ignores its own authoritative live rows",
+      "file": "src/auth.js",
+      "anchor": "  const rows = _connectCatalogRowsByAccount.get(account.id);\n  if (!Array.isArray(rows) || rows.length === 0) return true;",
+      "replacement": "  const rows = _connectCatalogRowsByAccount.get(account.id);\n  return true;"
+    },
+    {
+      "name": "catalog-independent paid selectors bypass the account tier gate",
+      "file": "src/auth.js",
+      "anchor": "  if (bucket !== 'pro' && bucket !== 'unknown') return false;",
+      "replacement": "  if (false) return false;"
+    },
+    {
+      "name": "catalog-independent selectors are incorrectly required to appear in live rows",
+      "file": "src/auth.js",
+      "anchor": "  if (isConnectSelectorCatalogIndependent(selector)) return true;",
+      "replacement": "  if (false) return true;"
+    },
+    {
+      "name": "the mixed-pool snapshot policy is discarded while installing live rows",
+      "file": "src/devin-connect-models.js",
+      "anchor": "  _snapshotFallbackEnabled = includeSnapshotFallback === true;",
+      "replacement": "  _snapshotFallbackEnabled = false;"
+    },
+    {
+      "name": "a hand-maintained alias remains valid after its target disappears from the authoritative catalog",
+      "file": "src/devin-connect-models.js",
+      "anchor": "  if (directTarget && isKnownConnectSelector(directTarget, { allowSnapshotFallback })) {",
+      "replacement": "  if (directTarget) {"
+    },
+    {
+      "name": "a process environment token loses snapshot fallback beside a restricted live catalog",
+      "file": "src/devin-connect-models.js",
+      "anchor": "  return (\n    _liveSelectors.size === 0\n    || _snapshotFallbackEnabled\n    || allowSnapshotFallback\n    || envTokenFallback\n  ) && CATALOG_SELECTORS.has(name);",
+      "replacement": "  return (\n    _liveSelectors.size === 0\n    || _snapshotFallbackEnabled\n    || allowSnapshotFallback\n  ) && CATALOG_SELECTORS.has(name);"
+    },
+    {
+      "name": "string-only live catalog rows retain surrounding whitespace",
+      "file": "src/devin-connect-models.js",
+      "anchor": "      const selector = it.trim();",
+      "replacement": "      const selector = it;"
+    },
+    {
+      "name": "object live catalog rows retain surrounding whitespace",
+      "file": "src/devin-connect-models.js",
+      "anchor": "      const selector = typeof it.selector === 'string' ? it.selector.trim() : '';",
+      "replacement": "      const selector = typeof it.selector === 'string' ? it.selector : '';"
+    },
+    {
+      "name": "catalog-independent selectors stop participating in resolver existence checks",
+      "file": "src/devin-connect-models.js",
+      "anchor": "  if (CATALOG_INDEPENDENT_SELECTORS.has(name)) return true;",
+      "replacement": "  if (false) return true;"
+    }
+  ]
+}

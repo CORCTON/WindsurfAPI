@@ -1,0 +1,272 @@
+{
+  "tests": [
+    "test/ota-fixture-containment-static.test.js"
+  ],
+  "expectBaselinePass": 19,
+  "mutations": [
+    {
+      "name": "update.sh fixture Git helper accepts a missing cwd, so execFileSync can inherit the real repository",
+      "file": "test/update-script-release-target.test.js",
+      "anchor": "  if (!cwd) throw new Error('git fixture cwd is required');",
+      "replacement": "  if (false) throw new Error('git fixture cwd is required');"
+    },
+    {
+      "name": "dashboard fixture Git helper accepts a missing cwd, so execFileSync can inherit the real repository",
+      "file": "test/self-update-gate.test.js",
+      "anchor": "  if (!cwd) throw new Error('dashboard Git fixture cwd is required');",
+      "replacement": "  if (false) throw new Error('dashboard Git fixture cwd is required');"
+    },
+    {
+      "name": "rollback fixture Git helper accepts a missing cwd, so execFileSync can inherit the real repository",
+      "file": "test/self-update-untracked-safety.test.js",
+      "anchor": "  if (!cwd) throw new Error('self-update safety fixture cwd is required');",
+      "replacement": "  if (false) throw new Error('self-update safety fixture cwd is required');"
+    },
+    {
+      "name": "in-process fixtures keep credentials and proxy environment variables",
+      "file": "test/git-fixture-env.js",
+      "anchor": "        && !FIXTURE_SENSITIVE_ENV.includes(key)",
+      "replacement": "        && true"
+    },
+    {
+      "name": "runUpdate spawns update.sh without first validating every fixture path and remote",
+      "file": "test/update-script-release-target.test.js",
+      "anchor": "function runUpdate(fixture, extraEnv = {}) {\n  assertSafeFixture(fixture);\n  return spawnSync('bash', ['update.sh'], {",
+      "replacement": "function runUpdate(fixture, extraEnv = {}) {\n  void fixture;\n  return spawnSync('bash', ['update.sh'], {"
+    },
+    {
+      "name": "the direct source ./update.sh path bypasses fixture validation before lock setup and spawn",
+      "file": "test/update-script-release-target.test.js",
+      "anchor": "    try {\n      assertSafeFixture(fixture);\n      const lockDir = join(fixture.deployment, '.git', 'windsurfapi-update.lock');\n      mkdirSync(lockDir);\n      writeFileSync(join(lockDir, 'owner'), '424242 live-owner-token\\n', 'utf8');",
+      "replacement": "    try {\n      void fixture;\n      const lockDir = join(fixture.deployment, '.git', 'windsurfapi-update.lock');\n      mkdirSync(lockDir);\n      writeFileSync(join(lockDir, 'owner'), '424242 live-owner-token\\n', 'utf8');"
+    },
+    {
+      "name": "dashboard child process is constructed and spawned without first validating the fixture",
+      "file": "test/self-update-gate.test.js",
+      "anchor": "function runDashboardUpdateCheck(fixture) {\n  assertSafeDashboardFixture(fixture);\n  const { deployment } = fixture;",
+      "replacement": "function runDashboardUpdateCheck(fixture) {\n  void fixture;\n  const { deployment } = fixture;"
+    },
+    {
+      "name": "update.sh fixture stops requiring every safety-critical path before containment checks",
+      "file": "test/update-script-release-target.test.js",
+      "anchor": "  for (const field of ['root', 'origin', 'seed', 'deployment', 'stubBin']) {",
+      "replacement": "  for (const field of ['root', 'origin', 'seed', 'deployment']) {"
+    },
+    {
+      "name": "update.sh fixture stops checking stubBin beneath the temporary root",
+      "file": "test/update-script-release-target.test.js",
+      "anchor": "  for (const field of ['origin', 'seed', 'deployment', 'stubBin']) assertBelowRoot(field);",
+      "replacement": "  for (const field of ['origin', 'seed', 'deployment']) assertBelowRoot(field);"
+    },
+    {
+      "name": "update.sh fixture containment permits an absolute path escape",
+      "file": "test/update-script-release-target.test.js",
+      "anchor": "    assert.ok(rel && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel),",
+      "replacement": "    assert.ok(rel && rel !== '..' && !rel.startsWith(`..${sep}`),"
+    },
+    {
+      "name": "dashboard fixture stops requiring every safety-critical path before containment checks",
+      "file": "test/self-update-gate.test.js",
+      "anchor": "  for (const field of ['root', 'origin', 'seed', 'deployment']) {",
+      "replacement": "  for (const field of ['root', 'origin', 'seed']) {"
+    },
+    {
+      "name": "dashboard fixture stops checking deployment beneath the temporary root",
+      "file": "test/self-update-gate.test.js",
+      "anchor": "  const root = realpathSync(rootPath);\n  for (const field of ['origin', 'seed', 'deployment']) {\n    const childPath = resolve(fixture[field]);",
+      "replacement": "  const root = realpathSync(rootPath);\n  for (const field of ['origin', 'seed']) {\n    const childPath = resolve(fixture[field]);"
+    },
+    {
+      "name": "dashboard fixture containment permits an absolute path escape",
+      "file": "test/self-update-gate.test.js",
+      "anchor": "    assert.ok(rel && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel),",
+      "replacement": "    assert.ok(rel && rel !== '..' && !rel.startsWith(`..${sep}`),"
+    },
+    {
+      "name": "update.sh fixture accepts a deployment whose origin resolves to the seed repository instead of fixture.origin",
+      "file": "test/update-script-release-target.test.js",
+      "anchor": "  assert.equal(\n    realpathSync(resolve(fixture.deployment, deploymentOrigin)),\n    realpathSync(resolve(fixture.origin)),",
+      "replacement": "  assert.equal(\n    realpathSync(resolve(fixture.deployment, deploymentOrigin)),\n    realpathSync(resolve(fixture.seed)),"
+    },
+    {
+      "name": "dashboard fixture accepts a deployment whose origin resolves to the seed repository instead of fixture.origin",
+      "file": "test/self-update-gate.test.js",
+      "anchor": "  assert.equal(\n    realpathSync(resolve(fixture.deployment, deploymentOrigin)),\n    realpathSync(resolve(fixture.origin)),",
+      "replacement": "  assert.equal(\n    realpathSync(resolve(fixture.deployment, deploymentOrigin)),\n    realpathSync(resolve(fixture.seed)),"
+    },
+    {
+      "name": "update.sh fixture puts its bare origin outside the temporary fixture root",
+      "file": "test/update-script-release-target.test.js",
+      "anchor": "  const origin = join(root, 'origin.git');",
+      "replacement": "  const origin = join(ROOT, 'origin.git');"
+    },
+    {
+      "name": "update.sh fixture initializes a symbolic origin name instead of the explicit temporary path",
+      "file": "test/update-script-release-target.test.js",
+      "anchor": "  git(root, ['init', '--bare', origin]);",
+      "replacement": "  git(root, ['init', '--bare', 'origin']);"
+    },
+    {
+      "name": "update.sh fixture pushes master through a symbolic origin remote instead of the temporary path",
+      "file": "test/update-script-release-target.test.js",
+      "anchor": "  git(seed, ['push', origin, 'master']);",
+      "replacement": "  git(seed, ['push', 'origin', 'master']);"
+    },
+    {
+      "name": "update.sh fixture pushes tags through a symbolic origin remote instead of the temporary path",
+      "file": "test/update-script-release-target.test.js",
+      "anchor": "  git(seed, ['push', origin, '--tags']);",
+      "replacement": "  git(seed, ['push', 'origin', '--tags']);"
+    },
+    {
+      "name": "update.sh revoked-tag fixture push uses a symbolic origin remote",
+      "file": "test/update-script-release-target.test.js",
+      "anchor": "      git(fixture.seed, ['push', fixture.origin, ':refs/tags/v3.9.22']);",
+      "replacement": "      git(fixture.seed, ['push', 'origin', ':refs/tags/v3.9.22']);"
+    },
+    {
+      "name": "update.sh injected-tag fixture push uses a symbolic origin remote",
+      "file": "test/update-script-release-target.test.js",
+      "anchor": "      git(fixture.seed, ['push', fixture.origin, 'refs/tags/v9.0.0']);",
+      "replacement": "      git(fixture.seed, ['push', 'origin', 'refs/tags/v9.0.0']);"
+    },
+    {
+      "name": "update.sh fixture clones a symbolic origin remote instead of the explicit temporary path",
+      "file": "test/update-script-release-target.test.js",
+      "anchor": "  git(root, ['clone', origin, deployment]);",
+      "replacement": "  git(root, ['clone', 'origin', deployment]);"
+    },
+    {
+      "name": "dashboard fixture puts its bare origin outside the temporary fixture root",
+      "file": "test/self-update-gate.test.js",
+      "anchor": "  const origin = join(root, 'origin.git');",
+      "replacement": "  const origin = join(SOURCE_ROOT, 'origin.git');"
+    },
+    {
+      "name": "dashboard fixture initializes a symbolic origin name instead of the explicit temporary path",
+      "file": "test/self-update-gate.test.js",
+      "anchor": "  realGit(root, ['init', '--bare', origin]);",
+      "replacement": "  realGit(root, ['init', '--bare', 'origin']);"
+    },
+    {
+      "name": "dashboard fixture pushes master through a symbolic origin remote instead of the temporary path",
+      "file": "test/self-update-gate.test.js",
+      "anchor": "  realGit(seed, ['push', origin, 'master']);",
+      "replacement": "  realGit(seed, ['push', 'origin', 'master']);"
+    },
+    {
+      "name": "dashboard fixture pushes tags through a symbolic origin remote instead of the temporary path",
+      "file": "test/self-update-gate.test.js",
+      "anchor": "  realGit(seed, ['push', origin, '--tags']);",
+      "replacement": "  realGit(seed, ['push', 'origin', '--tags']);"
+    },
+    {
+      "name": "dashboard revoked-tag fixture push uses a symbolic origin remote",
+      "file": "test/self-update-gate.test.js",
+      "anchor": "      realGit(fixture.seed, ['push', fixture.origin, ':refs/tags/v3.9.22']);",
+      "replacement": "      realGit(fixture.seed, ['push', 'origin', ':refs/tags/v3.9.22']);"
+    },
+    {
+      "name": "dashboard fixture clones a symbolic origin remote instead of the explicit temporary path",
+      "file": "test/self-update-gate.test.js",
+      "anchor": "  realGit(root, ['clone', origin, deployment]);",
+      "replacement": "  realGit(root, ['clone', 'origin', deployment]);"
+    },
+    {
+      "name": "update.sh fixture Git helper resolves git through PATH instead of the trusted absolute binary",
+      "file": "test/update-script-release-target.test.js",
+      "anchor": "  return execFileSync(REAL_GIT, args, { cwd, env: isolatedGitEnv(), encoding: 'utf8' }).trim();",
+      "replacement": "  return execFileSync('git', args, { cwd, env: isolatedGitEnv(), encoding: 'utf8' }).trim();"
+    },
+    {
+      "name": "dashboard fixture Git helper resolves git through PATH instead of the trusted absolute binary",
+      "file": "test/self-update-gate.test.js",
+      "anchor": "  return execFileSync(REAL_GIT, args, { cwd, env: isolatedGitEnv(), encoding: 'utf8' }).trim();",
+      "replacement": "  return execFileSync('git', args, { cwd, env: isolatedGitEnv(), encoding: 'utf8' }).trim();"
+    },
+    {
+      "name": "rollback fixture Git helper resolves git through PATH instead of the trusted absolute binary",
+      "file": "test/self-update-untracked-safety.test.js",
+      "anchor": "  return execFileSync(REAL_GIT, args, { cwd, env: isolatedGitEnv(), encoding: 'utf8' }).trim();",
+      "replacement": "  return execFileSync('git', args, { cwd, env: isolatedGitEnv(), encoding: 'utf8' }).trim();"
+    },
+    {
+      "name": "update.sh fixture Git helper inherits the process environment",
+      "file": "test/update-script-release-target.test.js",
+      "anchor": "  return execFileSync(REAL_GIT, args, { cwd, env: isolatedGitEnv(), encoding: 'utf8' }).trim();",
+      "replacement": "  return execFileSync(REAL_GIT, args, { cwd, env: process.env, encoding: 'utf8' }).trim();"
+    },
+    {
+      "name": "dashboard fixture Git helper inherits the process environment",
+      "file": "test/self-update-gate.test.js",
+      "anchor": "  return execFileSync(REAL_GIT, args, { cwd, env: isolatedGitEnv(), encoding: 'utf8' }).trim();",
+      "replacement": "  return execFileSync(REAL_GIT, args, { cwd, env: process.env, encoding: 'utf8' }).trim();"
+    },
+    {
+      "name": "rollback fixture Git helper inherits the process environment",
+      "file": "test/self-update-untracked-safety.test.js",
+      "anchor": "  return execFileSync(REAL_GIT, args, { cwd, env: isolatedGitEnv(), encoding: 'utf8' }).trim();",
+      "replacement": "  return execFileSync(REAL_GIT, args, { cwd, env: process.env, encoding: 'utf8' }).trim();"
+    },
+    {
+      "name": "update.sh fixture allocates its root from the ambient temporary directory",
+      "file": "test/update-script-release-target.test.js",
+      "anchor": "  const root = mkdtempSync(join(SAFE_TMP_ROOT, 'wa-update-release-'));",
+      "replacement": "  const root = mkdtempSync(join(tmpdir(), 'wa-update-release-'));"
+    },
+    {
+      "name": "dashboard fixture allocates its root from the ambient temporary directory",
+      "file": "test/self-update-gate.test.js",
+      "anchor": "  const root = mkdtempSync(join(SAFE_TMP_ROOT, 'wa-dashboard-release-tags-'));",
+      "replacement": "  const root = mkdtempSync(join(tmpdir(), 'wa-dashboard-release-tags-'));"
+    },
+    {
+      "name": "dashboard state fixture allocates rollback metadata under the ambient temporary directory",
+      "file": "test/self-update-gate.test.js",
+      "anchor": "const SELF_UPDATE_TEST_ROOT = mkdtempSync(join(SAFE_TMP_ROOT, 'wa-self-update-gate-state-'));",
+      "replacement": "const SELF_UPDATE_TEST_ROOT = mkdtempSync(join(tmpdir(), 'wa-self-update-gate-state-'));"
+    },
+    {
+      "name": "fixture child environment leaves inherited GIT_* redirects intact",
+      "file": "test/git-fixture-env.js",
+      "anchor": "    if (key.startsWith('GIT_')) delete env[key];",
+      "replacement": "    if (false) delete env[key];"
+    },
+    {
+      "name": "fixture child environment permits user and system Git configuration",
+      "file": "test/git-fixture-env.js",
+      "anchor": "  env.GIT_CONFIG_NOSYSTEM = '1';",
+      "replacement": "  env.GIT_CONFIG_NOSYSTEM = '0';"
+    },
+    {
+      "name": "fixture child environment redirects global Git config to a real user path",
+      "file": "test/git-fixture-env.js",
+      "anchor": "  env.GIT_CONFIG_GLOBAL = '/dev/null';",
+      "replacement": "  delete env.GIT_CONFIG_GLOBAL;"
+    },
+    {
+      "name": "fixture child environment uses an inherited temporary directory",
+      "file": "test/git-fixture-env.js",
+      "anchor": "    TMPDIR: SAFE_TMP_ROOT,",
+      "replacement": "    TMPDIR: tmpdir(),"
+    },
+    {
+      "name": "fixture child environment exposes an inherited operator PATH",
+      "file": "test/git-fixture-env.js",
+      "anchor": "    PATH: TRUSTED_TOOL_PATH,",
+      "replacement": "    PATH: process.env.PATH,"
+    },
+    {
+      "name": "fixture child environment keeps BASH_ENV in its injection allowlist",
+      "file": "test/git-fixture-env.js",
+      "anchor": "  'BASH_ENV', 'ENV', 'CDPATH', 'SHELLOPTS', 'BASHOPTS', 'PROMPT_COMMAND',",
+      "replacement": "  'ENV', 'CDPATH', 'SHELLOPTS', 'BASHOPTS', 'PROMPT_COMMAND',"
+    },
+    {
+      "name": "mutation harness stale-lock recovery overwrites a competing claim",
+      "file": "scripts/mutation-harness-utils.mjs",
+      "anchor": "      writeFileSync(claimPath, `${process.pid}\\n`, { encoding: 'utf8', flag: 'wx', mode: 0o600 });",
+      "replacement": "      writeFileSync(claimPath, `${process.pid}\\n`, { encoding: 'utf8', flag: 'w', mode: 0o600 });"
+    }
+  ]
+}

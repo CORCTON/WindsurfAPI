@@ -1,29 +1,36 @@
 // audit 2026-07-12 (v3.2.4 regression fix): after v3.2.3 made resolveConnectSelector
-// recognize live-synced selectors (snapshot ∪ live), the /v1/models handler still
+// recognize live-synced selectors, the /v1/models handler still
 // filtered against the frozen CATALOG_SELECTORS snapshot ONLY, and the 37 upstream-
 // added selectors (gpt-5-6-*/grok-4-5-*/nemotron) aren't in the hardcoded MODELS
 // table either — so they ran fine at /v1/chat/completions but were absent from
 // /v1/models, leaving Codex/clients unable to discover them. handleModels now
-// (a) filters on snapshot ∪ live and (b) synthesizes entries for live-only selectors.
+// (a) filters on the authoritative live catalog (with snapshot fallback only
+// while a contributor lacks LKG rows) and (b) synthesizes live-only selectors.
 //
 // NOTE: handleModels imports devin-connect-models via a plain (cached) import, so
 // these tests use the SAME cached singleton (no ?fresh= — that would give the
-// handler a different instance than the one we seed). The live catalog is additive
-// and cleared per test via setLiveCatalogSelectors, so cross-test leakage is bounded.
+// handler a different instance than the one we seed). Each non-empty seed replaces
+// the prior live catalog, so cross-test leakage inside this file is bounded.
 
-import { describe, it } from 'node:test';
+import { afterEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { setLiveCatalogSelectors } from '../src/devin-connect-models.js';
+import {
+  clearLiveCatalogSelectors,
+  setLiveCatalogSelectors,
+  resolveConnectSelector,
+} from '../src/devin-connect-models.js';
 import { handleModels } from '../src/handlers/models.js';
 
 const ENV_ON = { DEVIN_CONNECT: '1' };
+
+afterEach(() => clearLiveCatalogSelectors());
 
 describe('/v1/models — live-catalog synthesis (audit v3.2.4)', () => {
   it('lists a live-only selector that is NOT in the MODELS table nor the snapshot', () => {
     // grok-4-5-medium: proven live-catalog-only 2026-07-12 (runs at chat, absent
     // from the 130-model MODELS table and the 105-model snapshot).
     setLiveCatalogSelectors([
-      { selector: 'grok-4-5-medium', provider: 'xai', label: 'Grok 4.5 (medium)', supportsImages: true },
+      { selector: '  grok-4-5-medium  ', provider: 'xai', label: 'Grok 4.5 (medium)', supportsImages: true },
       { selector: 'gpt-5-6-sol-medium', provider: 'openai', label: 'GPT-5.6 Sol (medium)', supportsImages: false },
     ]);
     const { data } = handleModels(ENV_ON);
@@ -35,6 +42,8 @@ describe('/v1/models — live-catalog synthesis (audit v3.2.4)', () => {
     assert.equal(grok.owned_by, 'xai');
     assert.equal(grok._source, 'live_catalog');
     assert.equal(grok.supports_images, true);
+    assert.equal(data.some((m) => m.id !== m.id.trim()), false,
+      'live catalog whitespace must not leak into public model ids');
     assert.equal(data.find((m) => m.id === 'gpt-5-6-sol-medium').supports_images, false);
   });
 
@@ -45,9 +54,38 @@ describe('/v1/models — live-catalog synthesis (audit v3.2.4)', () => {
     assert.ok(count <= 1, `swe-1-6-slow must not be duplicated (got ${count})`);
   });
 
+  it('deduplicates a live canonical selector already represented by a client alias', () => {
+    const selector = 'claude-opus-4-6';
+    setLiveCatalogSelectors([{ selector, provider: 'anthropic' }]);
+    const { data } = handleModels(ENV_ON);
+    const matching = data.filter((m) => {
+      if (m._source === 'live_catalog') return m.id === selector;
+      return resolveConnectSelector(m._windsurf_id, { warnOnFallback: false }).selector === selector;
+    });
+
+    assert.equal(matching.length, 1,
+      `one upstream selector must produce one discovery row, got: ${matching.map((m) => m.id).join(', ')}`);
+  });
+
+  it('deduplicates MODELS rows that resolve to the same upstream selector', () => {
+    const aliases = new Set(['gpt-5.5', 'gpt-5.5-low']);
+    const { data } = handleModels(ENV_ON);
+    const matching = data.filter((model) => aliases.has(model.id));
+
+    assert.equal(matching.length, 1,
+      `gpt-5.5 and gpt-5.5-low both resolve to gpt-5-5-low; discovery must emit one row, got: ${matching.map((model) => model.id).join(', ')}`);
+    assert.equal(
+      resolveConnectSelector(matching[0]._windsurf_id, { warnOnFallback: false }).selector,
+      'gpt-5-5-low',
+    );
+  });
+
   it('non-DEVIN_CONNECT deployment returns the full list without live synthesis', () => {
     setLiveCatalogSelectors([{ selector: 'grok-4-5-medium', provider: 'xai' }]);
-    const { data } = handleModels({}); // devinConnect off
+    // Explicitly override the inherited process environment. Maintainers often
+    // run the suite from a real DEVIN_CONNECT=1 deployment shell, and an empty
+    // object intentionally inherits that environment inside handleModels().
+    const { data } = handleModels({ DEVIN_CONNECT: '0' });
     assert.equal(data.some((m) => m._source === 'live_catalog'), false);
   });
 });

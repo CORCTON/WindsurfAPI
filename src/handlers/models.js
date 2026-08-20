@@ -1,5 +1,7 @@
 import { listModels } from '../models.js';
-import { resolveConnectSelector, getLiveCatalog, FREE_REACHABLE_SELECTORS, __testing } from '../devin-connect-models.js';
+import {
+  resolveConnectSelector, getLiveCatalog, FREE_REACHABLE_SELECTORS,
+} from '../devin-connect-models.js';
 import { getBackendSwitch } from '../runtime-config.js';
 import { hasConnectEntitledAccount, getAccountCount } from '../auth.js';
 
@@ -51,7 +53,6 @@ export function buildConnectReachability(env = process.env) {
   if (!getBackendSwitch('devinConnect', effectiveEnv)) {
     return () => ({ reachable: true, selector: null });
   }
-  const known = (selector) => __testing.CATALOG_SELECTORS.has(selector) || __testing._liveSelectors.has(selector);
   const skipEntitlement = shouldSkipEntitlementFilter(effectiveEnv, getAccountCount().total);
   const entitled = (selector) => skipEntitlement || hasConnectEntitledAccount(selector);
   // NOTE on what is deliberately NOT here: a FREE_REACHABLE_SELECTORS short-circuit.
@@ -74,8 +75,22 @@ export function buildConnectReachability(env = process.env) {
   // the lie #234 is about. `connect-discovery-rebuild.test.js` caught that on the first run
   // when this was first written the wrong way round.
   return (windsurfId) => {
-    const { selector, mapped } = resolveConnectSelector(windsurfId);
-    return { reachable: !!(mapped && known(selector) && entitled(selector)), selector: mapped ? selector : null };
+    // Discovery probes every MODELS row, including intentionally unsupported
+    // Cascade-only names. They are not paid requests and must not consume the
+    // resolver's one-time downgrade warning; a later real chat request still will.
+    const { selector, mapped } = resolveConnectSelector(windsurfId, {
+      warnOnFallback: false,
+      // An env token or empty pool is deliberately outside per-account catalog
+      // authority. Keep the snapshot available for that same fallback path.
+      allowSnapshotFallback: skipEntitlement,
+    });
+    return {
+      // resolveConnectSelector already validates aliases and direct selectors
+      // against the authoritative pool policy. Keep entitlement as the second,
+      // independent gate; re-checking existence here would duplicate policy.
+      reachable: !!(mapped && entitled(selector)),
+      selector: mapped ? selector : null,
+    };
   };
 }
 
@@ -87,10 +102,16 @@ export function handleModels(env = process.env) {
   let data = listModels({ env: effectiveEnv });
   if (getBackendSwitch('devinConnect', effectiveEnv)) {
     const liveCatalog = getLiveCatalog();
+    const catalogSelector = (row) => (
+      typeof row === 'string' ? row : row?.selector
+    )?.trim();
     const imageCapabilityBySelector = new Map(
-      liveCatalog
-        .filter((row) => typeof row?.selector === 'string' && typeof row?.supportsImages === 'boolean')
-        .map((row) => [row.selector, row.supportsImages]),
+      liveCatalog.flatMap((row) => {
+        const selector = catalogSelector(row);
+        return selector && typeof row?.supportsImages === 'boolean'
+          ? [[selector, row.supportsImages]]
+          : [];
+      }),
     );
     // Row producer #1: the MODELS table, filtered to what this deployment can serve.
     //
@@ -103,9 +124,14 @@ export function handleModels(env = process.env) {
     // (models.js isModelAllowedByCloudCatalog / filterModelKeysByCloudCatalog), which is
     // correct as a namespace boundary and is why the check has to be redone here.
     const isReachable = buildConnectReachability(effectiveEnv);
+    // Discovery is a selector catalog, not an alias catalog. Several public names
+    // can resolve to the same upstream selector. Keep the first stable client-facing
+    // name and suppress the rest so one upstream model is not listed repeatedly.
+    const representedSelectors = new Set();
     data = data.flatMap((m) => {
       const reachability = isReachable(m._windsurf_id);
-      if (!reachability.reachable) return [];
+      if (!reachability.reachable || representedSelectors.has(reachability.selector)) return [];
+      representedSelectors.add(reachability.selector);
       const supportsImages = imageCapabilityBySelector.get(reachability.selector);
       return [typeof supportsImages === 'boolean' ? { ...m, supports_images: supportsImages } : m];
     });
@@ -126,18 +152,19 @@ export function handleModels(env = process.env) {
     // first one left a free-only pool still advertising every live-only paid
     // selector (measured: 86 rows survived a filter applied to producer #1 alone).
     for (const row of liveCatalog) {
-      const id = row.selector;
-      if (!id || seen.has(id)) continue;
+      const id = catalogSelector(row);
+      if (!id || seen.has(id) || representedSelectors.has(id)) continue;
       if (!entitled(id)) continue;
       seen.add(id);
+      representedSelectors.add(id);
       data.push({
         id,
         object: 'model',
         created: ts,
-        owned_by: row.provider || 'windsurf',
+        owned_by: row?.provider || 'windsurf',
         _windsurf_id: id,
         _source: 'live_catalog',
-        ...(row.label ? { _label: row.label } : {}),
+        ...(row?.label ? { _label: row.label } : {}),
         ...(typeof row.supportsImages === 'boolean' ? { supports_images: row.supportsImages } : {}),
       });
     }

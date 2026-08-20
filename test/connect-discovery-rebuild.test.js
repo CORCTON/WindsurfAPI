@@ -19,21 +19,24 @@
 // snapshot, absent from all live catalog rows, no MODELS entry) yet chat routes it,
 // so discovery has to synthesize it.
 
-import { afterEach, describe, it } from 'node:test';
+import { afterEach, beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  addAccountByKey, removeAccount, getAccountInternal, getAccountCount,
+  __resetModelCatalogState,
+  __setModelCatalogDeps,
+  __waitForModelCatalogSync,
+  addAccountByKey,
+  removeAccount,
+  getAccountInternal,
+  getAccountCount,
 } from '../src/auth.js';
 import { handleModels } from '../src/handlers/models.js';
 import {
-  setLiveCatalogSelectors, clearLiveCatalogSelectors,
+  setLiveCatalogSelectors, __testing,
 } from '../src/devin-connect-models.js';
 
 const FREE_SELECTOR = 'swe-1-6-slow';
 const created = [];
-// Set when a test populates the live catalog, so afterEach can restore the
-// process-wide resolver state instead of leaking it into later files.
-let liveCatalogDirty = false;
 const SAVED = {};
 const ENV_KEYS = ['DEVIN_CONNECT', 'DEVIN_CONNECT_TOKEN', 'WINDSURF_API_KEY'];
 for (const k of ENV_KEYS) SAVED[k] = process.env[k];
@@ -57,12 +60,22 @@ function connectEnv() {
   delete process.env.WINDSURF_API_KEY;
 }
 
-afterEach(() => {
+beforeEach(() => {
+  // These tests exercise discovery policy only. Account creation normally starts
+  // both Connect and Cascade catalog RPCs; using fixture credentials against the
+  // real service made unrelated 401/network failures part of a supposedly local
+  // suite. Keep every catalog path deterministic and offline.
+  __setModelCatalogDeps({
+    disableConnectSync: true,
+    getCascadeModelConfigs: async () => ({ configs: [] }),
+  });
+});
+
+afterEach(async () => {
   while (created.length) removeAccount(created.pop());
-  if (liveCatalogDirty) {
-    clearLiveCatalogSelectors();
-    liveCatalogDirty = false;
-  }
+  await __waitForModelCatalogSync();
+  __resetModelCatalogState();
+  __setModelCatalogDeps(null);
   for (const k of ENV_KEYS) {
     if (SAVED[k] === undefined) delete process.env[k];
     else process.env[k] = SAVED[k];
@@ -105,6 +118,45 @@ describe('connect discovery — entitlement filter (#234)', () => {
     assert.ok(withPaid.includes(FREE_SELECTOR), 'the free selector stays listed');
   });
 
+  it('treats a complete non-empty live catalog as authoritative over the frozen snapshot', () => {
+    connectEnv();
+    mk('pro');
+    setLiveCatalogSelectors([
+      { selector: 'claude-opus-4-8-medium', provider: 'anthropic' },
+    ]);
+
+    const rows = ids();
+    assert.ok(rows.includes('claude-opus-4-8-medium'),
+      'the selector confirmed by the live catalog must be advertised');
+    assert.ok(!rows.includes('gpt-5.5'),
+      'a snapshot-only model must not be advertised after every contributor has live data');
+    assert.ok(rows.includes(FREE_SELECTOR), 'the universal free floor stays advertised');
+  });
+
+  it('does not log paid-request downgrade warnings while building discovery', () => {
+    connectEnv();
+    mk('pro');
+    setLiveCatalogSelectors([
+      { selector: 'claude-opus-4-8-medium', provider: 'anthropic' },
+    ]);
+    __testing.degradeWarned.clear();
+
+    const warnings = [];
+    const originalWarn = console.warn;
+    console.warn = (...args) => { warnings.push(args.join(' ')); };
+    try {
+      ids();
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    assert.deepEqual(
+      warnings.filter((line) => line.includes('paid request downgraded to free tier')),
+      [],
+      'GET /v1/models is a read-only catalog probe, not a paid request',
+    );
+  });
+
   it('fails open on an empty pool instead of returning nothing', () => {
     // hasConnectEntitledAccount is Array.some over the pool, so it returns false
     // for EVERY selector when the pool is empty. Filtering without this arm would
@@ -135,6 +187,22 @@ describe('connect discovery — entitlement filter (#234)', () => {
     assert.ok(withToken.includes('claude-opus-4-8-medium'));
   });
 
+  it('keeps snapshot selectors available to an env token beside a restricted live pool', () => {
+    connectEnv();
+    mk('pro');
+    setLiveCatalogSelectors([
+      { selector: 'claude-opus-4-8-medium', provider: 'anthropic' },
+    ]);
+
+    const rows = ids({
+      ...process.env,
+      DEVIN_CONNECT_TOKEN: 'per-request-env-token-for-restricted-live-test',
+      WINDSURF_API_KEY: '',
+    });
+    assert.ok(rows.includes('gpt-5.5'),
+      'the env token is outside per-account live restrictions and retains snapshot fallback');
+  });
+
   it('applies the filter to the live_catalog producer, not just listModels', () => {
     // handleModels has TWO row producers: the listModels filter and a live_catalog
     // synthesis loop that builds its own rows. Filtering only the first left a
@@ -153,7 +221,6 @@ describe('connect discovery — entitlement filter (#234)', () => {
       { selector: LIVE_ONLY_PAID, provider: 'openai' },
       { selector: LIVE_ONLY_FREE, provider: 'windsurf' },
     ]);
-    liveCatalogDirty = true;
 
     const rows = handleModels(process.env).data;
     const emitted = rows.map((m) => m.id);

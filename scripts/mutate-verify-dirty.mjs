@@ -2,52 +2,12 @@
 //
 // Mutation verification WITHOUT requiring a clean tree.
 //
-// `mutate-verify.mjs` is the one to use. Reach for this one only while a fix is
-// still uncommitted — which is exactly when the main harness refuses to run, and
-// refuses for a good reason (its guard 1).
-//
-// ── WHAT GUARD 1 PROTECTS, AND WHY IT CANNOT SIMPLY BE DROPPED ───────────────
-//
-// The main harness restores with `git checkout HEAD -- src/` after every mutation.
-// On a dirty tree that destroys the UNCOMMITTED fix sitting next to the mutation,
-// so every later mutation measures "fix missing" rather than "mutation applied" —
-// and that failure is INDISTINGUISHABLE from the mutation being caught, so it
-// reads as success. AUDIT-LEDGER round 4 recorded it; round 8 hit it again, by the
-// person who had written it down.
-//
-// So this script may not just delete the guard. Every protection guard 1 bought
-// has to be bought again by other means:
-//
-//   guard 1 gave us            this script's replacement                strength
-//   ────────────────────────   ──────────────────────────────────────   ────────
-//   HEAD is an authoritative   a cp backup taken AFTER the baseline     equal*
-//   copy of every mutated      run and BEFORE the first write
-//   file
-//
-//   `git checkout` either      after restoring, every file is           STRONGER
-//   works or throws            compared byte-for-byte against its
-//                              backup; a mismatch is a hard failure
-//
-//   a clean tree, so no        nothing — this is the entire point of     WEAKER
-//   uncommitted work exists    the script
-//   to lose
-//
-//   recovery after a crash     backups live outside the repo and are     see below
-//                              restored on SIGINT/SIGTERM/SIGHUP and
-//                              on uncaughtException
-//
-//   * "Equal" holds only if the backup point is right: after the baseline (or the
-//     baseline measures somebody else's tree) and before the first write (or the
-//     backup already contains a mutation). Nothing enforces that ordering except
-//     the order of the statements below. Do not move them.
-//
-// THE ONE GAP THAT IS NOT CLOSED. `kill -9` runs no handler, so the tree is left
-// MUTATED and the backups sit in os.tmpdir(), which a reboot clears. The main
-// harness recovers from this with `git checkout HEAD -- src/`; this one cannot.
-// That is why every run prints `BACKUP <file> -> <path>` before touching anything:
-// those lines are the manual recovery path.
-//
-//     cp <printed path> <file>
+// Use this while a fix is still uncommitted. It materializes the current dirty
+// bytes into a disposable clone, commits that synthetic tree locally, and runs
+// every mutation there. The Owner checkout is never a mutation target, so a
+// killed process, a test that writes another file/ref/config entry, or a failed
+// restore cannot destroy the work being verified. `.opencode/`, legacy
+// `.claude/worktrees/`, and ignored runtime data are never copied into it.
 //
 // Usage:
 //   node scripts/mutate-verify-dirty.mjs <spec.json>
@@ -55,13 +15,19 @@
 // Spec format is identical to mutate-verify.mjs. Exit code 0 only when every
 // mutation matched its expectation.
 
-import { readFileSync, writeFileSync, copyFileSync, mkdirSync } from 'node:fs';
+import {
+  readFileSync, writeFileSync,
+} from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { tmpdir } from 'node:os';
+import {
+  harnessEnv, workspaceSnapshot, acquireMutationLock, assertContainedRegularFile,
+  materializeMutationWorkspace, repoGit, parseMutationReporterOutput,
+} from './mutation-harness-utils.mjs';
 
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const SOURCE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+let ROOT = SOURCE_ROOT;
 const specPath = process.argv[2];
 if (!specPath) {
   console.error('usage: node scripts/mutate-verify-dirty.mjs <spec.json>');
@@ -69,14 +35,31 @@ if (!specPath) {
 }
 
 const spec = JSON.parse(readFileSync(specPath, 'utf8'));
+if (!Array.isArray(spec.tests) || spec.tests.length === 0) {
+  console.error('RESULT=SPEC_FAILURE tests must be a non-empty array');
+  process.exit(2);
+}
+if (!Array.isArray(spec.mutations) || spec.mutations.length === 0) {
+  console.error('RESULT=SPEC_FAILURE mutations must be a non-empty array');
+  process.exit(2);
+}
+for (const testPath of spec.tests) {
+  if (typeof testPath !== 'string' || testPath.startsWith('-')) {
+    console.error(`RESULT=SPEC_FAILURE invalid test path: ${testPath}`);
+    process.exit(2);
+  }
+}
 const files = [...new Set(spec.mutations.map(m => m.file))];
+
+const assertMutableTarget = (file, root = ROOT) => assertContainedRegularFile(root, file);
 
 // Guard 3's equivalent, and it runs FIRST. An anchor matching zero times makes
 // `.replace()` a no-op, and a no-op mutation necessarily SURVIVES — which reads as
 // "the guard has a hole" when nothing was ever mutated.
 let fatal = false;
 for (const m of spec.mutations) {
-  const src = readFileSync(resolve(ROOT, m.file), 'utf8');
+  const target = assertMutableTarget(m.file, SOURCE_ROOT);
+  const src = readFileSync(target, 'utf8');
   const hits = src.split(m.anchor).length - 1;
   if (hits !== 1) {
     console.log(`ANCHOR_BAD hits=${hits} :: ${m.name.slice(0, 70)}`);
@@ -85,54 +68,103 @@ for (const m of spec.mutations) {
 }
 if (fatal) { console.log('RESULT=ANCHOR_FAILURE'); process.exit(2); }
 
+// The lock belongs to the Owner repository, not the disposable clone.  Taking it
+// only after materialization lets two dirty runs clone the same Owner and then
+// acquire different `.git/` locks concurrently.
+let releaseMutationLock;
+try { releaseMutationLock = acquireMutationLock(SOURCE_ROOT); }
+catch (err) { console.log(`RESULT=LOCK_FAILURE ${err.message}`); process.exit(2); }
+
+let materialized;
+try { materialized = materializeMutationWorkspace(SOURCE_ROOT); }
+catch (err) {
+  console.log(`RESULT=WORKSPACE_FAILURE ${err.message}`);
+  process.exit(2);
+}
+ROOT = materialized.root;
+process.once('exit', materialized.cleanup);
+
+// Re-check anchors on the exact materialized bytes which the test child will
+// execute. The source checkout is never mutated by this harness.
+for (const m of spec.mutations) {
+  const target = assertMutableTarget(m.file);
+  const src = readFileSync(target, 'utf8');
+  const hits = src.split(m.anchor).length - 1;
+  if (hits !== 1) {
+    console.log(`ANCHOR_BAD_MATERIALIZED hits=${hits} :: ${m.name.slice(0, 70)}`);
+    fatal = true;
+  }
+}
+if (fatal) { console.log('RESULT=ANCHOR_FAILURE'); process.exit(2); }
+
 function runTests() {
-  const args = ['--import', './test/setup-env.mjs', '--test', '--test-force-exit', ...spec.tests];
+  const args = [
+    '--import', './scripts/mutation-network-deny.mjs',
+    '--import', './test/setup-env.mjs',
+    '--test-reporter=./scripts/mutation-harness-utils.mjs',
+    '--test', '--test-force-exit', ...spec.tests,
+  ];
   try {
-    return execFileSync(process.execPath, args, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-  } catch (e) { return `${e.stdout || ''}${e.stderr || ''}`; }
+    return {
+      stdout: execFileSync(process.execPath, args, {
+        cwd: ROOT, env: harnessEnv(), encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 15 * 60 * 1000,
+        maxBuffer: 64 * 1024 * 1024,
+      }),
+      stderr: '',
+      executionFailure: null,
+    };
+  } catch (e) {
+    return {
+      stdout: e.stdout || '',
+      stderr: e.stderr || '',
+      executionFailure: { status: e.status, signal: e.signal, killed: e.killed === true, code: e.code },
+    };
+  }
 }
 
-// Each file's `ℹ pass N` line appears exactly once, so SUMMING is safe. Per-file
-// ATTRIBUTION is not: the shard runner interleaves tags (`[test/x] [test/x] ℹ
-// tests 9`), so slicing counts by filename credits them to the wrong file. This
-// reads totals only. ANSI is stripped first — a coloured summary line does not
-// match an anchored regex, which is how FORCE_COLOR once made the harness report
-// pass=0 against a fully green suite.
-const counts = (raw) => {
-  const out = raw.replace(/\x1b\[[0-9;]*m/g, '');
-  return {
-    pass: [...out.matchAll(/^ℹ pass (\d+)$/gm)].reduce((s, m) => s + +m[1], 0),
-    fail: [...out.matchAll(/^ℹ fail (\d+)$/gm)].reduce((s, m) => s + +m[1], 0),
-  };
-};
+// Only records emitted by the structured reporter count.  Test-authored TAP,
+// ANSI text, and a partial stream are intentionally ignored or fail closed.
+const countsWithEvidence = ({ stdout, stderr, executionFailure }) =>
+  parseMutationReporterOutput(stdout, stderr, executionFailure);
 
 // Guard 2's equivalent: a SURVIVED verdict means nothing unless the suite was
 // green first, at the exact count the spec declares.
-const base = counts(runTests());
-console.log(`BASELINE pass=${base.pass} fail=${base.fail} declared=${spec.expectBaselinePass ?? '(none)'}`);
-if (base.fail !== 0) { console.log('RESULT=BASELINE_RED'); process.exit(2); }
+const initialTree = workspaceSnapshot(ROOT);
+const base = countsWithEvidence(runTests());
+console.log(`BASELINE pass=${base.pass} fail=${base.fail} tests=${base.tests} declared=${spec.expectBaselinePass ?? '(none)'}`);
+if (base.fail !== 0 || base.tests === 0 || base.infrastructureFailure
+    || base.tests !== base.pass || base.skipped !== 0 || base.cancelled !== 0 || base.todo !== 0) {
+  console.log('RESULT=BASELINE_UNTRUSTWORTHY');
+  process.exit(2);
+}
 if (spec.expectBaselinePass != null && base.pass !== spec.expectBaselinePass) {
   console.log('RESULT=BASELINE_MISMATCH');
   process.exit(2);
 }
-
-// The backup point. After the baseline, before the first write. See the header.
-const BAKDIR = resolve(tmpdir(), 'windsurfapi-mutate-dirty');
-mkdirSync(BAKDIR, { recursive: true });
-const bak = {};
-for (const f of files) {
-  bak[f] = resolve(BAKDIR, `bak-${f.replace(/[\\/.]/g, '_')}`);
-  copyFileSync(resolve(ROOT, f), bak[f]);
-  console.log(`BACKUP ${f} -> ${bak[f]}`);
+if (workspaceSnapshot(ROOT) !== initialTree) {
+  console.log('RESULT=BASELINE_SIDE_EFFECT');
+  process.exit(2);
 }
-const restore = () => { for (const f of files) copyFileSync(bak[f], resolve(ROOT, f)); };
+
+// The restore point is the synthetic HEAD in the disposable workspace. Unlike
+// the old in-place cp backup, this covers every mutation target and lets the
+// entire workspace be discarded after any non-target side effect.
+const baselineTree = initialTree;
+const restore = () => {
+  for (const f of files) repoGit(ROOT, ['checkout', 'HEAD', '--', f]);
+};
+if (workspaceSnapshot(ROOT) !== baselineTree) {
+  console.log('RESULT=BASELINE_SIDE_EFFECT');
+  process.exit(2);
+}
 
 let restoring = false;
 const emergency = (why) => {
   if (restoring) return;
   restoring = true;
   try { restore(); console.log(`EMERGENCY_RESTORE ok (${why})`); }
-  catch (e) { console.log(`EMERGENCY_RESTORE FAILED (${why}): ${e.message} — restore by hand from the BACKUP lines above`); }
+  catch (e) { console.log(`EMERGENCY_RESTORE FAILED (${why}): ${e.message}; disposable workspace will be removed`); }
   process.exit(130);
 };
 for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => emergency(sig));
@@ -140,24 +172,36 @@ process.on('uncaughtException', (e) => emergency(`uncaught: ${e.message}`));
 
 let bad = 0;
 for (const m of spec.mutations) {
-  const p = resolve(ROOT, m.file);
+  const p = assertMutableTarget(m.file);
   writeFileSync(p, readFileSync(p, 'utf8').replace(m.anchor, m.replacement));
-  const r = counts(runTests());
-  restore();
+  let r;
+  try { r = countsWithEvidence(runTests()); }
+  finally { restore(); }
+  const complete = r.tests === base.tests
+    && r.pass + r.fail === base.tests
+    && r.skipped === 0 && r.cancelled === 0 && r.todo === 0;
+  const trustworthy = complete && !r.infrastructureFailure;
+  if (workspaceSnapshot(ROOT) !== baselineTree) {
+    console.log(`UNEXPECTED SIDE_EFFECT after ${m.name}`);
+    console.log('RESULT=MUTATION_SIDE_EFFECT');
+    process.exit(2);
+  }
+  if (!trustworthy) {
+    console.log(`UNEXPECTED UNTRUSTWORTHY fail=${r.fail} pass=${r.pass} tests=${r.tests}/${base.tests}${r.infrastructureFailure ? ' infra=1' : ''} :: ${m.name.slice(0, 90)}`);
+    console.log('RESULT=MUTATION_UNTRUSTWORTHY');
+    process.exit(2);
+  }
   const caught = r.fail > 0;
   const ok = caught === (m.expectCaught !== false);
   if (!ok) bad++;
-  console.log(`${ok ? 'OK' : 'UNEXPECTED'} ${caught ? 'CAUGHT' : 'SURVIVED'} fail=${r.fail} pass=${r.pass} :: ${m.name.slice(0, 90)}`);
+  const verdict = caught ? 'CAUGHT' : 'SURVIVED';
+  console.log(`${ok ? 'OK' : 'UNEXPECTED'} ${verdict} fail=${r.fail} pass=${r.pass} tests=${r.tests}/${base.tests}${r.infrastructureFailure ? ' infra=1' : ''} :: ${m.name.slice(0, 90)}`);
 }
 restore();
-
-// git's "checkout either works or throws" becomes an explicit comparison, because
-// cp is not an authoritative copy and must not be assumed to have succeeded.
-for (const f of files) {
-  if (readFileSync(resolve(ROOT, f), 'utf8') !== readFileSync(bak[f], 'utf8')) {
-    console.log(`RESTORE_FAILED ${f} — restore by hand: cp ${bak[f]} ${f}`);
-    process.exit(2);
-  }
+if (workspaceSnapshot(ROOT) !== baselineTree) {
+  console.log('RESULT=FINAL_SIDE_EFFECT');
+  process.exit(2);
 }
+releaseMutationLock?.();
 console.log(`RESULT=${bad === 0 ? 'ALL_AS_EXPECTED' : `${bad}_UNEXPECTED`} total=${spec.mutations.length}`);
 process.exit(bad === 0 ? 0 : 1);

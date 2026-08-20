@@ -4,8 +4,18 @@
  */
 
 import { config, log } from '../config.js';
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmdirSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { dirname, join, resolve } from 'node:path';
 import {
   getAccountList, getAccountCount, getAccountListStats, getAccountPublic, addAccountByKey, addAccountByToken,
   removeAccount, setAccountStatus, resetAccountErrors, updateAccountLabel,
@@ -39,7 +49,7 @@ import { getLogs, subscribeToLogs, unsubscribeFromLogs } from './logger.js';
 import { getProxyConfig, getProxyConfigMasked, setGlobalProxy, setAccountProxy, removeProxy, getEffectiveProxy } from './proxy-config.js';
 import { MODELS, MODEL_TIER_ACCESS as _TIER_TABLE, getTierModels as _getTierModels, filterModelKeysByCloudCatalog } from '../models.js';
 import { buildConnectReachability } from '../handlers/models.js';
-import { FREE_REACHABLE_SELECTORS } from '../devin-connect-models.js';
+import { FREE_REACHABLE_SELECTORS, getLiveCatalog } from '../devin-connect-models.js';
 import { windsurfLogin, refreshFirebaseToken, reRegisterWithCodeium } from './windsurf-login.js';
 import { getModelAccessConfig, setModelAccessMode, setModelAccessList, addModelToList, removeModelFromList, setDefaultModel } from './model-access.js';
 import { checkMessageRateLimit } from '../windsurf-api.js';
@@ -54,6 +64,7 @@ import { BatchImportParseError, parseBatchImportInput } from './import-parser.js
 import { detectSupervisor, gracefulRestart } from '../restart.js';
 import { getActiveServer } from '../server-registry.js';
 import { abortActiveSse } from '../sse-registry.js';
+import { renameSyncWithRetry, writeJsonAtomic } from '../fs-atomic.js';
 
 function shouldPrewarmLsOnAccountAdd() {
   return process.env.LS_PREWARM_ON_ACCOUNT_ADD === '1' || process.env.LS_PREWARM_PROXIES === '1';
@@ -739,6 +750,14 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
   if (subpath === '/self-update/check' && method === 'GET') {
     try {
       const info = await gitStatus();
+      if (info.updateError) {
+        return json(res, 200, {
+          ok: false,
+          mode: 'git',
+          ...info,
+          error: info.updateError,
+        });
+      }
       return json(res, 200, { ok: true, mode: 'git', ...info });
     } catch (err) {
       if (isSelfUpdateUnavailableError(err)) {
@@ -746,7 +765,7 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
         // docker self-update via /var/run/docker.sock if the user
         // mounted it into the container; otherwise report the same
         // "manual command" hint we did before.
-        const docker = await detectDockerSelfUpdate();
+        const docker = await detectDockerSelfUpdateForRequest();
         if (docker.available) {
           return json(res, 200, {
             ok: true,
@@ -769,62 +788,199 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
     }
   }
   if (subpath === '/self-update/rollback' && method === 'POST') {
+    let releaseMutation;
+    try {
+      releaseMutation = acquireSelfUpdateMutation();
+    } catch (err) {
+      return json(res, 200, { ok: false, error: err.code || 'ERR_UPDATE_LOCK_FAILED', message: err.message });
+    }
+    if (!releaseMutation) {
+      return json(res, 200, {
+        ok: false,
+        error: SELF_UPDATE_IN_PROGRESS,
+        message: 'Another update or rollback is already in progress.',
+      });
+    }
+    let mutationLockHandedOff = false;
     // 失败回滚：reset 到最近一次 /self-update 记录的 before commit，重启。
     // 与 forceReset 同级保护（AUTH-1）：本地领先或脏树时同样拒绝。
     try {
-      let beforeJson = {};
       try {
-        beforeJson = JSON.parse(await (await import('node:fs/promises')).readFile(
-          join(process.cwd(), 'data', 'self-update-before.json'), 'utf8',
-        ));
-      } catch { beforeJson = {}; }
-      const beforeCommit = beforeJson?.commit;
-      if (!beforeCommit) {
-        return json(res, 200, { ok: false, error: 'ERR_NO_ROLLBACK_POINT', message: 'No previous update recorded.' });
-      }
-      // M2: 校验当前 HEAD 仍是更新后的 commit（before.json 记录了 after）——
-      // 若操作者更新后又提交了新代码，reset 会抹掉它，拒绝回滚。
-      if (beforeJson.after) {
-        const cur = (await runGit(['rev-parse', 'HEAD'])).trim();
-        if (cur !== beforeJson.after) {
+        const isCommitSha = value => /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(value);
+        const { readFile, rm } = await import('node:fs/promises');
+        const paths = rollbackPointPaths();
+        const readPoint = async (path) => {
+          try { return JSON.parse(await readFile(path, 'utf8')); } catch { return {}; }
+        };
+        let beforeJson = await readPoint(paths.final);
+        const pendingJson = await readPoint(paths.pending);
+        let currentHead = '';
+        if (isCommitSha(pendingJson?.commit) && isCommitSha(pendingJson?.after)) {
+          currentHead = (await runGit(['rev-parse', 'HEAD'])).trim();
+          if (currentHead === pendingJson.after) {
+            // A crash can land after reset/merge but before pending→final rename.
+            // The durable pending record is authoritative when its `after` SHA
+            // matches current HEAD; promote best-effort and allow rollback now.
+            beforeJson = pendingJson;
+            try { promotePendingRollbackPoint(); } catch (err) {
+              log.warn(err?.renamePublished
+                ? `self-update: rollback point final file is visible, but its directory fsync failed during pending recovery: ${err.message}`
+                : `self-update: pending rollback point is valid but promotion failed; pending remains available: ${err.message}`);
+            }
+          } else {
+            // HEAD never reached the pending target, so this is an abandoned
+            // pre-mutation record. Preserve the previous final rollback point.
+            discardPendingRollbackPoint();
+          }
+        } else if (Object.keys(pendingJson || {}).length) {
+          discardPendingRollbackPoint();
+        }
+        const beforeCommit = beforeJson?.commit;
+        const afterCommit = beforeJson?.after;
+        if (!beforeCommit) {
+          return json(res, 200, { ok: false, error: 'ERR_NO_ROLLBACK_POINT', message: 'No previous update recorded.' });
+        }
+        if (!isCommitSha(beforeCommit) || !isCommitSha(afterCommit)) {
+          return json(res, 200, {
+            ok: false,
+            error: 'ERR_INVALID_ROLLBACK_POINT',
+            message: 'Rollback metadata must contain both the pre-update and post-update commit SHAs; refusing an unsafe legacy rollback point.',
+          });
+        }
+        // M2: 校验当前 HEAD 仍是更新后的 commit（before.json 记录了 after）——
+        // 若操作者更新后又提交了新代码，reset 会抹掉它，拒绝回滚。
+        currentHead ||= (await runGit(['rev-parse', 'HEAD'])).trim();
+        if (currentHead !== afterCommit) {
           return json(res, 200, { ok: false, error: 'ERR_HEAD_MOVED', message: 'HEAD moved since the update — refusing rollback that would discard newer commits.' });
         }
-      }
-      const dirty = (await runGit(['status', '--porcelain', '-uno'])).trim();
-      if (dirty) {
-        const allowForce = !!(body && body.forceReset);
-        if (!allowForce) {
-          return json(res, 200, { ok: false, dirty: true, error: 'ERR_UNCOMMITTED_CHANGES', dirtyFiles: dirty.split('\n').slice(0, 20) });
+        // Supervisor detection is read-only and must happen before stash/reset.
+        // A rejected rollback must leave the operator's working tree untouched.
+        const sup = detectSelfUpdateSupervisor();
+        if (!sup.supervised) {
+          return json(res, 200, { ok: false, error: 'ERR_NO_SUPERVISOR', message: 'No process supervisor detected. Rollback would stop the gateway without relaunch.' });
         }
-        try { await runGit(['stash', 'push', '--include-untracked', '-m', `rollback-forceReset ${new Date().toISOString()}`]); } catch {}
+        const ignoredConflicts = await findIgnoredTargetPathConflicts(beforeCommit);
+        if (ignoredConflicts.length) {
+          return json(res, 200, {
+            ok: false,
+            error: 'ERR_IGNORED_PATH_CONFLICT',
+            message: 'Rollback would overwrite ignored runtime data. Move or back up the listed paths manually before retrying.',
+            conflictPaths: ignoredConflicts.slice(0, 20),
+          });
+        }
+        // Rollback uses reset --hard, which can delete an untracked file or
+        // directory that obstructs a path tracked by the target commit. Unlike
+        // ordinary update checks, this destructive path must see untracked files
+        // and require the same explicit force+stash protection.
+        const dirty = (await runGit(['status', '--porcelain', '--untracked-files=all'])).trim();
+        let protectiveStashOid = '';
+        if (dirty) {
+          const allowForce = !!(body && body.forceReset);
+          if (!allowForce) {
+            return json(res, 200, { ok: false, dirty: true, error: 'ERR_UNCOMMITTED_CHANGES', dirtyFiles: dirty.split('\n').slice(0, 20) });
+          }
+          try {
+            protectiveStashOid = await createProtectiveStash('rollback-forceReset');
+          } catch (err) {
+            return json(res, 200, {
+              ok: false,
+              error: 'ERR_STASH_FAILED',
+              message: `Could not preserve local changes; rollback was not attempted: ${err.message}`,
+            });
+          }
+        }
+        let resetError = null;
+        try {
+          await runGit(['reset', '--hard', beforeCommit]);
+        } catch (err) {
+          resetError = err;
+        }
+        let rolledBackHead = '';
+        let trackedAfter = '';
+        try {
+          rolledBackHead = (await runGit(['rev-parse', 'HEAD'])).trim();
+          trackedAfter = (await runGit(['status', '--porcelain', '--untracked-files=no', '--ignore-submodules=none'])).trim();
+        } catch (inspectErr) {
+          return json(res, 200, {
+            ok: false,
+            error: 'ERR_ROLLBACK_STATE_UNKNOWN',
+            message: `Rollback state could not be verified; the rollback point and any protective stash were preserved: ${inspectErr.message}`,
+            stashed: !!protectiveStashOid,
+          });
+        }
+        if (rolledBackHead !== beforeCommit || trackedAfter) {
+          let restored = false;
+          const unchangedAndClean = rolledBackHead === currentHead && !trackedAfter;
+          if (protectiveStashOid && unchangedAndClean) {
+            try {
+              await restoreProtectiveStash(protectiveStashOid);
+              restored = true;
+            } catch (restoreErr) {
+              log.warn(`self-update rollback: reset failed and exact protective stash ${protectiveStashOid.slice(0, 12)} could not be applied: ${restoreErr.message}`);
+            }
+          }
+          return json(res, 200, {
+            ok: false,
+            error: trackedAfter
+              ? 'ERR_ROLLBACK_PARTIAL'
+              : resetError
+                ? (unchangedAndClean ? 'ERR_GIT_ROLLBACK_FAILED' : 'ERR_ROLLBACK_PARTIAL')
+                : 'ERR_ROLLBACK_TARGET_MISMATCH',
+            message: resetError
+              ? `Git could not reset cleanly to the recorded rollback commit: ${resetError.message}`
+              : `Git reported success but rollback state is HEAD ${rolledBackHead.slice(0, 12)} with ${trackedAfter ? 'tracked changes' : 'a different commit'}.`,
+            expected: beforeCommit,
+            actual: rolledBackHead,
+            dirtyFiles: trackedAfter ? trackedAfter.split('\n').slice(0, 20) : undefined,
+            stashed: !!protectiveStashOid,
+            stashRestored: restored || undefined,
+          });
+        }
+        if (resetError) {
+          log.warn(`self-update rollback: Git returned an error after reaching the verified rollback state: ${resetError.message}`);
+        }
+        // 清掉回滚点，避免重复回滚到同一个旧版本
+        await Promise.all([
+          rm(paths.final, { force: true }).catch(() => {}),
+          rm(paths.pending, { force: true }).catch(() => {}),
+        ]);
+        const restartScheduled = scheduleSelfUpdateRestart(() => gracefulRestart({
+            reason: 'self-update-rollback',
+            drainMs: 10000,
+            server: getActiveServer(),
+            abortSse: abortActiveSse,
+            stopLs: () => stopLanguageServerAndWait({ perProcessTimeoutMs: 1500 }),
+            exitCode: selfUpdateRestartExitCode(),
+          }), releaseMutation);
+        mutationLockHandedOff = restartScheduled === true;
+        return json(res, 200, { ok: true, rolledBackTo: beforeCommit.slice(0, 7) });
+      } catch (err) {
+        if (isSelfUpdateUnavailableError(err)) return json(res, 200, { ok: false, error: err.code || 'ERR_GIT_UNAVAILABLE' });
+        return json(res, 200, { ok: false, error: err.code || err.message, message: err.code ? err.message : undefined });
       }
-      // M3: supervisor 预检（与 /restart 同级）——无 supervisor 时回滚会导致永久停机
-      const sup = detectSupervisor();
-      if (!sup.supervised) {
-        return json(res, 200, { ok: false, error: 'ERR_NO_SUPERVISOR', message: 'No process supervisor detected. Rollback would stop the gateway without relaunch.' });
-      }
-      await runGit(['reset', '--hard', beforeCommit]);
-      // 清掉回滚点，避免重复回滚到同一个旧版本
-      await (await import('node:fs/promises')).rm(join(process.cwd(), 'data', 'self-update-before.json'), { force: true }).catch(() => {});
-      setTimeout(() => {
-        void gracefulRestart({
-          reason: 'self-update-rollback',
-          drainMs: 10000,
-          server: getActiveServer(),
-          abortSse: abortActiveSse,
-          stopLs: () => stopLanguageServerAndWait({ perProcessTimeoutMs: 1500 }),
-          exitCode: selfUpdateRestartExitCode(),
-        });
-      }, 800);
-      return json(res, 200, { ok: true, rolledBackTo: beforeCommit.slice(0, 7) });
-    } catch (err) {
-      if (isSelfUpdateUnavailableError(err)) return json(res, 200, { ok: false, error: err.code || 'ERR_GIT_UNAVAILABLE' });
-      return json(res, 200, { ok: false, error: err.message });
+    } finally {
+      if (!mutationLockHandedOff) releaseMutation();
     }
   }
   if (subpath === '/self-update' && method === 'POST') {
+    let releaseMutation;
     try {
-      const before = await gitStatus();
+      releaseMutation = acquireSelfUpdateMutation();
+    } catch (err) {
+      return json(res, 200, { ok: false, error: err.code || 'ERR_UPDATE_LOCK_FAILED', message: err.message });
+    }
+    if (!releaseMutation) {
+      return json(res, 200, {
+        ok: false,
+        error: SELF_UPDATE_IN_PROGRESS,
+        message: 'Another update or rollback is already in progress.',
+      });
+    }
+    let mutationLockHandedOff = false;
+    try {
+      try {
+        const before = await gitStatus();
+        reconcilePendingRollbackPoint(before.commitFull);
       // M1: resolve the update target before any write (including forceReset).
       // Normal OTA follows the newest RELEASE TAG, not origin/<branch> HEAD:
       // release notes, generated assets, and next-release work commonly land
@@ -832,101 +988,232 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
       // published release itself impossible to install as soon as the first
       // post-tag commit landed. forceUpdate remains the explicit escape hatch
       // for operators who intentionally want the untagged branch head.
-      const safeBranch = safeUpdateBranch(before.branch);
-      try { await runGit(['fetch', '--quiet', 'origin', safeBranch, '--tags']); } catch {}
-      const forceGate = !!(body && body.forceUpdate);
-      const targetState = await releaseUpdateState(safeBranch, before.commitFull, {
-        followUnreleased: forceGate,
-      });
-      if (targetState.diverged) {
-        return json(res, 200, {
-          ok: false,
-          error: 'ERR_DIVERGED',
-          message: `Current HEAD and update target ${targetState.targetCommit.slice(0, 7)} have diverged; refusing a non-fast-forward update.`,
+        const safeBranch = safeUpdateBranch(before.branch);
+        // A failed fetch is not permission to operate on stale refs. The docker
+        // fallback still activates when git itself is unavailable; every source
+        // checkout otherwise fails closed until branch and tag refs are current.
+        await runGit(['fetch', '--quiet', '--no-tags', 'origin', safeBranch]);
+        const forceGate = !!(body && body.forceUpdate);
+        const targetState = await releaseUpdateState(safeBranch, before.commitFull, {
+          followUnreleased: forceGate,
         });
-      }
-      // Guard: working tree must be clean (ignoring untracked files like
-      // accounts.json, stats.json, runtime-config.json which live in the
-      // repo root but aren't checked in). If the tracked files were edited
-      // manually (or pushed via SFTP without a corresponding commit),
-      // `git pull --ff-only` would refuse — surface a friendly error
-      // instead of a raw git message.
-      const dirty = (await runGit(['status', '--porcelain', '-uno'])).trim();
-      if (dirty) {
-        const allowForce = !!(body && body.forceReset);
-        if (!allowForce) {
+        if (targetState.diverged) {
           return json(res, 200, {
             ok: false,
-            dirty: true,
-            error: 'ERR_UNCOMMITTED_CHANGES',
-            dirtyFiles: dirty.split('\n').slice(0, 20),
+            error: 'ERR_DIVERGED',
+            message: `Current HEAD and update target ${targetState.targetCommit.slice(0, 7)} have diverged; refusing a non-fast-forward update.`,
           });
         }
-        // branch comes from `git rev-parse --abbrev-ref HEAD`; execFile
-        // doesn't spawn a shell so metacharacters can't break out — the
-        // regex is kept as defence-in-depth so a malformed ref can't feed
-        // a bogus `origin/xxx` spec to `git fetch`.
-        await runGit(['fetch', 'origin', safeBranch]);
-        // AUTH-1: `git reset --hard origin/<branch>` is destructive. forceReset
-        // covers the dirty working tree the operator explicitly chose to drop,
-        // but the same reset also silently vaporizes any LOCAL COMMITS not yet
-        // pushed to origin — irrecoverable data loss triggered by one dashboard
-        // click. Refuse when HEAD is ahead of the remote unless the operator
-        // sets the distinct DASHBOARD_ALLOW_HARD_RESET=1 opt-in.
-        let ahead = 0;
+        // Guard: working tree must be clean (ignoring untracked files like
+        // accounts.json, stats.json, runtime-config.json which live in the
+        // repo root but aren't checked in). If tracked files were edited,
+        // surface a friendly error instead of a raw git failure.
+        const dirty = (await runGit(['status', '--porcelain', '-uno'])).trim();
+        let resetTarget = before.commitFull;
+        if (dirty) {
+          const allowForce = !!(body && body.forceReset);
+          if (!allowForce) {
+            return json(res, 200, {
+              ok: false,
+              dirty: true,
+              error: 'ERR_UNCOMMITTED_CHANGES',
+              dirtyFiles: dirty.split('\n').slice(0, 20),
+            });
+          }
+          // AUTH-1: forceReset authorizes cleaning the working tree, not silently
+          // deleting local commits. Failure to establish the ahead count is also
+          // fail-closed: "unknown" must never be treated as zero before reset.
+          let ahead;
+          try {
+            ahead = parseGitNonnegativeCount(
+              await runGit(['rev-list', '--count', `origin/${safeBranch}..HEAD`]),
+              `local commits ahead of origin/${safeBranch}`,
+            );
+          } catch (err) {
+            return json(res, 200, {
+              ok: false,
+              dirty: true,
+              error: 'ERR_LOCAL_COMMIT_CHECK_FAILED',
+              message: `Could not verify whether local commits would be lost; reset was not attempted: ${err.message}`,
+              dirtyFiles: dirty.split('\n').slice(0, 20),
+            });
+          }
+          const allowHardReset = process.env.DASHBOARD_ALLOW_HARD_RESET === '1';
+          if (ahead > 0 && !allowHardReset) {
+            return json(res, 200, {
+              ok: false,
+              dirty: true,
+              unpushedCommits: ahead,
+              error: 'ERR_UNPUSHED_COMMITS',
+              message: `Refusing hard-reset: ${ahead} local commit(s) not on origin/${safeBranch} would be lost. Set DASHBOARD_ALLOW_HARD_RESET=1 to override.`,
+              dirtyFiles: dirty.split('\n').slice(0, 20),
+            });
+          }
+          // A checkout can legitimately be past the latest release tag. Cleaning
+          // its worktree must not downgrade it unless the separate hard-reset
+          // opt-in explicitly authorizes dropping local commits.
+          resetTarget = targetState.updateAvailable || (ahead > 0 && allowHardReset)
+            ? targetState.targetCommit
+            : before.commitFull;
+        }
+
+        const headTarget = dirty
+          ? resetTarget
+          : targetState.updateAvailable
+            ? targetState.targetCommit
+            : before.commitFull;
+        const willChangeHead = headTarget !== before.commitFull;
+        const willMutateWorktree = !!dirty || targetState.updateAvailable;
+        if (willMutateWorktree) {
+          const sup = detectSelfUpdateSupervisor();
+          if (!sup.supervised) {
+            return json(res, 200, {
+              ok: false,
+              error: 'ERR_NO_SUPERVISOR',
+              message: 'No process supervisor detected. Update was not attempted because the gateway could not relaunch itself afterward.',
+            });
+          }
+        }
+        if (willMutateWorktree) {
+          const ignoredConflicts = await findIgnoredTargetPathConflicts(headTarget);
+          if (ignoredConflicts.length) {
+            return json(res, 200, {
+              ok: false,
+              error: 'ERR_IGNORED_PATH_CONFLICT',
+              message: 'The update would overwrite ignored runtime data. Move or back up the listed paths manually before retrying.',
+              conflictPaths: ignoredConflicts.slice(0, 20),
+            });
+          }
+        }
+        if (willChangeHead) {
+          try {
+            // Write a durable PENDING point before stash/reset/merge while keeping
+            // the previous successful final point intact. It is promoted only
+            // after Git proves HEAD reached the exact expected commit.
+            prepareRollbackPoint({ commit: before.commitFull, after: headTarget, ts: Date.now() });
+          } catch (err) {
+            return json(res, 200, {
+              ok: false,
+              error: 'ERR_ROLLBACK_POINT_WRITE',
+              message: `Could not durably record the rollback point; update was not attempted: ${err.message}`,
+              stashed: false,
+            });
+          }
+        }
+
+        let protectiveStashOid = '';
+        if (dirty) {
+          try {
+            protectiveStashOid = await createProtectiveStash('self-update-forceReset');
+          } catch (err) {
+            if (willChangeHead) discardPendingRollbackPoint();
+            return json(res, 200, {
+              ok: false,
+              error: 'ERR_STASH_FAILED',
+              message: `Could not preserve local changes; reset was not attempted: ${err.message}`,
+              stashed: false,
+            });
+          }
+        }
+
+        // execFile can't do `2>&1`; runGit includes stderr in thrown errors and
+        // returns stdout for successful commands, which is what the UI displays.
+        let pull;
+        let mutationError = null;
         try {
-          ahead = parseInt((await runGit(['rev-list', '--count', `origin/${safeBranch}..HEAD`])).trim(), 10) || 0;
-        } catch { /* no upstream / detached — treat as 0, fall through */ }
-        const allowHardReset = process.env.DASHBOARD_ALLOW_HARD_RESET === '1';
-        if (ahead > 0 && !allowHardReset) {
+          pull = dirty
+            ? await runGit(['reset', '--hard', resetTarget]).then(() => 'hard-reset applied')
+            : targetState.updateAvailable
+              ? await runGit(['merge', '--ff-only', targetState.targetCommit])
+              : `Already at latest published release ${targetState.latestTag || targetState.targetCommit.slice(0, 7)}`;
+        } catch (err) {
+          mutationError = err;
+          pull = '';
+        }
+
+        let actualHead = before.commitFull;
+        let trackedAfter = '';
+        if (willMutateWorktree) {
+          try {
+            actualHead = (await runGit(['rev-parse', 'HEAD'])).trim();
+            trackedAfter = (await runGit(['status', '--porcelain', '--untracked-files=no', '--ignore-submodules=none'])).trim();
+          } catch (inspectErr) {
+            return json(res, 200, {
+              ok: false,
+              error: 'ERR_UPDATE_STATE_UNKNOWN',
+              message: `Update state could not be verified; the rollback point and any protective stash were preserved: ${inspectErr.message}`,
+              expected: headTarget,
+              stashed: !!protectiveStashOid,
+            });
+          }
+        }
+
+        const reachedTargetClean = actualHead === headTarget && !trackedAfter;
+        if (!reachedTargetClean) {
+          const unchangedAndClean = actualHead === before.commitFull && !trackedAfter;
+          let restored = false;
+          if (unchangedAndClean) {
+            if (willChangeHead) discardPendingRollbackPoint();
+            if (protectiveStashOid) {
+              try {
+                await restoreProtectiveStash(protectiveStashOid);
+                restored = true;
+              } catch (restoreErr) {
+                log.warn(`self-update: failed mutation could not apply exact protective stash ${protectiveStashOid.slice(0, 12)}: ${restoreErr.message}`);
+              }
+            }
+          }
+
+          let rollbackPointError = '';
+          if (willChangeHead && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(actualHead) && actualHead !== before.commitFull) {
+            try {
+              // Exit status alone cannot establish ref state. Preserve an honest
+              // rollback point for the commit Git actually reached, and never
+              // apply a pre-mutation stash onto that changed commit.
+              prepareRollbackPoint({ commit: before.commitFull, after: actualHead, ts: Date.now(), expected: headTarget });
+              promotePendingRollbackPoint();
+            } catch (pointErr) {
+              rollbackPointError = pointErr.message;
+              log.warn(pointErr?.renamePublished
+                ? `self-update: honest partial-update rollback point is visible, but its directory fsync failed: ${pointErr.message}`
+                : `self-update: failed to publish the honest partial-update rollback point; pending remains available: ${pointErr.message}`);
+            }
+          }
+
+          const partial = !!trackedAfter || !unchangedAndClean;
           return json(res, 200, {
             ok: false,
-            dirty: true,
-            unpushedCommits: ahead,
-            error: 'ERR_UNPUSHED_COMMITS',
-            message: `Refusing hard-reset: ${ahead} local commit(s) not on origin/${safeBranch} would be lost. Set DASHBOARD_ALLOW_HARD_RESET=1 to override.`,
-            dirtyFiles: dirty.split('\n').slice(0, 20),
+            error: partial
+              ? 'ERR_UPDATE_PARTIAL'
+              : mutationError ? 'ERR_GIT_UPDATE_FAILED' : 'ERR_UPDATE_TARGET_MISMATCH',
+            message: mutationError
+              ? `Git did not reach a verified clean update state: ${mutationError.message}`
+              : `Git reported success but the verified update state does not match ${headTarget.slice(0, 12)}.`,
+            expected: headTarget,
+            actual: actualHead || undefined,
+            dirtyFiles: trackedAfter ? trackedAfter.split('\n').slice(0, 20) : undefined,
+            rollbackPointError: rollbackPointError || undefined,
+            stashed: !!protectiveStashOid,
+            stashRestored: restored || undefined,
           });
         }
-        // Stash (don't discard) the working tree first so a mistaken
-        // forceReset is recoverable via `git stash pop` instead of gone
-        // forever. Best-effort — if there's nothing to stash it's a no-op.
-        try {
-          await runGit(['stash', 'push', '--include-untracked', '-m', `self-update-forceReset ${new Date().toISOString()}`]);
-        } catch (e) {
-          log.warn(`self-update: pre-reset stash failed (continuing): ${e.message}`);
+        if (mutationError) {
+          log.warn(`self-update: Git returned an error after reaching the verified update state: ${mutationError.message}`);
+          pull = dirty ? 'hard-reset applied (verified after Git error)' : 'fast-forward applied (verified after Git error)';
         }
-        // A checkout can legitimately be past the latest release tag (for
-        // example a maintainer running a release-notes or generated-assets
-        // commit that is already on origin). forceReset is permission to
-        // clean the working tree, not permission to silently downgrade that
-        // checkout. Only move HEAD when the selected update target is ahead,
-        // or when the separate hard-reset opt-in explicitly authorizes
-        // dropping local commits.
-        const resetTarget = targetState.updateAvailable || (ahead > 0 && allowHardReset)
-          ? targetState.targetCommit
-          : before.commitFull;
-        await runGit(['reset', '--hard', resetTarget]);
-      }
-      // execFile can't do `2>&1`; use child_process stderr merge via
-      // combining stdout+stderr explicitly. runGit already pipes stderr
-      // into the Error message on failure, so for success we get just
-      // stdout, which is what the UI displays.
-      const beforeCommitFull = before.commitFull;
-      const afterTarget = targetState.targetCommit || beforeCommitFull;
-      try {
-        const { mkdir, writeFile } = await import('node:fs/promises');
-        await mkdir(join(process.cwd(), 'data'), { recursive: true });
-        await writeFile(join(process.cwd(), 'data', 'self-update-before.json'),
-          JSON.stringify({ commit: beforeCommitFull, after: afterTarget, ts: Date.now() }), 'utf8');
-      } catch (e) { log.warn(`self-update: failed to persist rollback point: ${e.message}`); }
-      const pull = dirty
-        ? 'hard-reset applied'
-        : targetState.updateAvailable
-          ? await runGit(['merge', '--ff-only', targetState.targetCommit])
-          : `Already at latest published release ${targetState.latestTag || targetState.targetCommit.slice(0, 7)}`;
-      const after = await gitStatus();
-      const changed = before.commit !== after.commit;
+
+        if (willChangeHead) {
+          try {
+            promotePendingRollbackPoint();
+          } catch (err) {
+            // The pending point is already durable and rollback knows how to
+            // recover it after restart. Do not hide a successful Git update.
+            log.warn(err?.renamePublished
+              ? `self-update: rollback point final file is visible, but its directory fsync failed after successful update: ${err.message}`
+              : `self-update: rollback point remains pending after successful update: ${err.message}`);
+          }
+        }
+        const changed = willMutateWorktree;
       // Schedule process exit so the service supervisor restarts us. This is
       // port/env-agnostic compared to spawning update.sh (which hardcodes
       // PORT=3003 default).
@@ -937,7 +1224,7 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
       // backstop, but stopping cleanly here means the next process won't
       // even need cleanup most of the time.
       if (changed) {
-        setTimeout(() => {
+        const restartScheduled = scheduleSelfUpdateRestart(() => {
           // v3.4.x: drain in-flight requests before the LS stop + exit, via the
           // shared gracefulRestart path. The HTTP server handle is now reachable
           // from api.js through server-registry.js (registered in index.js), so
@@ -948,7 +1235,7 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
           // handle is somehow unregistered, gracefulRestart simply skips the
           // drain step and still stops the LS and exits.
           log.info('self-update: exiting with restart-requested status for service supervisor');
-          void gracefulRestart({
+          return gracefulRestart({
             reason: 'self-update',
             drainMs: 10000,
             server: getActiveServer(),
@@ -956,38 +1243,49 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
             stopLs: () => stopLanguageServerAndWait({ perProcessTimeoutMs: 1500 }),
             exitCode: selfUpdateRestartExitCode(),
           });
-        }, 800);
+        }, releaseMutation);
+        mutationLockHandedOff = restartScheduled === true;
       }
       return json(res, 200, {
         ok: true,
         changed,
         before: before.commit,
-        after: after.commit,
+        after: actualHead.slice(0, 7),
         pullOutput: pull.trim(),
         restarting: changed,
       });
-    } catch (err) {
-      if (isSelfUpdateUnavailableError(err)) {
+      } catch (err) {
+        if (isSelfUpdateUnavailableError(err)) {
         // Same fallback as /self-update/check: when git is unavailable
         // (docker), try the docker socket path. The dashboard may already
         // have called /self-update/check first and routed the user
         // straight to a docker-mode confirmation, but supporting fallback
         // here too keeps `POST /self-update` self-contained for scripts.
-        const docker = await detectDockerSelfUpdate();
-        if (docker.available) {
-          const result = await runDockerSelfUpdate();
-          return json(res, 200, { mode: 'docker', ...result });
+          const docker = await detectDockerSelfUpdateForRequest();
+          if (docker.available) {
+            const result = await runDockerSelfUpdateForRequest();
+            if (result.ok) {
+              mutationLockHandedOff = scheduleDockerSelfUpdateMutationRelease(releaseMutation) === true;
+            }
+            return json(res, 200, { mode: 'docker', ...result });
+          }
+          return json(res, 200, {
+            ok: false,
+            available: false,
+            reason: err.reason,
+            error: err.code,
+            dockerReason: docker.reason,
+            dockerDetail: docker.detail,
+          });
         }
         return json(res, 200, {
           ok: false,
-          available: false,
-          reason: err.reason,
-          error: err.code,
-          dockerReason: docker.reason,
-          dockerDetail: docker.detail,
+          error: err.code || err.message,
+          message: err.code ? err.message : undefined,
         });
       }
-      return json(res, 200, { ok: false, error: err.message });
+    } finally {
+      if (!mutationLockHandedOff) releaseMutation();
     }
   }
 
@@ -1903,6 +2201,9 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
     // usable rate table, which is what lets `currentlyFree` below distinguish "costs quota"
     // from "we do not know yet".
     const freeSet = getCurrentlyFreeConnectSelectors();
+    const connectCurrentlyFree = (selector) => (!selector ? null
+      : isConnectSelectorCurrentlyFree(selector) ? true
+      : (freeSet === null ? null : false));
     const models = filterModelKeysByCloudCatalog().map((id) => {
       const info = MODELS[id];
       const { reachable, selector } = isReachable(id);
@@ -1931,9 +2232,7 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
         // Hence the explicit freeSet null-check: auth.js:304 returns null for "no table
         // anywhere" precisely so callers do not have to guess, and flattening it here would
         // throw away the one thing that function went out of its way to preserve.
-        currentlyFree: !selector ? null
-          : isConnectSelectorCurrentlyFree(selector) ? true
-          : (freeSet === null ? null : false),
+        currentlyFree: connectCurrentlyFree(selector),
       };
     });
     // Selectors that ARE serveable but have no MODELS row (`swe-1-6-slow` is in neither the
@@ -1949,6 +2248,33 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
     // test/dashboard-models-connect-parity.test.js.
     if (getBackendSwitch('devinConnect')) {
       const seen = new Set(models.map((m) => m.id));
+      const representedSelectors = new Set(models
+        .map((m) => m.connectSelector)
+        .filter(Boolean));
+
+      // /v1/models has a second producer for selectors present in the live Connect
+      // catalog but absent from the shared MODELS table. Mirror it here; otherwise
+      // the public model API can advertise a live-only selector that the Dashboard
+      // cannot display, price, or manage. Keep the row annotated rather than
+      // filtering it out: a restricted account still needs to see that the selector
+      // exists but is currently unreachable for its pool.
+      for (const row of getLiveCatalog()) {
+        const id = (typeof row === 'string' ? row : row?.selector)?.trim();
+        if (!id || seen.has(id) || representedSelectors.has(id)) continue;
+        seen.add(id);
+        const { reachable, selector } = isReachable(id);
+        if (selector) representedSelectors.add(selector);
+        models.push({
+          id,
+          name: row?.label || id,
+          provider: row?.provider || 'windsurf',
+          credit: null,
+          reachable,
+          connectSelector: selector,
+          currentlyFree: connectCurrentlyFree(selector),
+        });
+      }
+
       for (const selector of FREE_REACHABLE_SELECTORS) {
         if (seen.has(selector)) continue;
         seen.add(selector);
@@ -1960,8 +2286,7 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
           reachable: true,
           connectSelector: selector,
           // Unconditionally true, and not routed through the predicate: membership in
-          // FREE_REACHABLE_SELECTORS is the definition of free-to-any-account here, which is
-          // also why the predicate's own first line short-circuits on it (auth.js:321).
+          // FREE_REACHABLE_SELECTORS is the definition of free-to-any-account here.
           currentlyFree: true,
         });
       }
@@ -2364,7 +2689,16 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
 // Belt-and-braces with the branch-name regex in /self-update — if a
 // future refactor drops the regex, execFile still denies injection.
 const SELF_UPDATE_UNAVAILABLE = 'ERR_SELF_UPDATE_UNAVAILABLE';
+const SELF_UPDATE_IN_PROGRESS = 'ERR_UPDATE_IN_PROGRESS';
+const NO_RELEASE_TAG = 'ERR_NO_RELEASE_TAG';
+const RELEASE_TAG_LOOKUP_FAILED = 'ERR_RELEASE_TAG_LOOKUP';
 let gitExecFileForTest = null;
+let rollbackPointWriterForTest = null;
+let selfUpdateSupervisorDetectorForTest = null;
+let selfUpdateRestartSchedulerForTest = null;
+let dockerSelfUpdateOverridesForTest = null;
+let selfUpdateMutationInFlight = false;
+const DOCKER_SELF_UPDATE_MUTATION_HOLD_MS = 60_000;
 
 // EX_TEMPFAIL: non-zero is intentional. systemd Restart=on-failure and PM2
 // autorestart both relaunch after this self-update-only exit, while normal
@@ -2375,6 +2709,387 @@ export function selfUpdateRestartExitCode() {
 
 export function setGitExecFileForTest(execFile) {
   gitExecFileForTest = execFile;
+}
+
+export function setRollbackPointWriterForTest(writer) {
+  rollbackPointWriterForTest = typeof writer === 'function' ? writer : null;
+}
+
+export function setSelfUpdateSupervisorDetectorForTest(detector) {
+  selfUpdateSupervisorDetectorForTest = typeof detector === 'function' ? detector : null;
+}
+
+export function setSelfUpdateRestartSchedulerForTest(scheduler) {
+  selfUpdateRestartSchedulerForTest = typeof scheduler === 'function' ? scheduler : null;
+}
+
+export function setDockerSelfUpdateForTest(overrides) {
+  dockerSelfUpdateOverridesForTest = overrides && typeof overrides === 'object' ? overrides : null;
+}
+
+function detectSelfUpdateSupervisor() {
+  return (selfUpdateSupervisorDetectorForTest || detectSupervisor)();
+}
+
+function scheduleSelfUpdateRestart(callback, releaseMutation) {
+  if (selfUpdateRestartSchedulerForTest) {
+    return selfUpdateRestartSchedulerForTest(callback, releaseMutation);
+  }
+  const releaseOnExit = () => releaseMutation();
+  process.once('exit', releaseOnExit);
+  setTimeout(() => {
+    Promise.resolve()
+      .then(callback)
+      .finally(() => {
+        process.off('exit', releaseOnExit);
+        releaseMutation();
+      });
+  }, 800);
+  return true;
+}
+
+function detectDockerSelfUpdateForRequest() {
+  return (dockerSelfUpdateOverridesForTest?.detect || detectDockerSelfUpdate)();
+}
+
+function runDockerSelfUpdateForRequest() {
+  return (dockerSelfUpdateOverridesForTest?.run || runDockerSelfUpdate)();
+}
+
+function scheduleDockerSelfUpdateMutationRelease(releaseMutation) {
+  if (typeof dockerSelfUpdateOverridesForTest?.scheduleRelease === 'function') {
+    return dockerSelfUpdateOverridesForTest.scheduleRelease(releaseMutation);
+  }
+  // The deployer sleeps for eight seconds and then runs compose out-of-band.
+  // Keep both the in-process guard and repository lock owned across that
+  // window. If compose fails and this process survives, a bounded timeout
+  // eventually permits an operator retry; a successful recreate exits this
+  // process first and releases through the exit hook.
+  let released = false;
+  const releaseOnce = () => {
+    if (released) return;
+    released = true;
+    clearTimeout(timer);
+    process.off('exit', releaseOnce);
+    releaseMutation();
+  };
+  const timer = setTimeout(releaseOnce, DOCKER_SELF_UPDATE_MUTATION_HOLD_MS);
+  timer.unref?.();
+  process.once('exit', releaseOnce);
+  return true;
+}
+
+function makeSelfUpdateError(code, message = code) {
+  const err = new Error(message);
+  err.code = code;
+  return err;
+}
+
+const SELF_UPDATE_LOCK_DIRNAME = 'windsurfapi-update.lock';
+const ROLLBACK_POINT_FILENAME = 'self-update-before.json';
+const ROLLBACK_POINT_PENDING_FILENAME = 'self-update-before.pending.json';
+
+function repositoryGitDir(cwd = process.cwd()) {
+  const dotGit = join(cwd, '.git');
+  if (!existsSync(dotGit)) return '';
+  try {
+    if (statSync(dotGit).isDirectory()) return dotGit;
+    const match = readFileSync(dotGit, 'utf8').trim().match(/^gitdir:\s*(.+)$/i);
+    return match ? resolve(dirname(dotGit), match[1]) : '';
+  } catch {
+    return '';
+  }
+}
+
+function processIsAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    // EPERM still means the process exists; only ESRCH proves a stale owner.
+    return err?.code !== 'ESRCH';
+  }
+}
+
+function readUpdateLockOwner(lockDir) {
+  try {
+    const raw = readFileSync(join(lockDir, 'owner'), 'utf8').trim();
+    const match = raw.match(/^(\d+)\s+([A-Za-z0-9._-]+)$/);
+    if (!match) return null;
+    const pid = Number(match[1]);
+    return Number.isSafeInteger(pid) && pid > 0 ? { pid, token: match[2], legacy: false } : null;
+  } catch {}
+  // Backward compatibility for locks created by v3.9.23/update.sh. A live
+  // legacy PID still blocks; a dead one can be recovered through the same
+  // exclusive recovery-claim protocol below.
+  try {
+    const raw = readFileSync(join(lockDir, 'pid'), 'utf8').trim();
+    if (!/^\d+$/.test(raw)) return null;
+    const pid = Number(raw);
+    return Number.isSafeInteger(pid) && pid > 0 ? { pid, token: '', legacy: true } : null;
+  } catch {
+    return null;
+  }
+}
+
+function sameUpdateLockOwner(left, right) {
+  return !!left && !!right && left.pid === right.pid && left.token === right.token && left.legacy === right.legacy;
+}
+
+function removeUpdateLockDirectory(lockDir, ownerToken = null) {
+  if (ownerToken !== null) {
+    const owner = readUpdateLockOwner(lockDir);
+    if (!owner || owner.legacy || owner.pid !== process.pid || owner.token !== ownerToken) return false;
+  }
+  try { unlinkSync(join(lockDir, 'recovery')); } catch {}
+  try { unlinkSync(join(lockDir, 'owner')); } catch {}
+  try { unlinkSync(join(lockDir, 'pid')); } catch {}
+  try {
+    rmdirSync(lockDir);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function recoverStaleUpdateLock(lockDir) {
+  const observed = readUpdateLockOwner(lockDir);
+  if (!observed || processIsAlive(observed.pid)) return false;
+
+  // Claim recovery *inside the still-existing stale directory*. O_EXCL makes
+  // exactly one contender the recovery owner; losers cannot unlink/recreate a
+  // lock that another contender has already acquired (the stale-lock ABA).
+  const claimToken = `${process.pid}-${randomUUID()}`;
+  const claimPath = join(lockDir, 'recovery');
+  try {
+    writeFileSync(claimPath, `${process.pid} ${claimToken}\n`, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+  } catch {
+    return false;
+  }
+
+  const quarantine = `${lockDir}.stale-${claimToken}`;
+  try {
+    if (!sameUpdateLockOwner(readUpdateLockOwner(lockDir), observed)) return false;
+    renameSync(lockDir, quarantine);
+  } catch {
+    return false;
+  } finally {
+    // Before rename this removes only our own claim. After rename the old path
+    // no longer exists, so cleanup continues against the quarantine below.
+    try { unlinkSync(claimPath); } catch {}
+  }
+  removeUpdateLockDirectory(quarantine);
+  return true;
+}
+
+function acquireRepositoryUpdateLock() {
+  const gitDir = repositoryGitDir();
+  if (!gitDir) return () => {};
+  const lockDir = join(gitDir, SELF_UPDATE_LOCK_DIRNAME);
+  const create = () => {
+    try {
+      mkdirSync(lockDir, { mode: 0o700 });
+      return true;
+    } catch (err) {
+      if (err?.code === 'EEXIST') return false;
+      throw makeSelfUpdateError('ERR_UPDATE_LOCK_FAILED', `Could not create update lock: ${err.message}`);
+    }
+  };
+  if (!create()) {
+    if (!recoverStaleUpdateLock(lockDir) || !create()) return null;
+  }
+  const ownerToken = randomUUID();
+  try {
+    writeFileSync(join(lockDir, 'owner'), `${process.pid} ${ownerToken}\n`, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+    // Keep the numeric pid file for one-release interoperability with older
+    // update.sh versions; ownership and release authority come from `owner`.
+    writeFileSync(join(lockDir, 'pid'), `${process.pid}\n`, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+  } catch (err) {
+    removeUpdateLockDirectory(lockDir, ownerToken) || removeUpdateLockDirectory(lockDir);
+    throw makeSelfUpdateError('ERR_UPDATE_LOCK_FAILED', `Could not initialize update lock: ${err.message}`);
+  }
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    removeUpdateLockDirectory(lockDir, ownerToken);
+  };
+}
+
+function acquireSelfUpdateMutation() {
+  if (selfUpdateMutationInFlight) return null;
+  const releaseRepositoryLock = acquireRepositoryUpdateLock();
+  if (!releaseRepositoryLock) return null;
+  selfUpdateMutationInFlight = true;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    selfUpdateMutationInFlight = false;
+    releaseRepositoryLock();
+  };
+}
+
+function rollbackPointPaths({ ensureDir = false } = {}) {
+  const dataDir = join(process.cwd(), 'data');
+  if (ensureDir) mkdirSync(dataDir, { recursive: true });
+  return {
+    final: join(dataDir, ROLLBACK_POINT_FILENAME),
+    pending: join(dataDir, ROLLBACK_POINT_PENDING_FILENAME),
+  };
+}
+
+function nulSeparatedGitPaths(output) {
+  return String(output || '').split('\0').filter(Boolean);
+}
+
+function gitPathsConflict(left, right) {
+  // Be conservative on case-insensitive worktrees: a differently-cased local
+  // ignored path can still be the same filesystem object reset --hard replaces.
+  const a = left.replace(/\/$/, '').toLowerCase();
+  const b = right.replace(/\/$/, '').toLowerCase();
+  return a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+}
+
+async function findIgnoredTargetPathConflicts(targetCommit) {
+  const treeOutput = await runGit(['ls-tree', '-r', '-z', '--name-only', targetCommit]);
+  const targetPaths = nulSeparatedGitPaths(treeOutput);
+  if (!targetPaths.length) return [];
+
+  // First ask Git for a collapsed inventory of ignored roots. `--directory`
+  // avoids descending into wholly ignored trees such as node_modules, while
+  // still exposing partially ignored paths (for example data/accounts.json).
+  // Matching roots case-insensitively here is deliberately independent of
+  // core.ignorecase: the filesystem may be case-insensitive even when that
+  // config is absent or stale.
+  const targetRoots = [...new Set(targetPaths.map(path => path.split('/')[0]).filter(Boolean))];
+  const targetRootsFolded = new Set(targetRoots.map(root => root.toLowerCase()));
+  const inventoryOutput = await runGit([
+    'ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z',
+  ]);
+  const localRoots = [...new Set(nulSeparatedGitPaths(inventoryOutput)
+    .map(path => path.replace(/\/$/, '').split('/')[0])
+    .filter(root => root && targetRootsFolded.has(root.toLowerCase())))];
+  if (!localRoots.length) return [];
+
+  // Now enumerate only the actual local root spellings that can collide. This
+  // keeps the precise ancestor/descendant test without scanning unrelated
+  // ignored runtime data.
+  const ignoredOutput = await runGit([
+    'ls-files', '--others', '--ignored', '--exclude-standard', '-z', '--',
+    ...localRoots.map(root => `:(top,literal)${root}`),
+  ]);
+  const ignoredPaths = nulSeparatedGitPaths(ignoredOutput);
+  return [...new Set(ignoredPaths.filter(ignored => targetPaths.some(target => gitPathsConflict(ignored, target))))];
+}
+
+function validGitObjectId(value) {
+  return /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(String(value || ''));
+}
+
+function parseGitNonnegativeCount(output, label) {
+  const value = String(output ?? '').trim();
+  if (!/^(?:0|[1-9]\d*)$/.test(value)) {
+    throw makeSelfUpdateError(
+      'ERR_INVALID_GIT_COUNT',
+      `Git returned an invalid count while checking ${label}; refusing to infer zero.`,
+    );
+  }
+  const count = Number(value);
+  if (!Number.isSafeInteger(count)) {
+    throw makeSelfUpdateError(
+      'ERR_INVALID_GIT_COUNT',
+      `Git returned an unsafe count while checking ${label}; refusing to continue.`,
+    );
+  }
+  return count;
+}
+
+async function currentStashTip() {
+  const output = (await runGit(['for-each-ref', '--format=%(objectname)', 'refs/stash'])).trim();
+  if (!output) return '';
+  if (!validGitObjectId(output)) {
+    throw new Error('refs/stash did not resolve to one valid object ID');
+  }
+  return output;
+}
+
+function ownedStashOid(listing, marker) {
+  const matches = String(listing || '').split(/\r?\n/).filter(Boolean).flatMap((line) => {
+    const tab = line.indexOf('\t');
+    if (tab < 0 || !line.slice(tab + 1).includes(marker)) return [];
+    const oid = line.slice(0, tab);
+    if (!validGitObjectId(oid)) throw new Error('protective stash has an invalid object ID');
+    return [oid];
+  });
+  if (matches.length > 1) throw new Error('protective stash ownership is ambiguous');
+  return matches[0] || '';
+}
+
+async function createProtectiveStash(label) {
+  const beforeTip = await currentStashTip();
+  const marker = `windsurfapi-${label}-${randomUUID()}`;
+  await runGit(['stash', 'push', '--include-untracked', '-m', marker]);
+  const listing = await runGit(['stash', 'list', '--format=%H%x09%gs']);
+  const oid = ownedStashOid(listing, marker);
+  if (oid) return oid;
+
+  // `git stash push` legitimately exits zero with "No local changes to save"
+  // when another actor cleans the tree between the dirty probe and this call.
+  // In that case no stash belongs to us. If refs/stash changed anyway, a
+  // concurrent/user stash won the race; abort rather than ever treating it as
+  // our recovery object.
+  const afterTip = await currentStashTip();
+  if (afterTip !== beforeTip) {
+    throw new Error('refs/stash changed, but the updater could not identify its own protective stash');
+  }
+  return '';
+}
+
+async function restoreProtectiveStash(oid) {
+  if (!validGitObjectId(oid)) throw new Error('protective stash object ID is invalid');
+  // Apply the exact object. Never `stash pop` the current top: normal Git
+  // commands are not serialized by the updater lock, so a user may have added
+  // another stash after ours. Keep the owned stash as a recoverable backup.
+  await runGit(['stash', 'apply', oid]);
+}
+
+function prepareRollbackPoint(value) {
+  const { pending } = rollbackPointPaths({ ensureDir: true });
+  (rollbackPointWriterForTest || writeJsonAtomic)(pending, value);
+}
+
+function discardPendingRollbackPoint() {
+  const { pending } = rollbackPointPaths();
+  try { unlinkSync(pending); } catch {}
+}
+
+function promotePendingRollbackPoint() {
+  const { pending, final } = rollbackPointPaths();
+  renameSyncWithRetry(pending, final);
+}
+
+function reconcilePendingRollbackPoint(currentCommit) {
+  const { pending } = rollbackPointPaths();
+  let point;
+  try { point = JSON.parse(readFileSync(pending, 'utf8')); } catch { return; }
+  const validSha = value => /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(value);
+  if (!validSha(point?.commit) || !validSha(point?.after) || point.after !== currentCommit) {
+    discardPendingRollbackPoint();
+    return;
+  }
+  try {
+    promotePendingRollbackPoint();
+  } catch (err) {
+    if (err?.renamePublished) {
+      log.warn(`self-update: recovered rollback point final file is visible, but its directory fsync failed: ${err.message}`);
+      return;
+    }
+    throw makeSelfUpdateError(
+      'ERR_ROLLBACK_POINT_RECOVERY_FAILED',
+      `A pending rollback point matches current HEAD but could not be recovered: ${err.message}`,
+    );
+  }
 }
 
 function makeSelfUpdateUnavailableError() {
@@ -2404,19 +3119,138 @@ export function runGit(args, opts = {}) {
     getGitExecFile().then((execFile) => {
       execFile('git', args, { timeout: 30_000, maxBuffer: 1024 * 1024, ...opts }, (err, stdout, stderr) => {
         if (err?.code === 'ENOENT') return reject(makeSelfUpdateUnavailableError());
-        if (err) return reject(new Error((stderr || err.message).toString().slice(0, 500)));
+        if (err) {
+          const failure = new Error((stderr || err.message).toString().slice(0, 500));
+          // `git merge-base --is-ancestor` uses exit 1 for the ordinary
+          // "not an ancestor" answer and other exit codes for indeterminate
+          // failures. Preserve the numeric status so release discovery can skip
+          // an off-branch tag without turning a real Git/protocol failure into a
+          // false negative.
+          if (Number.isInteger(err.code)) failure.gitExitCode = err.code;
+          return reject(failure);
+        }
         resolve(stdout.toString());
       });
     }).catch(reject);
   });
 }
 
-async function latestReleaseTag(branch) {
-  // 语义化版本排序取最新 release tag（--sort=-v:refname），且只认当前分支可达的
+function stableReleaseVersion(tag) {
+  const match = String(tag || '').match(/^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/);
+  return match ? match.slice(1) : null;
+}
+
+function compareDecimalComponents(left, right) {
+  if (left.length !== right.length) return left.length > right.length ? 1 : -1;
+  if (left === right) return 0;
+  return left > right ? 1 : -1;
+}
+
+function compareStableReleaseTags(left, right) {
+  const a = stableReleaseVersion(left);
+  const b = stableReleaseVersion(right);
+  for (let i = 0; i < 3; i++) {
+    const compared = compareDecimalComponents(a[i], b[i]);
+    if (compared) return compared;
+  }
+  return 0;
+}
+
+function validRemoteTagName(tag) {
+  return !!tag
+    && !tag.startsWith('.')
+    && !tag.endsWith('.')
+    && !tag.startsWith('/')
+    && !tag.endsWith('/')
+    && !tag.includes('..')
+    && !tag.includes('//')
+    && !tag.includes('@{')
+    && !/[\x00-\x20\x7f~^:?*[\\]/.test(tag);
+}
+
+function parseRemoteStableReleaseTags(output) {
+  const byName = new Map();
+  for (const line of String(output || '').split(/\r?\n/).filter(Boolean)) {
+    const match = line.match(/^([0-9a-f]{40}|[0-9a-f]{64})\trefs\/tags\/(.+)$/i);
+    if (!match) throw new Error('remote tag enumeration returned a malformed record');
+    const oid = match[1].toLowerCase();
+    const peeled = match[2].endsWith('^{}');
+    const name = peeled ? match[2].slice(0, -3) : match[2];
+    if (!validRemoteTagName(name)) throw new Error('remote tag enumeration returned an invalid ref name');
+    if (!stableReleaseVersion(name)) continue;
+
+    const entry = byName.get(name) || { name, object: '', peeled: '' };
+    const field = peeled ? 'peeled' : 'object';
+    if (entry[field]) throw new Error(`remote tag enumeration duplicated ${name}${peeled ? '^{}' : ''}`);
+    entry[field] = oid;
+    byName.set(name, entry);
+  }
+
+  const candidates = [...byName.values()];
+  for (const candidate of candidates) {
+    if (!candidate.object) throw new Error(`remote tag ${candidate.name} has a peeled record without its tag ref`);
+  }
+  candidates.sort((left, right) => compareStableReleaseTags(right.name, left.name));
+  return candidates;
+}
+
+async function materializeRemoteReleaseTag(candidate) {
+  // Fetch the exact remote ref only into FETCH_HEAD. This retrieves annotated
+  // tag objects when needed but never creates, overwrites, or prunes a local tag:
+  // operator-owned and previously fetched tags remain untouched.
+  await runGit(['fetch', '--quiet', '--no-tags', 'origin', `refs/tags/${candidate.name}`]);
+  const fetchedObject = (await runGit(['rev-parse', 'FETCH_HEAD'])).trim().toLowerCase();
+  if (!validGitObjectId(fetchedObject) || fetchedObject !== candidate.object) {
+    throw new Error(`remote tag ${candidate.name} changed during verification`);
+  }
+
+  const fetchedCommit = (await runGit(['rev-parse', 'FETCH_HEAD^{commit}'])).trim().toLowerCase();
+  if (!validGitObjectId(fetchedCommit)) throw new Error(`remote tag ${candidate.name} did not peel to a commit`);
+  const objectType = (await runGit(['cat-file', '-t', fetchedObject])).trim();
+  if (candidate.peeled) {
+    if (objectType !== 'tag' || fetchedCommit !== candidate.peeled) {
+      throw new Error(`annotated remote tag ${candidate.name} failed object/peeled-commit correspondence`);
+    }
+  } else if (objectType !== 'commit' || fetchedCommit !== fetchedObject) {
+    // A standards-compliant ls-remote includes ^{} for an annotated tag. Treat
+    // an omitted/mismatched peeled record as a protocol anomaly, not as a
+    // lightweight release.
+    throw new Error(`lightweight remote tag ${candidate.name} did not name one commit object`);
+  }
+  return { ...candidate, commit: fetchedCommit };
+}
+
+async function gitCommitIsAncestor(commit, ref) {
   try {
-    const tags = await runGit(['tag', '--list', '--sort=-v:refname', '--merged', `origin/${branch}`]);
-    return tags.split('\n').map(t => t.trim()).filter(Boolean)[0] || '';
-  } catch { return ''; }
+    await runGit(['merge-base', '--is-ancestor', commit, ref]);
+    return true;
+  } catch (err) {
+    if (err?.gitExitCode === 1) return false;
+    throw err;
+  }
+}
+
+async function latestReleaseTag(branch) {
+  // Query the remote tag namespace directly. `git fetch --tags` is additive:
+  // when a mistaken/revoked release tag is deleted upstream, its local ref
+  // survives and `git tag --list` keeps selecting it indefinitely. Remote refs
+  // are the publication authority; local tags are neither read nor mutated.
+  try {
+    const output = await runGit(['ls-remote', '--tags', 'origin', 'refs/tags/v[0-9]*']);
+    const remoteRef = `origin/${branch}`;
+    for (const advertised of parseRemoteStableReleaseTags(output)) {
+      const candidate = await materializeRemoteReleaseTag(advertised);
+      if (await gitCommitIsAncestor(candidate.commit, remoteRef)) return candidate;
+    }
+    return { name: '', commit: '' };
+  } catch (cause) {
+    const err = makeSelfUpdateError(
+      RELEASE_TAG_LOOKUP_FAILED,
+      'Unable to verify published release tags; refusing an unverified update target.',
+    );
+    err.cause = cause;
+    throw err;
+  }
 }
 
 function safeUpdateBranch(branch) {
@@ -2431,25 +3265,30 @@ function safeUpdateBranch(branch) {
 async function releaseUpdateState(branch, currentCommit, { followUnreleased = false } = {}) {
   const remoteRef = `origin/${branch}`;
   const remoteHead = (await runGit(['rev-parse', remoteRef])).trim();
-  const latestTag = await latestReleaseTag(branch);
-  const releasedCommit = latestTag
-    ? (await runGit(['rev-parse', latestTag])).trim()
-    : remoteHead;
+  const release = await latestReleaseTag(branch);
+  const latestTag = release.name;
+  if (!latestTag && !followUnreleased) {
+    throw makeSelfUpdateError(
+      NO_RELEASE_TAG,
+      'No stable release tag is reachable from the update branch; use forceUpdate only if you intentionally want the branch head.',
+    );
+  }
+  const releasedCommit = release.commit;
   const targetCommit = followUnreleased ? remoteHead : releasedCommit;
 
   let unreleasedCount = 0;
   if (latestTag) {
-    unreleasedCount = parseInt((await runGit([
-      'rev-list', '--count', `${latestTag}..${remoteHead}`,
-    ])).trim(), 10) || 0;
+    unreleasedCount = parseGitNonnegativeCount(await runGit([
+      'rev-list', '--count', `${releasedCommit}..${remoteHead}`,
+    ]), 'commits after the latest release');
   }
 
-  const commitsToTarget = parseInt((await runGit([
+  const commitsToTarget = parseGitNonnegativeCount(await runGit([
     'rev-list', '--count', `${currentCommit}..${targetCommit}`,
-  ])).trim(), 10) || 0;
-  const commitsPastTarget = parseInt((await runGit([
+  ]), 'commits from the current checkout to the update target');
+  const commitsPastTarget = parseGitNonnegativeCount(await runGit([
     'rev-list', '--count', `${targetCommit}..${currentCommit}`,
-  ])).trim(), 10) || 0;
+  ]), 'commits past the update target');
 
   return {
     remoteHead,
@@ -2468,10 +3307,15 @@ async function gitStatus() {
   const commit = (await runGit(['rev-parse', 'HEAD'])).trim();
   const branch = (await runGit(['rev-parse', '--abbrev-ref', 'HEAD'])).trim();
   let update = null;
+  let updateError = '';
   try {
-    await runGit(['fetch', '--quiet', 'origin']);
-    update = await releaseUpdateState(safeUpdateBranch(branch), commit);
-  } catch {}
+    const safeBranch = safeUpdateBranch(branch);
+    await runGit(['fetch', '--quiet', '--no-tags', 'origin', safeBranch]);
+    update = await releaseUpdateState(safeBranch, commit);
+  } catch (err) {
+    if (isSelfUpdateUnavailableError(err)) throw err;
+    updateError = err?.code || err?.message || 'ERR_UPDATE_CHECK_FAILED';
+  }
   const localMsg = (await runGit(['log', '-1', '--pretty=format:%s'])).trim();
   const target = update?.targetCommit || '';
   const remoteMsg = update?.updateAvailable
@@ -2491,7 +3335,8 @@ async function gitStatus() {
     behind: !!update?.updateAvailable,
     diverged: !!update?.diverged,
     latestTag: update?.latestTag || '',
-    published: true,
+    published: !!update?.latestTag,
+    updateError,
     unreleasedCount: update?.unreleasedCount || 0,
   };
 }

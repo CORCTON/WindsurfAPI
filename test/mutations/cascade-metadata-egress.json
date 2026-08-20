@@ -1,0 +1,536 @@
+{
+  "tests": [
+    "test/cascade-metadata-egress.test.js"
+  ],
+  "expectBaselinePass": 34,
+  "mutations": [
+    {
+      "name": "the matcher accepts a lookalike lowercase Cascade name",
+      "file": "src/handlers/cascade-metadata-egress.js",
+      "anchor": "  if (values.name !== 'Cascade') return null;",
+      "replacement": "  if (false) return null;"
+    },
+    {
+      "name": "the one-shot matcher accepts blank metadata values",
+      "file": "src/handlers/cascade-metadata-egress.js",
+      "anchor": "  if (['provider', 'model', 'description'].some(key => values[key].trim().length === 0)) return null;",
+      "replacement": "  if (false) return null;"
+    },
+    {
+      "name": "duplicate keys can replace a missing exact key",
+      "file": "src/handlers/cascade-metadata-egress.js",
+      "anchor": "  for (const [key, value] of entries) {\n    if (!CASCADE_METADATA_KEYS.includes(key) || Object.hasOwn(values, key)) return null;\n    values[key] = value;\n  }\n  if (!CASCADE_METADATA_KEYS.every(key => Object.hasOwn(values, key))) return null;",
+      "replacement": "  for (const [key, value] of entries) {\n    if (!CASCADE_METADATA_KEYS.includes(key)) return null;\n    values[key] = value;\n  }"
+    },
+    {
+      "name": "explicit response format and latest-user JSON intent are ignored",
+      "file": "src/handlers/cascade-metadata-egress.js",
+      "anchor": "  if (envelope && allowMetadataUnwrap && !hasToolCalls) {",
+      "replacement": "  if (envelope && !hasToolCalls) {"
+    },
+    {
+      "name": "actual tool-call turns are unwrapped as conversational metadata",
+      "file": "src/handlers/cascade-metadata-egress.js",
+      "anchor": "  if (envelope && allowMetadataUnwrap && !hasToolCalls) {",
+      "replacement": "  if (envelope && allowMetadataUnwrap) {"
+    },
+    {
+      "name": "ordinary structured payloads bypass the established path sanitizer",
+      "file": "src/handlers/cascade-metadata-egress.js",
+      "anchor": "  return neutralizeCascadeIdentity(sanitizeText(text), modelName);",
+      "replacement": "  return neutralizeCascadeIdentity(text, modelName);"
+    },
+    {
+      "name": "malformed leading-brace prose bypasses ordinary identity neutralization",
+      "file": "src/handlers/cascade-metadata-egress.js",
+      "anchor": "    return this.ordinaryStream.feed(pending);",
+      "replacement": "    return this.ordinaryStream.pathStream.feed(pending);"
+    },
+    {
+      "name": "caller model aliases are not resolved before provider attribution",
+      "file": "src/handlers/cascade-metadata-egress.js",
+      "anchor": "  const resolvedModel = resolveModel(modelName);",
+      "replacement": "  const resolvedModel = modelName;"
+    },
+    {
+      "name": "the resolved model provider is never consulted",
+      "file": "src/handlers/cascade-metadata-egress.js",
+      "anchor": "  const providerKey = getModelInfo(resolvedModel)?.provider;",
+      "replacement": "  const providerKey = null;"
+    },
+    {
+      "name": "an unknown provider disables Cascade self-name neutralization",
+      "file": "src/handlers/cascade-metadata-egress.js",
+      "anchor": "  const provider = cascadeProviderDisplayName(modelName);\n  let output = text;",
+      "replacement": "  const provider = cascadeProviderDisplayName(modelName);\n  if (!provider) return text;\n  let output = text;"
+    },
+    {
+      "name": "combined made-by attribution is handled after the shorter self-name claim",
+      "file": "src/handlers/cascade-metadata-egress.js",
+      "anchor": "  output = output.replace(\n    CASCADE_COMBINED_ATTRIBUTION,\n    (_match, originalProvider) => `${modelName}, made by ${provider || originalProvider}`,\n  );",
+      "replacement": ""
+    },
+    {
+      "name": "combined attribution only recognizes comma separators",
+      "file": "src/handlers/cascade-metadata-egress.js",
+      "anchor": "  String.raw`\\bCascade(?:\\s{1,${CASCADE_ATTRIBUTION_WHITESPACE_MAX_CHARS}}|\\s{0,${CASCADE_ATTRIBUTION_PUNCTUATION_PADDING_MAX_CHARS}}(?:,|[-\\u2014\\u2013])\\s{0,${CASCADE_ATTRIBUTION_PUNCTUATION_PADDING_MAX_CHARS}})made by (Codeium|Windsurf)\\b`,",
+      "replacement": "  String.raw`\\bCascade, made by (Codeium|Windsurf)\\b`,"
+    },
+    {
+      "name": "long whitespace attribution loses its accepted separator bound",
+      "file": "src/handlers/cascade-metadata-egress.js",
+      "anchor": "const CASCADE_ATTRIBUTION_WHITESPACE_MAX_CHARS = 512;",
+      "replacement": "const CASCADE_ATTRIBUTION_WHITESPACE_MAX_CHARS = 128;"
+    },
+    {
+      "name": "long dash attribution loses its accepted padding bound",
+      "file": "src/handlers/cascade-metadata-egress.js",
+      "anchor": "const CASCADE_ATTRIBUTION_PUNCTUATION_PADDING_MAX_CHARS = 256;",
+      "replacement": "const CASCADE_ATTRIBUTION_PUNCTUATION_PADDING_MAX_CHARS = 64;"
+    },
+    {
+      "name": "ordinary stream lookbehind loses the context required by long attribution",
+      "file": "src/handlers/cascade-metadata-egress.js",
+      "anchor": "const CASCADE_IDENTITY_STREAM_CONTEXT_CHARS = 640;",
+      "replacement": "const CASCADE_IDENTITY_STREAM_CONTEXT_CHARS = 128;"
+    },
+    {
+      "name": "caller model replacement metacharacters are interpreted by String.replace",
+      "file": "src/handlers/cascade-metadata-egress.js",
+      "anchor": "    .replace(/\\bI am Cascade\\b/gi, () => `I am ${modelName}`)",
+      "replacement": "    .replace(/\\bI am Cascade\\b/gi, `I am ${modelName}`)"
+    },
+    {
+      "name": "the stream gate stops recognizing leading-object candidates",
+      "file": "src/handlers/cascade-metadata-egress.js",
+      "anchor": "    if (this.payloadParser.started) this.state = 'candidate';",
+      "replacement": "    if (false) this.state = 'candidate';"
+    },
+    {
+      "name": "ordinary prose is buffered until EOF",
+      "file": "src/handlers/cascade-metadata-egress.js",
+      "anchor": "    if (payloadStatus === 'mismatch') return this.releaseCandidate({ malformed: true });",
+      "replacement": "    if (false) return this.releaseCandidate();"
+    },
+    {
+      "name": "malformed candidate keeps structured JSON protection after mismatch",
+      "file": "src/handlers/cascade-metadata-egress.js",
+      "anchor": "    if (malformed) this.ordinaryStream.markMalformed();",
+      "replacement": "    if (false) this.ordinaryStream.markMalformed();"
+    },
+    {
+      "name": "candidate buffering loses its hard cap",
+      "file": "src/handlers/cascade-metadata-egress.js",
+      "anchor": "      this.#countUtf8CodeUnit(text.charCodeAt(i));\n      if (this.bufferedUtf8Bytes > maxBufferBytes) {\n        status = 'overflow';\n        break;\n      }",
+      "replacement": "      this.#countUtf8CodeUnit(text.charCodeAt(i));\n      if (false) {\n        status = 'overflow';\n        break;\n      }"
+    },
+    {
+      "name": "a surrogate pair is counted as two replacement characters at the UTF-8 cap",
+      "file": "src/handlers/cascade-metadata-egress.js",
+      "anchor": "        this.confirmedUtf8Bytes += 4;\n        this.pendingHighSurrogate = false;\n        return;\n      }\n      this.confirmedUtf8Bytes += 3;\n      this.pendingHighSurrogate = false;\n    }\n    if (code >= 0xd800 && code <= 0xdbff) {\n      this.pendingHighSurrogate = true;",
+      "replacement": "        this.confirmedUtf8Bytes += 6;\n        this.pendingHighSurrogate = false;\n        return;\n      }\n      this.confirmedUtf8Bytes += 3;\n      this.pendingHighSurrogate = false;\n    }\n    if (code >= 0xd800 && code <= 0xdbff) {\n      this.pendingHighSurrogate = true;"
+    },
+    {
+      "name": "invalid JSON string escapes remain candidates until a later quote",
+      "file": "src/handlers/cascade-metadata-egress.js",
+      "anchor": "      if ('\"\\\\/bfnrt'.includes(ch)) {\n        this.stringPhase = 'plain';\n        return 'possible';\n      }\n      return 'mismatch';\n    }\n    if (ch === '\\\\') {\n      this.stringPhase = 'escape';\n      return 'possible';\n    }\n    if (ch === '\"') {\n      this.tokenType = '';",
+      "replacement": "      this.stringPhase = 'plain';\n      return 'possible';\n    }\n    if (ch === '\\\\') {\n      this.stringPhase = 'escape';\n      return 'possible';\n    }\n    if (ch === '\"') {\n      this.tokenType = '';"
+    },
+    {
+      "name": "an incomplete candidate is dropped on stream failure",
+      "file": "src/handlers/cascade-metadata-egress.js",
+      "anchor": "    if (this.state === 'candidate') {",
+      "replacement": "    if (this.state === 'candidate') {\n      if (incomplete) return '';"
+    },
+    {
+      "name": "the non-stream WebFetch fallback re-enters the model-egress transform",
+      "file": "src/handlers/chat.js",
+      "anchor": "    if (usedNativeReadUrlFallback) {",
+      "replacement": "    if (false) {"
+    },
+    {
+      "name": "the non-stream WebFetch fallback strips literal tool markup from fetched data",
+      "file": "src/handlers/chat.js",
+      "anchor": "        if (!usedNativeReadUrlFallback) allText = stripToolMarkupFromText(allText);",
+      "replacement": "        allText = stripToolMarkupFromText(allText);"
+    },
+    {
+      "name": "the non-stream WebFetch fallback skips the only allowed path sanitizer",
+      "file": "src/handlers/chat.js",
+      "anchor": "      allText = sanitizeText(allText);",
+      "replacement": "      allText = allText;"
+    },
+    {
+      "name": "the non-stream WebFetch fallback rewrites identity-bearing document prose",
+      "file": "src/handlers/chat.js",
+      "anchor": "      allText = sanitizeText(allText);",
+      "replacement": "      allText = neutralizeCascadeIdentity(sanitizeText(allText), model);"
+    },
+    {
+      "name": "the non-stream WebFetch fallback re-enters JSON stabilization",
+      "file": "src/handlers/chat.js",
+      "anchor": "    if (wantJson && allText && !usedNativeReadUrlFallback) {",
+      "replacement": "    if (wantJson && allText) {"
+    },
+    {
+      "name": "the stream failure tail forgets to release the metadata candidate",
+      "file": "src/handlers/chat.js",
+      "anchor": "          const egressTail = pathStreamText.flush({\n            hasToolCalls: collectedToolCalls.length > 0,\n            incomplete: true,\n          });\n          if (egressTail) emitContent(egressTail);",
+      "replacement": "          const egressTail = '';\n          if (egressTail) emitContent(egressTail);"
+    },
+    {
+      "name": "a negative JSON clause immediately overrides a later independent positive contract",
+      "file": "src/handlers/chat.js",
+      "anchor": "  if (sawPositive) return true;\n  if (sawNegative) return false;",
+      "replacement": "  if (sawNegative) return false;\n  if (sawPositive) return true;"
+    },
+    {
+      "name": "a positive contract after a local negative span is ignored without punctuation",
+      "file": "src/handlers/chat.js",
+      "anchor": "      if (jsonOnlyContract(stripped.remaining) || positiveJsonContract(stripped.remaining)) {\n        sawPositive = true;\n      }",
+      "replacement": "      if (false) {\n        sawPositive = true;\n      }"
+    },
+    {
+      "name": "negative JSON clauses are ignored and become positive through the fallback matcher",
+      "file": "src/handlers/chat.js",
+      "anchor": "  if (sawNegative) return false;",
+      "replacement": "  if (false) return false;"
+    },
+    {
+      "name": "bare anything-except JSON is mistaken for the double-negative only-JSON contract",
+      "file": "src/handlers/chat.js",
+      "anchor": "    || /\\b(?:do\\s+not|don['’]?t|never)\\s+(?:answer|respond|return|output|produce|provide|emit)\\s+anything\\s+(?:except|but)\\s+(?:valid\\s+)?JSON\\b/i.test(clause)",
+      "replacement": "    || /\\b(?:answer|respond|return|output)\\s+anything\\s+(?:except|but)\\s+(?:valid\\s+)?JSON\\b/i.test(clause)"
+    },
+    {
+      "name": "English non-JSON double negation no longer requests JSON-only output",
+      "file": "src/handlers/chat.js",
+      "anchor": "    || /\\b(?:do\\s+not|don['’]?t|never)\\s+(?:answer|respond|return|output|produce|provide|emit)\\s+(?:any\\s+)?non[-\\s]?JSON(?:\\s+(?:content|text|output|response|data))?\\b/i.test(clause)",
+      "replacement": "    || false"
+    },
+    {
+      "name": "Chinese outside-JSON double negation no longer requests JSON-only output",
+      "file": "src/handlers/chat.js",
+      "anchor": "    || /(?:不要|请勿|别|禁止)\\s*(?:返回|输出|生成|提供)\\s*JSON\\s*(?:以外|之外)\\s*的?\\s*任何(?:内容|格式|文本)/.test(clause)\n    || /(?:除|除了)\\s*JSON\\s*(?:以外|之外|外)?\\s*(?:不要|请勿|别|禁止)\\s*(?:返回|输出|生成|提供)\\s*任何(?:内容|格式|文本)/.test(clause)",
+      "replacement": "    || false"
+    },
+    {
+      "name": "Chinese non-JSON double negation no longer requests JSON-only output",
+      "file": "src/handlers/chat.js",
+      "anchor": "    || /(?:不要|请勿|别|禁止|不得)\\s*(?:返回|输出|生成|提供)\\s*(?:任何)?\\s*非\\s*JSON\\s*(?:内容|文本|格式|数据)?/.test(clause)",
+      "replacement": "    || false"
+    },
+    {
+      "name": "command JSON contracts are ignored",
+      "file": "src/handlers/chat.js",
+      "anchor": "    commandJsonContract(clause)",
+      "replacement": "    false"
+    },
+    {
+      "name": "use-JSON contracts are ignored",
+      "file": "src/handlers/chat.js",
+      "anchor": "    || useJsonContract(clause)",
+      "replacement": "    || false"
+    },
+    {
+      "name": "answer-in-JSON contracts are ignored",
+      "file": "src/handlers/chat.js",
+      "anchor": "    || answerJsonContract(clause)",
+      "replacement": "    || false"
+    },
+    {
+      "name": "English modal JSON contracts are ignored",
+      "file": "src/handlers/chat.js",
+      "anchor": "    || modalJsonContract(clause)",
+      "replacement": "    || false"
+    },
+    {
+      "name": "format-as-JSON contracts are ignored",
+      "file": "src/handlers/chat.js",
+      "anchor": "    || formattedJsonContract(clause)",
+      "replacement": "    || false"
+    },
+    {
+      "name": "post-JSON only is ignored",
+      "file": "src/handlers/chat.js",
+      "anchor": "    if (!rest || /^(?:only|please)$/i.test(rest)) return true;",
+      "replacement": "    if (!rest || /^please$/i.test(rest)) return true;"
+    },
+    {
+      "name": "post-JSON nothing-else constraints are ignored",
+      "file": "src/handlers/chat.js",
+      "anchor": "    if (/^(?:[-\\u2014\\u2013]\\s*)?(?:and\\s+)?nothing\\s+else$/i.test(rest)) return true;",
+      "replacement": "    if (false) return true;"
+    },
+    {
+      "name": "post-JSON no-prose constraints are ignored",
+      "file": "src/handlers/chat.js",
+      "anchor": "    if (/^(?:(?:[-\\u2014\\u2013]\\s*)|\\(\\s*)?(?:and\\s+)?(?:without|no)\\s+(?:any\\s+)?(?:prose|plain\\s+text|text|explanation|commentary|markdown(?:\\s+fences?)?|code\\s+fences?)(?:\\s*\\))?$/i.test(rest)) return true;",
+      "replacement": "    if (false) return true;"
+    },
+    {
+      "name": "structured JSON suffixes accept arbitrary topical prose",
+      "file": "src/handlers/chat.js",
+      "anchor": "    return allowContentSpec && /^(?:with|containing)\\b[\\s\\S]*$/i.test(rest);",
+      "replacement": "    return allowContentSpec;"
+    },
+    {
+      "name": "bare use-JSON topics become structured-output contracts",
+      "file": "src/handlers/chat.js",
+      "anchor": "    return jsonContractSuffix(match[4], { allowContentSpec: hasStrongCue });",
+      "replacement": "    return jsonContractSuffix(match[4], { allowContentSpec: true });"
+    },
+    {
+      "name": "bare answer-JSON topics become structured-output contracts",
+      "file": "src/handlers/chat.js",
+      "anchor": "    return jsonContractSuffix(direct[4], { allowContentSpec: hasStrongCue });",
+      "replacement": "    return jsonContractSuffix(direct[4], { allowContentSpec: true });"
+    },
+    {
+      "name": "structural JSON nouns are ignored",
+      "file": "src/handlers/chat.js",
+      "anchor": "    const match = clause.match(/\\b(?:return|output|produce|provide|emit|(?:give|send)\\s+me)\\s+(?:only\\s+)?(?:(?:a|an)\\s+)?(?:(?:valid|compact|raw|strict|minified|well[-\\s]?formed)\\s+)*JSON(?:\\s+(?:object|format|response|payload|document|data))?\\b([\\s\\S]*)$/i);",
+      "replacement": "    const match = clause.match(/\\b(?:return|output|produce|provide|emit|(?:give|send)\\s+me)\\s+(?:only\\s+)?(?:(?:a|an)\\s+)?(?:(?:valid|compact|raw|strict|minified|well[-\\s]?formed)\\s+)*JSON(?:\\s+(?:object|format))?\\b([\\s\\S]*)$/i);"
+    },
+    {
+      "name": "JSON format adjectives are ignored",
+      "file": "src/handlers/chat.js",
+      "anchor": "    const match = clause.match(/\\b(?:return|output|produce|provide|emit|(?:give|send)\\s+me)\\s+(?:only\\s+)?(?:(?:a|an)\\s+)?(?:(?:valid|compact|raw|strict|minified|well[-\\s]?formed)\\s+)*JSON(?:\\s+(?:object|format|response|payload|document|data))?\\b([\\s\\S]*)$/i);",
+      "replacement": "    const match = clause.match(/\\b(?:return|output|produce|provide|emit|(?:give|send)\\s+me)\\s+(?:only\\s+)?(?:(?:a|an)\\s+)?(?:(?:valid|compact)\\s+)*JSON(?:\\s+(?:object|format|response|payload|document|data))?\\b([\\s\\S]*)$/i);"
+    },
+    {
+      "name": "JSON comma please is no longer a strong output contract",
+      "file": "src/handlers/chat.js",
+      "anchor": "    || /^\\s*(?:(?:a|an|valid|compact|raw|strict|minified|well[-\\s]?formed)\\s+)*JSON(?:\\s+(?:object|format|response|payload|document|data))?\\s*,?\\s*please[.!?]?\\s*$/i.test(clause)",
+      "replacement": "    || false"
+    },
+    {
+      "name": "do-not-give JSON is reclassified through the positive give-me matcher",
+      "file": "src/handlers/chat.js",
+      "anchor": "      .replace(/\\b(?:do\\s+not|don['’]?t|never)\\s+(?:only\\s+)?(?:answer|respond|reply|return|output|use|produce|provide|emit|give|send|format|encode)(?:\\s+me)?\\s+(?:(?:in|with|using|as)\\s+)?(?:(?:any|a|an|valid|compact|raw|strict|minified|well[-\\s]?formed|only)\\s+)*JSON(?:\\s+(?:object|format|response|payload|document|data))?\\b/gi, () => {",
+      "replacement": "      .replace(/\\b(?:do\\s+not|don['’]?t|never)\\s+(?:only\\s+)?(?:answer|respond|reply|return|output|use|produce|provide|emit|format|encode)(?:\\s+me)?\\s+(?:(?:in|with|using|as)\\s+)?(?:(?:any|a|an|valid|compact|raw|strict|minified|well[-\\s]?formed|only)\\s+)*JSON(?:\\s+(?:object|format|response|payload|document|data))?\\b/gi, () => {"
+    },
+    {
+      "name": "negative direct-answer spans no longer shield reply or answer-only JSON",
+      "file": "src/handlers/chat.js",
+      "anchor": "      .replace(/\\b(?:do\\s+not|don['’]?t|never)\\s+(?:only\\s+)?(?:answer|respond|reply|return|output|use|produce|provide|emit|give|send|format|encode)(?:\\s+me)?\\s+(?:(?:in|with|using|as)\\s+)?(?:(?:any|a|an|valid|compact|raw|strict|minified|well[-\\s]?formed|only)\\s+)*JSON(?:\\s+(?:object|format|response|payload|document|data))?\\b/gi, () => {",
+      "replacement": "      .replace(/\\b(?:do\\s+not|don['’]?t|never)\\s+(?:only\\s+)?(?:answer|respond|return|output|use|produce|provide|emit|give|send|format|encode)(?:\\s+me)?\\s+(?:(?:in|with|using|as)\\s+)?(?:(?:any|a|an|valid|compact|raw|strict|minified|well[-\\s]?formed)\\s+)*JSON(?:\\s+(?:object|format|response|payload|document|data))?\\b/gi, () => {"
+    },
+    {
+      "name": "Chinese reply-in-JSON is no longer a strong output contract",
+      "file": "src/handlers/chat.js",
+      "anchor": "    || /(?:以|用)\\s*JSON\\s*(?:格式)?\\s*(?:返回|输出|回答|回复|响应)/.test(clause)",
+      "replacement": "    || /(?:以|用)\\s*JSON\\s*(?:格式)?\\s*(?:返回|输出|回答|响应)/.test(clause)"
+    },
+    {
+      "name": "Chinese modal JSON contracts are ignored",
+      "file": "src/handlers/chat.js",
+      "anchor": "    || /(?:答案|回答|回复|响应|输出|结果)\\s*(?:必须|应当|应该|应|须|需)\\s*(?:是|为)\\s*(?:有效|合法|紧凑)?\\s*JSON\\s*(?:格式|对象)?(?=\\s*(?:$|(?:即可|就好|就行)\\s*$|(?:包含|含有|带有)))/.test(clause)",
+      "replacement": "    || false"
+    },
+    {
+      "name": "Chinese JSON intent is ignored",
+      "file": "src/handlers/chat.js",
+      "anchor": "    || /(?:仅|只)\\s*(?:以|用)\\s*JSON\\s*(?:格式|对象)?\\s*(?:返回|输出|回答|响应)?/.test(clause)\n    || /(?:仅|只)\\s*(?:返回|输出|生成|提供)\\s*(?:有效|合法|紧凑)?\\s*JSON\\s*(?:格式|对象)?(?=\\s*(?:$|(?:即可|就好|就行)\\s*$|(?:包含|含有|带有)))/.test(clause)\n    || /(?:返回|输出|生成|提供)\\s*(?:仅|只|必须)\\s*(?:有效|合法|紧凑)?\\s*JSON\\s*(?:格式|对象)?(?=\\s*(?:$|(?:即可|就好|就行)\\s*$|(?:包含|含有|带有)))/.test(clause)\n    || /(?:返回|输出|生成|提供)\\s*(?:有效|合法|紧凑)\\s*JSON\\s*(?:格式|对象)?(?=\\s*(?:$|(?:即可|就好|就行)\\s*$|(?:包含|含有|带有)))/.test(clause)\n    || /(?:返回|输出|生成|提供)\\s*JSON\\s*(?:格式|对象)(?=\\s*(?:$|(?:即可|就好|就行)\\s*$|(?:包含|含有|带有)))/.test(clause)\n    || /(?:返回|输出|生成|提供)\\s*JSON(?=\\s*(?:$|(?:即可|就好|就行)\\s*$|(?:包含|含有|带有)))/.test(clause)\n    || /(?:以|用)\\s*JSON\\s*(?:格式)?\\s*(?:返回|输出|回答|回复|响应)/.test(clause)\n    || /(?:答案|回答|回复|响应|输出|结果)\\s*(?:必须|应当|应该|应|须|需)\\s*(?:是|为)\\s*(?:有效|合法|紧凑)?\\s*JSON\\s*(?:格式|对象)?(?=\\s*(?:$|(?:即可|就好|就行)\\s*$|(?:包含|含有|带有)))/.test(clause)",
+      "replacement": "    || false"
+    },
+    {
+      "name": "Chinese bare JSON actions accept tutorial topics",
+      "file": "src/handlers/chat.js",
+      "anchor": "    || /(?:返回|输出|生成|提供)\\s*JSON(?=\\s*(?:$|(?:即可|就好|就行)\\s*$|(?:包含|含有|带有)))/.test(clause)",
+      "replacement": "    || /(?:返回|输出|生成|提供)\\s*JSON/.test(clause)"
+    },
+    {
+      "name": "Chinese post-JSON terminal cues are ignored",
+      "file": "src/handlers/chat.js",
+      "anchor": "    || /(?:返回|输出|生成|提供)\\s*JSON(?=\\s*(?:$|(?:即可|就好|就行)\\s*$|(?:包含|含有|带有)))/.test(clause)",
+      "replacement": "    || /(?:返回|输出|生成|提供)\\s*JSON(?=\\s*(?:$|(?:包含|含有|带有)))/.test(clause)"
+    },
+    {
+      "name": "authoritative system and developer structured-output contracts are ignored",
+      "file": "src/handlers/chat.js",
+      "anchor": "  const strongSystemStructuredOutput = hasStrongSystemOrDeveloperStructuredOutputContract(messages);",
+      "replacement": "  const strongSystemStructuredOutput = false;"
+    },
+    {
+      "name": "latest-user object schema and exact-field shape requests are ignored",
+      "file": "src/handlers/chat.js",
+      "anchor": "  const latestUserStructuredShape = isExplicitStructuredShapeRequestText(latestRealUserText(messages));",
+      "replacement": "  const latestUserStructuredShape = false;"
+    },
+    {
+      "name": "developer structured-output authority is omitted",
+      "file": "src/handlers/chat.js",
+      "anchor": "    if (message?.role !== 'system' && message?.role !== 'developer') continue;",
+      "replacement": "    if (message?.role !== 'system') continue;"
+    },
+    {
+      "name": "output-format declarations are ignored",
+      "file": "src/handlers/chat.js",
+      "anchor": "  if (outputFormatDeclaration.test(source) || declarativeStructuredOutput.test(source)",
+      "replacement": "  if (declarativeStructuredOutput.test(source)"
+    },
+    {
+      "name": "declarative structured JSON and object contracts are ignored",
+      "file": "src/handlers/chat.js",
+      "anchor": "outputFormatDeclaration.test(source) || declarativeStructuredOutput.test(source)\n      || namedFormatDeclaration.test(source)",
+      "replacement": "outputFormatDeclaration.test(source)\n      || namedFormatDeclaration.test(source)"
+    },
+    {
+      "name": "YAML and XML output-format declarations are ignored",
+      "file": "src/handlers/chat.js",
+      "anchor": "declarativeStructuredOutput.test(source)\n      || namedFormatDeclaration.test(source) || declarativeNamedFormat.test(source)",
+      "replacement": "declarativeStructuredOutput.test(source)\n      || declarativeNamedFormat.test(source)"
+    },
+    {
+      "name": "declarative YAML and XML response contracts are ignored",
+      "file": "src/handlers/chat.js",
+      "anchor": "namedFormatDeclaration.test(source) || declarativeNamedFormat.test(source)) return true;",
+      "replacement": "namedFormatDeclaration.test(source)) return true;"
+    },
+    {
+      "name": "output field commands are ignored",
+      "file": "src/handlers/chat.js",
+      "anchor": "  const outputFieldCommand = /^(?:(?:please|kindly)\\s+)?(?:(?:(?:can|could|would|will)\\s+you|you\\s+(?:must|shall|should|are\\s+required\\s+to|have\\s+to))\\s+)?(?:always\\s+)?(?:answer|respond|reply|return|output|emit|provide|produce|present|send|give(?:\\s+me)?|format|encode|create|generate|build|construct)\\b/i.test(source);",
+      "replacement": "  const outputFieldCommand = false;"
+    },
+    {
+      "name": "direct object output commands are ignored",
+      "file": "src/handlers/chat.js",
+      "anchor": "  if (directObject.test(source) || answerWithObject.test(source)",
+      "replacement": "  if (answerWithObject.test(source)"
+    },
+    {
+      "name": "answer respond and reply object output commands are ignored",
+      "file": "src/handlers/chat.js",
+      "anchor": "directObject.test(source) || answerWithObject.test(source) || directNamedFormat.test(source)",
+      "replacement": "directObject.test(source) || directNamedFormat.test(source)"
+    },
+    {
+      "name": "direct YAML and XML output commands are ignored",
+      "file": "src/handlers/chat.js",
+      "anchor": "answerWithObject.test(source) || directNamedFormat.test(source) || answerWithNamedFormat.test(source)",
+      "replacement": "answerWithObject.test(source) || answerWithNamedFormat.test(source)"
+    },
+    {
+      "name": "answer-with YAML and XML output commands are ignored",
+      "file": "src/handlers/chat.js",
+      "anchor": "directNamedFormat.test(source) || answerWithNamedFormat.test(source) || resultAsNamedFormat.test(source)",
+      "replacement": "directNamedFormat.test(source) || resultAsNamedFormat.test(source)"
+    },
+    {
+      "name": "result-as YAML and XML output commands are ignored",
+      "file": "src/handlers/chat.js",
+      "anchor": "answerWithNamedFormat.test(source) || resultAsNamedFormat.test(source) || resultAsObject.test(source)",
+      "replacement": "answerWithNamedFormat.test(source) || resultAsObject.test(source)"
+    },
+    {
+      "name": "result-as-object output commands are ignored",
+      "file": "src/handlers/chat.js",
+      "anchor": "resultAsNamedFormat.test(source) || resultAsObject.test(source) || representationAsObject.test(source)",
+      "replacement": "resultAsNamedFormat.test(source) || representationAsObject.test(source)"
+    },
+    {
+      "name": "serialize render and represent object contracts are ignored",
+      "file": "src/handlers/chat.js",
+      "anchor": "resultAsObject.test(source) || representationAsObject.test(source) || representationAsSchema.test(source)",
+      "replacement": "resultAsObject.test(source) || representationAsSchema.test(source)"
+    },
+    {
+      "name": "serialize render and represent schema contracts are ignored",
+      "file": "src/handlers/chat.js",
+      "anchor": "representationAsObject.test(source) || representationAsSchema.test(source) || schemaCommand.test(source)",
+      "replacement": "representationAsObject.test(source) || schemaCommand.test(source)"
+    },
+    {
+      "name": "schema output commands are ignored",
+      "file": "src/handlers/chat.js",
+      "anchor": "representationAsSchema.test(source) || schemaCommand.test(source) || applySchema.test(source)",
+      "replacement": "representationAsSchema.test(source) || applySchema.test(source)"
+    },
+    {
+      "name": "apply-schema output contracts are ignored",
+      "file": "src/handlers/chat.js",
+      "anchor": "schemaCommand.test(source) || applySchema.test(source) || modalSchema.test(source)",
+      "replacement": "schemaCommand.test(source) || modalSchema.test(source)"
+    },
+    {
+      "name": "modal schema output contracts are ignored",
+      "file": "src/handlers/chat.js",
+      "anchor": "applySchema.test(source) || modalSchema.test(source) || modalObject.test(source)",
+      "replacement": "applySchema.test(source) || modalObject.test(source)"
+    },
+    {
+      "name": "modal object output contracts are ignored",
+      "file": "src/handlers/chat.js",
+      "anchor": "modalSchema.test(source) || modalObject.test(source) || describeAsObject.test(source)",
+      "replacement": "modalSchema.test(source) || describeAsObject.test(source)"
+    },
+    {
+      "name": "describe-as-object output contracts are ignored",
+      "file": "src/handlers/chat.js",
+      "anchor": "modalObject.test(source) || describeAsObject.test(source)) {",
+      "replacement": "modalObject.test(source)) {"
+    },
+    {
+      "name": "an unrelated with phrase becomes a Cascade metadata field-shape cue",
+      "file": "src/handlers/chat.js",
+      "anchor": "  const leadingFieldCue = /\\b(?:with|containing|including|include)\\s+(?:(?:the|these|following|exact)\\s+)*(?:(?:fields?|keys?|properties)\\s*)?(?::|[-\\u2014\\u2013])?\\s*$/i.test(source.slice(0, firstFieldOffset));",
+      "replacement": "  const leadingFieldCue = /\\b(?:with|containing|including|include)\\b/i.test(source.slice(0, firstFieldOffset));"
+    },
+    {
+      "name": "the exact Cascade metadata field-shape request is ignored",
+      "file": "src/handlers/chat.js",
+      "anchor": "  return (describeCommand || descriptiveFieldCommand || outputFieldCommand) && leadingFieldCue;",
+      "replacement": "  return false;"
+    },
+    {
+      "name": "implementation commands bypass the structured-shape guard",
+      "file": "src/handlers/chat.js",
+      "anchor": "  if (implementationCommand) return false;",
+      "replacement": "  if (false) return false;"
+    },
+    {
+      "name": "any raw tail item suppresses metadata neutralization even when it is not caller visible",
+      "file": "src/handlers/chat.js",
+      "anchor": "              || (nativeBridgeOn && hasCallerVisibleCascadeTailToolCall(cascadeResult?.toolCalls, nativeOpts, declaredTools))",
+      "replacement": "              || !!cascadeResult?.toolCalls?.length"
+    },
+    {
+      "name": "caller-visible native tail calls suppress metadata unwrapping but never emit an SSE tool delta",
+      "file": "src/handlers/chat.js",
+      "anchor": "            if (nativeBridgeOn && cascadeResult?.toolCalls?.length && collectedToolCalls.length === 0) {",
+      "replacement": "            if (false) {"
+    },
+    {
+      "name": "stream WebFetch fallback rewrites identity-bearing document prose",
+      "file": "src/handlers/chat.js",
+      "anchor": "              if (fallbackText) emitExternalContent(fallbackText);",
+      "replacement": "              if (fallbackText) emitContent(neutralizeCascadeIdentity(sanitizeText(fallbackText), model));"
+    },
+    {
+      "name": "stream WebFetch fallback re-enters reasoning dedup through ordinary content emission",
+      "file": "src/handlers/chat.js",
+      "anchor": "              if (fallbackText) emitExternalContent(fallbackText);",
+      "replacement": "              if (fallbackText) emitContent(sanitizeText(fallbackText));"
+    },
+    {
+      "name": "stream WebFetch fallback skips the only allowed path sanitizer",
+      "file": "src/handlers/chat.js",
+      "anchor": "        const clean = sanitizeText(raw);",
+      "replacement": "        const clean = raw;"
+    },
+    {
+      "name": "stream WebFetch fallback re-enters JSON stabilization",
+      "file": "src/handlers/chat.js",
+      "anchor": "            if (wantJson && accText && !usedNativeReadUrlFallback && !(accThinking && accText === accThinking)) {",
+      "replacement": "            if (wantJson && accText && !(accThinking && accText === accThinking)) {"
+    },
+    {
+      "name": "stream ordinary prose bypasses Cascade identity neutralization",
+      "file": "src/handlers/cascade-metadata-egress.js",
+      "anchor": "    return neutralizeCascadeIdentity(ready, this.modelName, {\n      preserveStructured: this.preserveStructured,\n    });",
+      "replacement": "    return ready;"
+    }
+  ]
+}

@@ -23,7 +23,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { writeJsonAtomic, writeFileSyncDurable } from '../src/fs-atomic.js';
+import { renameSyncWithRetry, writeJsonAtomic, writeFileSyncDurable } from '../src/fs-atomic.js';
 import { cacheKey } from '../src/cache.js';
 import { checkout, checkin, poolClear } from '../src/conversation-pool.js';
 
@@ -116,6 +116,25 @@ describe('writeFileSyncDurable (K7: fsync before rename)', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  test('a parent-directory fsync failure never replays an already-published rename', () => {
+    let renameCalls = 0;
+    const fsyncError = new Error('directory fsync failed');
+    let caught = null;
+    try {
+      renameSyncWithRetry('/tmp/source.pending', '/tmp/final.json', {
+        attempts: 6,
+        rename: () => { renameCalls++; },
+        fsyncParent: () => { throw fsyncError; },
+      });
+    } catch (err) {
+      caught = err;
+    }
+    assert.equal(caught, fsyncError);
+    assert.equal(renameCalls, 1, 'rename must run exactly once after it succeeds');
+    assert.equal(caught.renamePublished, true, 'callers must know the target name is already visible');
+    assert.equal(caught.renameTarget, '/tmp/final.json');
   });
 });
 

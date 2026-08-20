@@ -1,0 +1,487 @@
+{
+  "tests": [
+    "test/self-update-gate.test.js",
+    "test/self-update-untracked-safety.test.js",
+    "test/self-update-ui-state.test.js",
+    "test/update-script-release-target.test.js",
+    "test/audit-fixes.test.js",
+    "test/docker-self-update.test.js"
+  ],
+  "expectBaselinePass": 164,
+  "mutations": [
+    {
+      "name": "dashboard stable-tag selection accepts leading-zero pseudo versions",
+      "file": "src/dashboard/api.js",
+      "anchor": "  const match = String(tag || '').match(/^v(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)$/);",
+      "replacement": "  const match = String(tag || '').match(/^v(\\d+)\\.(\\d+)\\.(\\d+)$/);"
+    },
+    {
+      "name": "dashboard accepts a fetched tag object different from the advertised remote object",
+      "file": "src/dashboard/api.js",
+      "anchor": "  if (!validGitObjectId(fetchedObject) || fetchedObject !== candidate.object) {",
+      "replacement": "  if (!validGitObjectId(fetchedObject)) {"
+    },
+    {
+      "name": "dashboard accepts an annotated tag whose fetched commit differs from the advertised peeled OID",
+      "file": "src/dashboard/api.js",
+      "anchor": "    if (objectType !== 'tag' || fetchedCommit !== candidate.peeled) {",
+      "replacement": "    if (objectType !== 'tag') {"
+    },
+    {
+      "name": "ordinary dashboard OTA treats a missing stable tag as up to date",
+      "file": "src/dashboard/api.js",
+      "anchor": "  if (!latestTag && !followUnreleased) {\n    throw makeSelfUpdateError(\n      NO_RELEASE_TAG,\n      'No stable release tag is reachable from the update branch; use forceUpdate only if you intentionally want the branch head.',\n    );\n  }",
+      "replacement": "  if (!latestTag && !followUnreleased) {\n    return {\n      remoteHead, latestTag: '', releasedCommit: '', targetCommit: currentCommit,\n      unreleasedCount: 0, commitsToTarget: 0, commitsPastTarget: 0,\n      updateAvailable: false, diverged: false,\n    };\n  }"
+    },
+    {
+      "name": "dashboard release discovery falls back to the stale local tag namespace",
+      "file": "src/dashboard/api.js",
+      "anchor": "    const output = await runGit(['ls-remote', '--tags', 'origin', 'refs/tags/v[0-9]*']);",
+      "replacement": "    const output = await runGit(['for-each-ref', '--format=%(objectname)%09%(refname)', 'refs/tags']);"
+    },
+    {
+      "name": "dashboard remote-tag parser accepts records with repeated literal tabs",
+      "file": "src/dashboard/api.js",
+      "anchor": "    const match = line.match(/^([0-9a-f]{40}|[0-9a-f]{64})\\trefs\\/tags\\/(.+)$/i);",
+      "replacement": "    const match = line.match(/^([0-9a-f]{40}|[0-9a-f]{64})\\t+refs\\/tags\\/(.+)$/i);"
+    },
+    {
+      "name": "dashboard selects a stable tag that is not reachable from the update branch",
+      "file": "src/dashboard/api.js",
+      "anchor": "      if (await gitCommitIsAncestor(candidate.commit, remoteRef)) return candidate;",
+      "replacement": "      return candidate;"
+    },
+    {
+      "name": "the in-process update and rollback mutex is bypassed",
+      "file": "src/dashboard/api.js",
+      "anchor": "  if (selfUpdateMutationInFlight) return null;",
+      "replacement": "  if (false) return null;"
+    },
+    {
+      "name": "an old Node release callback can delete a replacement lock owner",
+      "file": "src/dashboard/api.js",
+      "anchor": "    if (!owner || owner.legacy || owner.pid !== process.pid || owner.token !== ownerToken) return false;",
+      "replacement": "    if (false) return false;"
+    },
+    {
+      "name": "Node stale-lock recovery overwrites an existing recovery claim",
+      "file": "src/dashboard/api.js",
+      "anchor": "    writeFileSync(claimPath, `${process.pid} ${claimToken}\\n`, { encoding: 'utf8', flag: 'wx', mode: 0o600 });",
+      "replacement": "    writeFileSync(claimPath, `${process.pid} ${claimToken}\\n`, { encoding: 'utf8', flag: 'w', mode: 0o600 });"
+    },
+    {
+      "name": "successful dashboard update releases the lock before restart handoff",
+      "file": "src/dashboard/api.js",
+      "anchor": "        }, releaseMutation);\n        mutationLockHandedOff = restartScheduled === true;\n      }\n      return json(res, 200, {\n        ok: true,",
+      "replacement": "        }, releaseMutation);\n        mutationLockHandedOff = false;\n      }\n      return json(res, 200, {\n        ok: true,"
+    },
+    {
+      "name": "successful rollback releases the lock before restart handoff",
+      "file": "src/dashboard/api.js",
+      "anchor": "          }), releaseMutation);\n        mutationLockHandedOff = restartScheduled === true;\n        return json(res, 200, { ok: true, rolledBackTo: beforeCommit.slice(0, 7) });",
+      "replacement": "          }), releaseMutation);\n        mutationLockHandedOff = false;\n        return json(res, 200, { ok: true, rolledBackTo: beforeCommit.slice(0, 7) });"
+    },
+    {
+      "name": "Docker deployer ownership is released with the HTTP response",
+      "file": "src/dashboard/api.js",
+      "anchor": "              mutationLockHandedOff = scheduleDockerSelfUpdateMutationRelease(releaseMutation) === true;",
+      "replacement": "              mutationLockHandedOff = false;"
+    },
+    {
+      "name": "rollback ignored-runtime collision gate is bypassed",
+      "file": "src/dashboard/api.js",
+      "anchor": "        const ignoredConflicts = await findIgnoredTargetPathConflicts(beforeCommit);",
+      "replacement": "        const ignoredConflicts = [];"
+    },
+    {
+      "name": "update ignored-runtime collision gate is bypassed",
+      "file": "src/dashboard/api.js",
+      "anchor": "          const ignoredConflicts = await findIgnoredTargetPathConflicts(headTarget);",
+      "replacement": "          const ignoredConflicts = [];"
+    },
+    {
+      "name": "rollback treats a target HEAD with tracked dirt as complete",
+      "file": "src/dashboard/api.js",
+      "anchor": "        if (rolledBackHead !== beforeCommit || trackedAfter) {",
+      "replacement": "        if (rolledBackHead !== beforeCommit) {"
+    },
+    {
+      "name": "update treats a target HEAD with tracked dirt as complete",
+      "file": "src/dashboard/api.js",
+      "anchor": "        const reachedTargetClean = actualHead === headTarget && !trackedAfter;",
+      "replacement": "        const reachedTargetClean = actualHead === headTarget;"
+    },
+    {
+      "name": "dashboard no-op stash race claims the user's existing stash",
+      "file": "src/dashboard/api.js",
+      "anchor": "  const oid = ownedStashOid(listing, marker);\n  if (oid) return oid;",
+      "replacement": "  const oid = ownedStashOid(listing, marker) || await currentStashTip();\n  if (oid) return oid;"
+    },
+    {
+      "name": "dashboard restores the current stash top instead of its exact object",
+      "file": "src/dashboard/api.js",
+      "anchor": "  await runGit(['stash', 'apply', oid]);",
+      "replacement": "  await runGit(['stash', 'pop']);"
+    },
+    {
+      "name": "rollback journal is not prepared before the HEAD-changing update",
+      "file": "src/dashboard/api.js",
+      "anchor": "            prepareRollbackPoint({ commit: before.commitFull, after: headTarget, ts: Date.now() });",
+      "replacement": "            // rollback point accidentally omitted"
+    },
+    {
+      "name": "supervisor availability is checked only after update mutation",
+      "file": "src/dashboard/api.js",
+      "anchor": "        if (willMutateWorktree) {\n          const sup = detectSelfUpdateSupervisor();",
+      "replacement": "        if (false) {\n          const sup = detectSelfUpdateSupervisor();"
+    },
+    {
+      "name": "rollback UI never sends the confirmed forceReset retry",
+      "file": "src/dashboard/index.html",
+      "anchor": "        r = await this.api('POST', '/self-update/rollback', { forceReset: true });",
+      "replacement": "        r = await this.api('POST', '/self-update/rollback');"
+    },
+    {
+      "name": "update UI hides ignored owner-data conflict paths",
+      "file": "src/dashboard/index.html",
+      "anchor": "        const conflicts = r.error === 'ERR_IGNORED_PATH_CONFLICT' && Array.isArray(r.conflictPaths)\n          ? r.conflictPaths.slice(0, 10).join(', ')\n          : '';\n        const message = this.translateError(r.error, 'error.updateFailed');\n        throw new Error(conflicts ? `${message}: ${conflicts}` : message);",
+      "replacement": "        throw new Error(this.translateError(r.error, 'error.updateFailed'));"
+    },
+    {
+      "name": "atomic rename skips the parent-directory fsync",
+      "file": "src/fs-atomic.js",
+      "anchor": "    fsyncParent(targetPath);",
+      "replacement": "    // directory fsync accidentally omitted"
+    },
+    {
+      "name": "shell begins update mutation without a usable pm2 supervisor",
+      "file": "update.sh",
+      "anchor": "if ! command -v pm2 >/dev/null 2>&1; then\n  echo \"✗ pm2 is required for a safe update; refusing to mutate Git or the LS installation\"\n  exit 1\nfi",
+      "replacement": "# pm2 availability preflight accidentally omitted"
+    },
+    {
+      "name": "shell exits before verified rollback when the first pm2 start fails",
+      "file": "update.sh",
+      "anchor": "PM2_START_EXIT=0\nif [ \"$SERVICE_STOP_FAILED\" -eq 1 ]; then\n  PM2_START_EXIT=125\nelse\n  if pm2 start src/index.js --name \"$NAME\" --cwd \"$(pwd)\"; then\n    pm2 save >/dev/null 2>&1 || true\n    if ! pm2_process_is_live; then\n      PM2_START_EXIT=126\n      echo \"    ! pm2 reported success but the named app has no live process; entering verified rollback\"\n    fi\n  else\n    PM2_START_EXIT=$?\n    echo \"    ! pm2 start failed with exit $PM2_START_EXIT; entering verified rollback\"\n  fi\nfi",
+      "replacement": "PM2_START_EXIT=0\npm2 start src/index.js --name \"$NAME\" --cwd \"$(pwd)\"\npm2 save >/dev/null 2>&1 || true"
+    },
+    {
+      "name": "shell stable-tag selection accepts leading-zero pseudo versions",
+      "file": "update.sh",
+      "anchor": "  [[ \"$advertised_name\" =~ ^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$ ]] || continue",
+      "replacement": "  [[ \"$advertised_name\" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+$ ]] || continue"
+    },
+    {
+      "name": "shell tag enumeration ignores a partial-output nonzero exit",
+      "file": "update.sh",
+      "anchor": "if ! git ls-remote --tags origin 'refs/tags/v[0-9]*' > \"$UPDATE_TAG_LIST_TMP\"; then\n  echo \"    ! could not verify published release tags; refusing update\"\n  exit 1\nfi",
+      "replacement": "git ls-remote --tags origin 'refs/tags/v[0-9]*' > \"$UPDATE_TAG_LIST_TMP\" || true"
+    },
+    {
+      "name": "shell remote-tag parser accepts records with repeated literal tabs",
+      "file": "update.sh",
+      "anchor": "  if [[ \"$advertised_line\" != *$'\\t'* ]] || [[ \"${advertised_line#*$'\\t'}\" == *$'\\t'* ]]; then\n    echo \"    ! remote tag enumeration returned a malformed record; refusing update\"\n    exit 1\n  fi\n  advertised_oid=\"${advertised_line%%$'\\t'*}\"\n  advertised_ref=\"${advertised_line#*$'\\t'}\"",
+      "replacement": "  if [[ \"$advertised_line\" != *$'\\t'* ]]; then\n    echo \"    ! remote tag enumeration returned a malformed record; refusing update\"\n    exit 1\n  fi\n  advertised_oid=\"${advertised_line%%$'\\t'*}\"\n  advertised_ref=\"${advertised_line##*$'\\t'}\""
+    },
+    {
+      "name": "shell accepts a fetched tag object different from the advertised remote object",
+      "file": "update.sh",
+      "anchor": "[ \"$fetched_object\" != \"$expected_object\" ]",
+      "replacement": "false"
+    },
+    {
+      "name": "shell accepts an annotated tag whose fetched commit differs from the advertised peeled OID",
+      "file": "update.sh",
+      "anchor": "[ \"$fetched_commit\" != \"$expected_peeled\" ]",
+      "replacement": "false"
+    },
+    {
+      "name": "shell selects a stable tag that is not reachable from origin master",
+      "file": "update.sh",
+      "anchor": "  if git merge-base --is-ancestor \"$fetched_commit\" origin/master; then",
+      "replacement": "  if true; then"
+    },
+    {
+      "name": "shell release-distance probe falls back to zero on failure",
+      "file": "update.sh",
+      "anchor": "  if ! UNRELEASED=$(git rev-list --count \"${RELEASE_COMMIT}..${REMOTE_HEAD}\" 2>/dev/null); then\n    echo \"    ! could not verify commits after the latest release; refusing update\"\n    exit 1\n  fi",
+      "replacement": "  UNRELEASED=$(git rev-list --count \"${RELEASE_COMMIT}..${REMOTE_HEAD}\" 2>/dev/null || echo 0)"
+    },
+    {
+      "name": "shell ignored-runtime collision check is skipped",
+      "file": "update.sh",
+      "anchor": "if [ -n \"$MUTATION_TARGET\" ]; then\n  if ! check_ignored_target_conflicts \"$MUTATION_TARGET\"; then\n    exit 1\n  fi\nfi",
+      "replacement": "# ignored target collision check accidentally omitted"
+    },
+    {
+      "name": "shell health rollback skips ignored owner-data collision checks",
+      "file": "update.sh",
+      "anchor": "  if ! check_ignored_target_conflicts \"$BEFORE\"; then",
+      "replacement": "  if false; then"
+    },
+    {
+      "name": "shell ignored-collision detection stops case-folding full target paths",
+      "file": "update.sh",
+      "anchor": "    folded=\"$(printf '%s' \"$path\" | LC_ALL=C tr '[:upper:]' '[:lower:]')\"",
+      "replacement": "    folded=\"$path\""
+    },
+    {
+      "name": "shell ignored-collision detection stops case-folding target roots",
+      "file": "update.sh",
+      "anchor": "    root_folded=\"$(printf '%s' \"$root\" | LC_ALL=C tr '[:upper:]' '[:lower:]')\"",
+      "replacement": "    root_folded=\"$root\""
+    },
+    {
+      "name": "shell accepts a target HEAD even when tracked files remain dirty",
+      "file": "update.sh",
+      "anchor": "  if [ \"$AFTER\" != \"$MUTATION_TARGET\" ] || [ -n \"$TRACKED_AFTER\" ]; then",
+      "replacement": "  if [ \"$AFTER\" != \"$MUTATION_TARGET\" ]; then"
+    },
+    {
+      "name": "shell health rollback ignores that HEAD never reached the rollback target",
+      "file": "update.sh",
+      "anchor": "  if [ \"$ROLLBACK_HEAD\" != \"$BEFORE\" ] || [ -n \"$ROLLBACK_TRACKED\" ]; then",
+      "replacement": "  if [ -n \"$ROLLBACK_TRACKED\" ]; then"
+    },
+    {
+      "name": "shell health rollback ignores tracked dirt at the rollback target",
+      "file": "update.sh",
+      "anchor": "  if [ \"$ROLLBACK_HEAD\" != \"$BEFORE\" ] || [ -n \"$ROLLBACK_TRACKED\" ]; then",
+      "replacement": "  if [ \"$ROLLBACK_HEAD\" != \"$BEFORE\" ]; then"
+    },
+    {
+      "name": "shell health rollback pops an assumed stash top",
+      "file": "update.sh",
+      "anchor": "    if ! git stash apply \"$OWNED_STASH_OID\" 2>/dev/null; then",
+      "replacement": "    if ! git stash pop 2>/dev/null; then"
+    },
+    {
+      "name": "shell cleanup removes a replacement lock without token verification",
+      "file": "update.sh",
+      "anchor": "  [ \"$owner_pid\" = \"$$\" ] && [ \"$owner_token\" = \"$UPDATE_LOCK_TOKEN\" ] || return 0",
+      "replacement": "  : # owner token verification accidentally omitted"
+    },
+    {
+      "name": "shell stale-lock recovery overwrites a competing claim",
+      "file": "update.sh",
+      "anchor": "  if ! ( set -o noclobber; printf '%s %s\\n' \"$$\" \"$UPDATE_LOCK_TOKEN\" > \"$claim_path\" ) 2>/dev/null; then",
+      "replacement": "  if ! ( printf '%s %s\\n' \"$$\" \"$UPDATE_LOCK_TOKEN\" > \"$claim_path\" ) 2>/dev/null; then"
+    },
+    {
+      "name": "shell lock recovery ignores a live process confirmed by ps after kill denial",
+      "file": "update.sh",
+      "anchor": "    [ -n \"$(ps -p \"$candidate_pid\" -o pid= 2>/dev/null || true)\" ] && return 0",
+      "replacement": "    : # live ps row accidentally ignored"
+    },
+    {
+      "name": "Node accepts an unsafe oversized Git count",
+      "file": "src/dashboard/api.js",
+      "anchor": "  if (!Number.isSafeInteger(count)) {",
+      "replacement": "  if (false) {"
+    },
+    {
+      "name": "shell accepts an unsafe oversized Git count",
+      "file": "update.sh",
+      "anchor": "  [ \"${#value}\" -le 16 ] || return 1",
+      "replacement": "  true"
+    },
+    {
+      "name": "Docker self identity accepts unrelated hex cgroup text",
+      "file": "src/dashboard/docker-self-update.js",
+      "anchor": "    const match = /^\\/docker\\/([0-9a-f]{64})$/i.exec(path)",
+      "replacement": "    const match = /([0-9a-f]{12,64})/i.exec(path);"
+    },
+    {
+      "name": "Docker private-cgroup evidence accepts a mismatched mount target",
+      "file": "src/dashboard/docker-self-update.js",
+      "anchor": "    const file = '/etc/' + match[2];",
+      "replacement": "    const file = '/' + match[2];"
+    },
+    {
+      "name": "Docker inspect accepts an id different from the proven container",
+      "file": "src/dashboard/docker-self-update.js",
+      "anchor": "  if (inspectedId !== selfId) {",
+      "replacement": "  if (false) {"
+    },
+    {
+      "name": "Docker compose working directory accepts parent traversal",
+      "file": "src/dashboard/docker-self-update.js",
+      "anchor": "  return !dir.split('/').includes('..');",
+      "replacement": "  return true;"
+    },
+    {
+      "name": "Docker OTA skips pulling the deployer image",
+      "file": "src/dashboard/docker-self-update.js",
+      "anchor": "    await pull(DEPLOYER_IMAGE);",
+      "replacement": "    // deployer image pull accidentally omitted"
+    },
+    {
+      "name": "Docker OTA replays only an implicit Compose file",
+      "file": "src/dashboard/docker-self-update.js",
+      "anchor": "  const composeConfigArgs = configFiles.map(file => '-f ' + shellQuote(file)).join(' ');",
+      "replacement": "  const composeConfigArgs = '';"
+    },
+    {
+      "name": "Docker OTA leaves a stopped deployer after start failure",
+      "file": "src/dashboard/docker-self-update.js",
+      "anchor": "      await request('DELETE', `/containers/${deployerId}?force=1`, null);",
+      "replacement": "      // stopped deployer cleanup accidentally omitted"
+    },
+    {
+      "name": "Docker pull accepts HTTP-200 JSONL error records",
+      "file": "src/dashboard/docker-self-update.js",
+      "anchor": "            if (Object.prototype.hasOwnProperty.call(obj, 'error')\n                || Object.prototype.hasOwnProperty.call(obj, 'errorDetail')) {",
+      "replacement": "            if (false) {"
+    },
+    {
+      "name": "update.sh broadly kills every process whose command line contains src/index.js",
+      "file": "update.sh",
+      "anchor": "# Never fall back to a command-line substring kill here: another checkout or\n# an unrelated service can also contain `src/index.js`. PM2 owns the named app;\n# the remaining fallback is bounded to this deployment's configured port.",
+      "replacement": "# A broad process-name fallback was reintroduced.\npgrep -f \"src/index\\.js\" | xargs -r kill 2>/dev/null || true"
+    },
+    {
+      "name": "update.sh starts a service even though the old listener never stopped",
+      "file": "update.sh",
+      "anchor": "PM2_START_EXIT=0\nif [ \"$SERVICE_STOP_FAILED\" -eq 1 ]; then",
+      "replacement": "PM2_START_EXIT=0\nif false; then"
+    },
+    {
+      "name": "update.sh lets set-e abort before classifying a listener probe result",
+      "file": "update.sh",
+      "anchor": "  # `set -e` must not turn the probe's meaningful 1 (free) or 2 (unknown)\n  # result into an unverified process exit before the state machine handles it.\n  if port_listener_probe; then\n    probe_rc=0\n  else\n    probe_rc=$?\n  fi",
+      "replacement": "  port_listener_probe\n  probe_rc=$?"
+    },
+    {
+      "name": "the public health response omits the process identity required by OTA verification",
+      "file": "src/server.js",
+      "anchor": "      pid: process.pid,",
+      "replacement": "      // process identity accidentally omitted"
+    },
+    {
+      "name": "update.sh trusts pm2 start exit zero without a live named process",
+      "file": "update.sh",
+      "anchor": "    pm2 save >/dev/null 2>&1 || true\n    if ! pm2_process_is_live; then\n      PM2_START_EXIT=126\n      echo \"    ! pm2 reported success but the named app has no live process; entering verified rollback\"\n    fi",
+      "replacement": "    pm2 save >/dev/null 2>&1 || true"
+    },
+    {
+      "name": "update.sh accepts an unrelated HTTP-200 health response after update",
+      "file": "update.sh",
+      "anchor": "  if HEALTH_OUT=\"$(curl -sf --connect-timeout 5 --max-time 15 \"http://localhost:$PORT/health\")\" \\\n      && health_response_matches_commit \"$HEALTH_OUT\" \"$AFTER\" \"$PM2_LIVE_PID\"; then",
+      "replacement": "  if HEALTH_OUT=\"$(curl -sf --connect-timeout 5 --max-time 15 \"http://localhost:$PORT/health\")\"; then"
+    },
+    {
+      "name": "update.sh trusts rollback pm2 start exit zero without a live named process",
+      "file": "update.sh",
+      "anchor": "    pm2 save >/dev/null 2>&1 || true\n    if ! pm2_process_is_live; then\n      ROLLBACK_PM2_START_EXIT=126\n      echo \"✗ Code rolled back to $BEFORE, but the named PM2 app has no live process; manual recovery required.\"\n      exit 1\n    fi",
+      "replacement": "    pm2 save >/dev/null 2>&1 || true"
+    },
+    {
+      "name": "update.sh accepts an unrelated HTTP-200 health response after rollback",
+      "file": "update.sh",
+      "anchor": "  if ROLLBACK_OUT=\"$(curl -sf --connect-timeout 5 --max-time 15 \"http://localhost:$PORT/health\")\" \\\n      && health_response_matches_commit \"$ROLLBACK_OUT\" \"$BEFORE\" \"$PM2_LIVE_PID\"; then",
+      "replacement": "  if ROLLBACK_OUT=\"$(curl -sf --connect-timeout 5 --max-time 15 \"http://localhost:$PORT/health\")\"; then"
+    },
+    {
+      "name": "update.sh treats a missing listener probe as a free service port",
+      "file": "update.sh",
+      "anchor": "    [ \"$rc\" -eq 1 ] && return 1\n    return 2",
+      "replacement": "    [ \"$rc\" -eq 1 ] && return 1\n    return 1"
+    },
+    {
+      "name": "update.sh claims rollback success when the rollback PM2 start fails",
+      "file": "update.sh",
+      "anchor": "  if pm2 start src/index.js --name \"$NAME\" --cwd \"$(pwd)\" >/dev/null 2>&1; then\n    pm2 save >/dev/null 2>&1 || true\n    if ! pm2_process_is_live; then\n      ROLLBACK_PM2_START_EXIT=126\n      echo \"✗ Code rolled back to $BEFORE, but the named PM2 app has no live process; manual recovery required.\"\n      exit 1\n    fi\n  else\n    ROLLBACK_PM2_START_EXIT=$?\n    echo \"✗ Code rolled back to $BEFORE, but PM2 restart failed with exit $ROLLBACK_PM2_START_EXIT; manual recovery required.\"\n    exit 1\n  fi",
+      "replacement": "  pm2 start src/index.js --name \"$NAME\" --cwd \"$(pwd)\" >/dev/null 2>&1 || true\n  pm2 save >/dev/null 2>&1 || true"
+    },
+    {
+      "name": "rollback retries a duplicate PM2 app without deleting the failed target",
+      "file": "update.sh",
+      "anchor": "  pm2 delete \"$NAME\" >/dev/null 2>&1 || true\n  if ! pm2_named_process_is_absent; then",
+      "replacement": "  # failed target deletion accidentally omitted\n  if ! pm2_named_process_is_absent; then"
+    },
+    {
+      "name": "rollback treats a stale positive PM2 pid record as absent",
+      "file": "update.sh",
+      "anchor": "    [ \"$pid\" = \"0\" ] && continue\n    return 1",
+      "replacement": "    [ \"$pid\" = \"0\" ] && continue\n    [[ \"$pid\" =~ ^[1-9][0-9]*$ ]] || return 1\n    lock_process_is_alive \"$pid\" && return 1"
+    },
+    {
+      "name": "rollback changes Git even though the failed service was not proven stopped",
+      "file": "update.sh",
+      "anchor": "  if [ \"$ROLLBACK_SERVICE_STOP_FAILED\" -eq 1 ]; then\n    echo \"✗ Automatic rollback refused before changing Git because the failed service could not be proven stopped.\"\n    echo \"  The failed target remains checked out at $AFTER; no stash was restored.\"\n    if [ -n \"$OWNED_STASH_OID\" ]; then\n      echo \"  Protective stash remains at $OWNED_STASH_OID.\"\n    fi\n    exit 1\n  fi",
+      "replacement": "  # rollback stop-proof gate accidentally omitted"
+    },
+    {
+      "name": "Docker response close-before-end is treated as success",
+      "file": "src/dashboard/docker-self-update.js",
+      "anchor": "    res.once('close', () => {\n      if (!settled) settleReject(new Error(`${label} response closed before end`));\n    });",
+      "replacement": "    res.once('close', () => {});"
+    },
+    {
+      "name": "Docker response abort is ignored",
+      "file": "src/dashboard/docker-self-update.js",
+      "anchor": "    res.once('aborted', () => settleReject(new Error(`${label} response aborted`)));",
+      "replacement": "    res.once('aborted', () => {});"
+    },
+    {
+      "name": "Docker response transport errors are ignored",
+      "file": "src/dashboard/docker-self-update.js",
+      "anchor": "    res.once('error', (error) => settleReject(error));",
+      "replacement": "    res.once('error', () => {});"
+    },
+    {
+      "name": "Docker response body cap is bypassed",
+      "file": "src/dashboard/docker-self-update.js",
+      "anchor": "      if (bytes > maxBytes) {",
+      "replacement": "      if (false) {"
+    },
+    {
+      "name": "Docker pull accepts malformed JSONL records",
+      "file": "src/dashboard/docker-self-update.js",
+      "anchor": "            try { obj = JSON.parse(s); } catch {\n              reject(new Error(`docker pull ${image} returned malformed JSONL`));\n              return;\n            }",
+      "replacement": "            try { obj = JSON.parse(s); } catch { obj = {}; }"
+    },
+    {
+      "name": "Docker pull accepts an incomplete progress-only JSONL stream",
+      "file": "src/dashboard/docker-self-update.js",
+      "anchor": "          if (!lastRecordCompleted) {\n            reject(new Error(`docker pull ${image} returned no terminal success record`));\n            return;\n          }",
+      "replacement": "          if (false) { /* incomplete stream accepted */ }"
+    },
+    {
+      "name": "Docker pull accepts a truly empty JSONL stream",
+      "file": "src/dashboard/docker-self-update.js",
+      "anchor": "          if (!sawRecord) {\n            reject(new Error(`docker pull ${image} returned an empty JSONL stream`));\n            return;\n          }",
+      "replacement": "          if (false) { /* empty stream accepted */ }"
+    },
+    {
+      "name": "Docker pull accepts progress records after an earlier success marker",
+      "file": "src/dashboard/docker-self-update.js",
+      "anchor": "            lastRecordCompleted = hasAuxDigest\n              || /^(?:status:\\s*)?(?:downloaded newer image|image is up to date)(?:\\s+for\\b.*)?$/i.test(status);",
+      "replacement": "            lastRecordCompleted = lastRecordCompleted || hasAuxDigest\n              || /^(?:status:\\s*)?(?:downloaded newer image|image is up to date)(?:\\s+for\\b.*)?$/i.test(status);"
+    },
+    {
+      "name": "Dashboard health polling accepts the old process identity",
+      "file": "src/dashboard/index.html",
+      "anchor": "      return oldPid === null || pid !== oldPid;",
+      "replacement": "      return true;"
+    },
+    {
+      "name": "Dashboard health polling accepts a wrong commit",
+      "file": "src/dashboard/index.html",
+      "anchor": "      if (!isCommitId(expected) || !isCommitId(actual) || !commitsCorrespond) return false;",
+      "replacement": "      if (!isCommitId(expected) || !isCommitId(actual)) return false;"
+    },
+    {
+      "name": "Dashboard health polling coerces a forged string pid",
+      "file": "src/dashboard/index.html",
+      "anchor": "      const pid = h.pid;",
+      "replacement": "      const pid = Number(h.pid);"
+    },
+    {
+      "name": "Dashboard health polling loses full-to-short commit correspondence",
+      "file": "src/dashboard/index.html",
+      "anchor": "        || (abbreviated && (actual.startsWith(expected) || expected.startsWith(actual)));",
+      "replacement": "        || (abbreviated && actual.startsWith(expected));"
+    }
+  ]
+}

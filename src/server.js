@@ -261,6 +261,7 @@ async function route(req, res) {
       commitDate: VERSION_INFO.commitDate,
       branch: VERSION_INFO.branch,
       buildSource: VERSION_INFO.source,
+      pid: process.pid,
       uptime: Math.round(process.uptime()),
       accounts: counts,
     };
