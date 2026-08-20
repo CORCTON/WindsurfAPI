@@ -32,6 +32,7 @@
 把 [Windsurf](https://windsurf.com)（原 Codeium，现 Devin Desktop）的 AI 模型变成**三套标准 API 同时兼容**：
 
 - `POST /v1/chat/completions` — **OpenAI 兼容** 任何 OpenAI SDK 直接用
+- `POST /v1/completions` — **OpenAI 旧 Completions**（非流式；`prompt` 包成一条 user turn，流式请走 chat）
 - `POST /v1/responses` — **OpenAI Responses 兼容**（另有 `GET` / `DELETE /v1/responses/{id}` 读取与删除已存响应，需带身份 header，见下）
 - `POST /v1/messages` — **Anthropic 兼容** Claude Code / Cline / Cursor 直接连
 - `POST /v1beta/models/*` — **Gemini 兼容** 直接对接 Gemini SDK

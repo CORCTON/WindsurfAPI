@@ -2262,6 +2262,12 @@ export async function* streamChat({
   token, signal, timeoutMs, deadlineMs, host, env = process.env, nativeToolCall = false, traceId = null,
   deviceSeed, sessionModelConfig, continuityTrail,
 } = {}) {
+  if (signal?.aborted) {
+    const err = new Error('The operation was aborted');
+    err.name = 'AbortError';
+    err.code = 'ABORT_ERR';
+    throw err;
+  }
   // Idle timeout: socket inactivity. Absolute deadline: total wall-clock from
   // request start — this is the one that catches a stream that keeps dribbling
   // a byte at a time (defeating the idle timer) but never actually completes.

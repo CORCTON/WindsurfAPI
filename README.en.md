@@ -32,6 +32,7 @@
 Turns [Windsurf](https://windsurf.com) (formerly Codeium, now Devin Desktop)'s AI models into **three standard, compatible APIs**:
 
 - `POST /v1/chat/completions` — **OpenAI Compatible** for any OpenAI SDK.
+- `POST /v1/completions` — **OpenAI legacy Completions** (non-stream; `prompt` becomes one user turn — stream via chat).
 - `POST /v1/responses` — **OpenAI Responses Compatible** (plus `GET` / `DELETE /v1/responses/{id}` to retrieve or drop a stored response — these need an identity header, see below).
 - `POST /v1/messages` — **Anthropic Compatible** for direct connection with Claude Code / Cline / Cursor.
 - `POST /v1beta/models/*` — **Gemini Compatible** for direct Gemini SDK use.
