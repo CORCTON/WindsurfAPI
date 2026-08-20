@@ -1289,6 +1289,31 @@ const FIELD = Object.freeze({ CONTENT: 3, FINISH: 5, META: 7, REASONING: 9 });
 // DEVIN_CONNECT_BILLING_TAGS; set it to `off` to decode nothing at all.
 const DEFAULT_BILLING_TAGS = 'cache_read_tokens=5,cache_write_tokens=4';
 
+// Billing scalars are not one protobuf wire type. Token counters are varints;
+// paid ACU arrives as fixed64/double. Read all three numeric encodings so
+// DEVIN_CONNECT_BILLING_TAGS=committed_acu_cost=^22 can see a real double.
+// Default map does NOT include that tag — same class as IMAGE_TAG #4.
+function readNumericProtoField(fields, tag) {
+  for (const f of getAllFields(fields, tag)) {
+    let value = null;
+    if (f.wireType === 0) value = Number(f.value);
+    else if (f.wireType === 1 && f.value.length === 8) value = f.value.readDoubleLE(0);
+    else if (f.wireType === 5 && f.value.length === 4) value = f.value.readFloatLE(0);
+    if (Number.isFinite(value)) return value;
+  }
+  return null;
+}
+
+function fixedWidthDumpEntry(f) {
+  if (f.wireType === 1 && f.value.length === 8) {
+    return { kind: 'fixed64', preview: f.value.readDoubleLE(0), raw: f.value.toString('hex') };
+  }
+  if (f.wireType === 5 && f.value.length === 4) {
+    return { kind: 'fixed32', preview: f.value.readFloatLE(0), raw: f.value.toString('hex') };
+  }
+  return null;
+}
+
 function parseBillingTagMap(env = process.env) {
   const configured = String(env.DEVIN_CONNECT_BILLING_TAGS ?? '').trim();
   if (configured.toLowerCase() === 'off') return null;
@@ -1715,12 +1740,12 @@ export function decodeFrame(payload, opts = {}) {
         // point at the top level without a second env var, and keeps the sub-message
         // default untouched for the tags that were measured there.
         if (tag < 0) continue; // handled in the top-level pass below
-        const f = getField(mf, tag, 0);
-        if (f == null) continue;
+        const value = readNumericProtoField(mf, tag);
+        if (value == null) continue;
         if (key === 'cache_read_tokens' || key === 'cache_write_tokens') {
-          (usage ||= { prompt: prompt ? prompt.value : 0, completion: completion ? completion.value : 0 })[key] = Number(f.value);
+          (usage ||= { prompt: prompt ? prompt.value : 0, completion: completion ? completion.value : 0 })[key] = value;
         } else {
-          (billing ||= {})[key] = Number(f.value);
+          (billing ||= {})[key] = value;
         }
       }
     }
@@ -1745,8 +1770,8 @@ export function decodeFrame(payload, opts = {}) {
   if (opts.billingTags) {
     for (const [key, tag] of Object.entries(opts.billingTags)) {
       if (tag >= 0) continue; // sub-message tags were handled above
-      const f = getField(fields, -tag, 0);
-      if (f == null) continue;
+      const value = readNumericProtoField(fields, -tag);
+      if (value == null) continue;
       if (key === 'cache_read_tokens' || key === 'cache_write_tokens') {
         // Token counts stay usage, wherever they were read from. Routing them into
         // `billing` because of the location they were pinned at would move
@@ -1754,9 +1779,9 @@ export function decodeFrame(payload, opts = {}) {
         // dashboard's cache split — the exact mis-attribution #220 was about.
         // prompt/completion live inside the `if (meta)` block above, so recompute
         // the usage defaults here rather than reference block-scoped locals.
-        (usage ||= { prompt: Number(getField(fields, 2, 0)?.value ?? 0), completion: Number(getField(fields, 3, 0)?.value ?? 0) })[key] = Number(f.value);
+        (usage ||= { prompt: Number(getField(fields, 2, 0)?.value ?? 0), completion: Number(getField(fields, 3, 0)?.value ?? 0) })[key] = value;
       } else {
-        (billing ||= {})[key] = Number(f.value);
+        (billing ||= {})[key] = value;
       }
     }
   }
@@ -1811,6 +1836,10 @@ export function decodeFrame(payload, opts = {}) {
     const subDump = {};
     for (const f of fields) {
       if (f.wireType === 0) frameDump[f.field] = Number(f.value);
+      else if (f.wireType === 1 || f.wireType === 5) {
+        const entry = fixedWidthDumpEntry(f);
+        if (entry) frameDump[f.field] = entry;
+      }
       else if (f.wireType === 2 && f.value.length <= 64) {
         const s = f.value.toString('utf8');
         if (/^[\x20-\x7e]+$/.test(s)) frameDump[f.field] = s; // printable preview only

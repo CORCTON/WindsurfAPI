@@ -25,7 +25,7 @@ describe('K8 — per-account lifetime spend', () => {
     const a = addTestAccount();
     const pub = getAccountPublic(a.id);
     assert.deepEqual(pub.totalSpend, {
-      requests: 0, totalTokens: 0, promptTokens: 0, completionTokens: 0, creditCost: 0,
+      requests: 0, totalTokens: 0, promptTokens: 0, completionTokens: 0, creditCost: 0, acuCost: 0,
     });
   });
 
@@ -51,6 +51,15 @@ describe('K8 — per-account lifetime spend', () => {
     recordAccountSpend(a.apiKey, { total_tokens: 5 }, { creditCost: 0.25 });
     recordAccountSpend(a.apiKey, { total_tokens: 5 });
     assert.equal(getAccountPublic(a.id).totalSpend.creditCost, 0.25);
+  });
+
+  it('accrues fractional acuCost independently from credits', () => {
+    const a = addTestAccount();
+    recordAccountSpend(a.apiKey, { total_tokens: 5 }, { creditCost: 1, acuCost: 0.25 });
+    recordAccountSpend(a.apiKey, { total_tokens: 5 }, { acuCost: 0.25 });
+    const s = getAccountPublic(a.id).totalSpend;
+    assert.equal(s.creditCost, 1);
+    assert.equal(s.acuCost, 0.5);
   });
 
   it('is a safe no-op for an unknown apiKey', () => {
@@ -85,7 +94,7 @@ describe('K8 — per-account lifetime spend', () => {
     const legacy = { id: 'legacy-1', apiKey: 'legacy-key', status: 'active' };
     const restored = __deserializeAccount(legacy);
     assert.deepEqual(restored._totalSpend, {
-      requests: 0, totalTokens: 0, promptTokens: 0, completionTokens: 0, creditCost: 0,
+      requests: 0, totalTokens: 0, promptTokens: 0, completionTokens: 0, creditCost: 0, acuCost: 0,
     });
   });
 });

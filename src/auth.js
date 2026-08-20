@@ -589,7 +589,7 @@ function _serializeAccounts() {
     // zero; losing it is harmless (backoff just restarts) so it's best-effort.
     _breakerStreak: a._breakerStreak || 0,
     // K8: persist the lifetime spend accumulator (monotonic across restarts).
-    _totalSpend: a._totalSpend || { requests: 0, totalTokens: 0, promptTokens: 0, completionTokens: 0, creditCost: 0 },
+    _totalSpend: a._totalSpend || { requests: 0, totalTokens: 0, promptTokens: 0, completionTokens: 0, creditCost: 0, acuCost: 0 },
     // C5: persisted rolling-hour health window (pruned at save time so the
     // file never carries stale/out-of-window events across restarts).
     _health: Array.isArray(a._health) ? pruneHealthWindow(a, Date.now()) : [],
@@ -744,8 +744,9 @@ function _deserializeAccount(a, now = Date.now()) {
           promptTokens: Number(a._totalSpend.promptTokens) || 0,
           completionTokens: Number(a._totalSpend.completionTokens) || 0,
           creditCost: Number(a._totalSpend.creditCost) || 0,
+          acuCost: Number(a._totalSpend.acuCost) || 0,
         }
-      : { requests: 0, totalTokens: 0, promptTokens: 0, completionTokens: 0, creditCost: 0 },
+      : { requests: 0, totalTokens: 0, promptTokens: 0, completionTokens: 0, creditCost: 0, acuCost: 0 },
     // C5: restore the rolling health window; drop anything already out of
     // the 1h window at load so a long-stopped process starts clean.
     _health: Array.isArray(a._health)
@@ -3155,12 +3156,12 @@ export function fullBillableTokens(usage) {
   return Math.max(total, prompt + completion + cacheWrite);
 }
 
-export function recordAccountSpend(apiKey, usage, { creditCost = 0 } = {}) {
+export function recordAccountSpend(apiKey, usage, { creditCost = 0, acuCost = 0 } = {}) {
   if (!apiKey) return;
   const account = accounts.find(a => a.apiKey === apiKey);
   if (!account) return;
   if (!account._totalSpend || typeof account._totalSpend !== 'object') {
-    account._totalSpend = { requests: 0, totalTokens: 0, promptTokens: 0, completionTokens: 0, creditCost: 0 };
+    account._totalSpend = { requests: 0, totalTokens: 0, promptTokens: 0, completionTokens: 0, creditCost: 0, acuCost: 0 };
   }
   const s = account._totalSpend;
   // Clamped for the same reason fullBillableTokens clamps: these are CUMULATIVE counters, so
@@ -3185,6 +3186,7 @@ export function recordAccountSpend(apiKey, usage, { creditCost = 0 } = {}) {
   s.completionTokens += completion;
   s.totalTokens += total;
   s.creditCost += Math.max(0, Number(creditCost) || 0);
+  s.acuCost = (Number(s.acuCost) || 0) + Math.max(0, Number(acuCost) || 0);
   markDirty();
 }
 
@@ -3472,8 +3474,9 @@ function publicAccount(a, now, { view = 'full' } = {}) {
           promptTokens: a._totalSpend.promptTokens || 0,
           completionTokens: a._totalSpend.completionTokens || 0,
           creditCost: a._totalSpend.creditCost || 0,
+          acuCost: a._totalSpend.acuCost || 0,
         }
-      : { requests: 0, totalTokens: 0, promptTokens: 0, completionTokens: 0, creditCost: 0 },
+      : { requests: 0, totalTokens: 0, promptTokens: 0, completionTokens: 0, creditCost: 0, acuCost: 0 },
     capabilities: a.capabilities || {},
     modelRateLimits: a._modelRateLimits ? Object.fromEntries(
       Object.entries(a._modelRateLimits).filter(([, v]) => v > now)
