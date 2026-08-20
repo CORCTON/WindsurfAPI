@@ -377,7 +377,9 @@ exit 0
   it('fails closed when no usable listener probe is available', () => {
     const fixture = makeFixture();
     try {
-      rmSync(join(fixture.stubBin, 'ss'), { force: true });
+      // Keep ss on PATH but unusable. Deleting the stub uncovers host ss
+      // via the trusted fixture PATH, then follows the live :3003 listener.
+      writeExecutable(join(fixture.stubBin, 'ss'), '#!/usr/bin/env bash\nexit 127\n');
       writeExecutable(join(fixture.stubBin, 'lsof'), '#!/usr/bin/env bash\nexit 127\n');
       const result = runUpdate(fixture);
       assert.notEqual(result.status, 0, `${result.stdout}\n${result.stderr}`);

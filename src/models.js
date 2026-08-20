@@ -909,9 +909,11 @@ function isSpecialAgentCatalogEnabled() {
   return backend === 'devin-cli' || process.env.DEVIN_CLI_ENABLED === '1';
 }
 
+// O13: OpenAI `created` is a stable unix-seconds stamp, not per-request now().
+export const MODEL_CREATED = 1704067200;
+
 /** List all models in OpenAI /v1/models format. Hides deprecated models. */
 export function listModels(opts = {}) {
-  const ts = Math.floor(Date.now() / 1000);
   const env = opts.env ?? process.env;
   const specialAgentEnabled = opts.specialAgentEnabled ?? isSpecialAgentCatalogEnabled();
   const includeDisabledSpecialAgent = opts.includeDisabledSpecialAgent
@@ -923,7 +925,7 @@ export function listModels(opts = {}) {
     .map(([id, info]) => ({
       id: info.name,
       object: 'model',
-      created: ts,
+      created: MODEL_CREATED,
       owned_by: info.provider,
       _windsurf_id: id,
       ...(info.backend === 'special_agent' ? {

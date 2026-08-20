@@ -525,6 +525,7 @@ function chatCompletionBody({ id, created, model, messages, text, reasoning = ''
     created,
     model,
     system_fingerprint: systemFingerprint(model),
+    service_tier: 'default',
     choices: [{
       index: 0,
       message,
@@ -542,7 +543,10 @@ function streamFromText({ id, created, model, messages, text, reasoning = '', us
     handler: async (res) => {
       const fp = systemFingerprint(model);
       const send = data => {
-        if (data && data.object === 'chat.completion.chunk' && data.system_fingerprint == null) data.system_fingerprint = fp;
+        if (data && data.object === 'chat.completion.chunk') {
+          if (data.system_fingerprint == null) data.system_fingerprint = fp;
+          if (data.service_tier == null) data.service_tier = 'default';
+        }
         if (!res.writableEnded) res.write(`data: ${JSON.stringify(data)}\n\n`);
       };
       send({ id, object: 'chat.completion.chunk', created, model,
@@ -589,7 +593,10 @@ function streamLiveAcp({ id, created, model, messages, prompt, modelKey, acct, r
     handler: async (res) => {
       const fp = systemFingerprint(model);
       const send = data => {
-        if (data && data.object === 'chat.completion.chunk' && data.system_fingerprint == null) data.system_fingerprint = fp;
+        if (data && data.object === 'chat.completion.chunk') {
+          if (data.system_fingerprint == null) data.system_fingerprint = fp;
+          if (data.service_tier == null) data.service_tier = 'default';
+        }
         if (!res.writableEnded) res.write(`data: ${JSON.stringify(data)}\n\n`);
       };
       const msgSanitizer = new PathSanitizeStream();

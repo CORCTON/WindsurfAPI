@@ -2,6 +2,7 @@
  * OpenAI-compatible HTTP server with multi-account management.
  *
  *   POST /v1/chat/completions       — chat completions
+ *   POST /v1/completions            — OpenAI legacy completions
  *   POST /v1/responses              - OpenAI Responses API
  *   GET  /v1/models                 — list models
  *   POST /auth/login                — add account (email+password / token / api_key)
@@ -24,6 +25,7 @@ import {
 } from './auth.js';
 import { trustedClientIp } from './net-safety.js';
 import { handleChatCompletions, normalizeOpenAIErrorBody } from './handlers/chat.js';
+import { handleCompletions } from './handlers/completions.js';
 import { handleMessages, handleCountTokens, validateMessagesRequest, validateCountTokensRequest } from './handlers/messages.js';
 import { handleGemini, parseGeminiPath } from './handlers/gemini.js';
 import { handleResponses, handleGetResponse, handleDeleteResponse } from './handlers/responses.js';
@@ -617,6 +619,52 @@ async function route(req, res) {
     return;
   }
 
+  if (path === '/v1/completions' && method === 'POST') {
+    if (!isAuthenticated()) {
+      return json(res, 503, {
+        error: { message: 'No active accounts. POST /auth/login to add accounts.', type: 'api_error' },
+      });
+    }
+
+    let body;
+    try { body = JSON.parse(await readBody(req)); } catch (err) {
+      if (sendBodyTooLargeIfNeeded(res, err, 'openai')) return;
+      return json(res, 400, { error: { message: 'Invalid JSON', type: 'invalid_request_error' } });
+    }
+    if (body == null || typeof body !== 'object' || Array.isArray(body)) {
+      return json(res, 400, { error: { message: 'Request body must be a JSON object', type: 'invalid_request_error' } });
+    }
+
+    const reqStartedAt = Date.now();
+    const token = extractToken(req);
+    const callerKey = callerKeyFromRequest(req, token, body);
+    const abortController = new AbortController();
+    res.on('close', () => { if (!res.writableEnded) abortController.abort(); });
+    const result = await handleCompletions(body, {
+      callerKey,
+      nativeBridgeCallerKey: nativeBridgeCallerKeyForRequest(req, token, body, callerKey),
+      signal: abortController.signal,
+      clineCompat,
+      ccCompat,
+    });
+    const processingMs = Date.now() - reqStartedAt;
+    const requestId = 'req_' + randomUUID();
+    const modelHeaders = {
+      'x-request-id': requestId,
+      'openai-model': body.model || '',
+      'openai-processing-ms': String(processingMs),
+      'openai-version': '2020-10-01',
+      'openai-organization': 'org-windsurf-proxy',
+    };
+    for (const [k, v] of Object.entries(modelHeaders)) res.setHeader(k, v);
+    if (result.headers) {
+      for (const [k, v] of Object.entries(result.headers)) res.setHeader(k, v);
+    }
+    normalizeOpenAIErrorBody(result.body, result.status);
+    json(res, result.status, withRequestId(result.status, result.body, requestId));
+    return;
+  }
+
   // v2.0.71 (#121 keh4l): some clients send `/v1/response` (singular)
   // by mistake — this exact alias avoids a confusing 404 and routes to
   // the canonical handler. The plural `/v1/responses` is the spec form.
@@ -976,6 +1024,7 @@ export function startServer() {
   server.listen({ port: config.port, host: bindHost }, () => {
     log.info(`Server on http://${bindHost}:${config.port}`);
     log.info('  POST /v1/chat/completions');
+    log.info('  POST /v1/completions');
     log.info('  POST /v1/responses');
     log.info('  GET  /v1/responses/{id}   (retrieve stored)');
     log.info('  DEL  /v1/responses/{id}');

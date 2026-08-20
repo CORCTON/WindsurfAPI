@@ -1,4 +1,4 @@
-import { listModels } from '../models.js';
+import { listModels, MODEL_CREATED } from '../models.js';
 import {
   resolveConnectSelector, getLiveCatalog, FREE_REACHABLE_SELECTORS,
 } from '../devin-connect-models.js';
@@ -146,7 +146,6 @@ export function handleModels(env = process.env) {
     // in /v1/models, so Codex/clients can't discover them. Keyed by the selector
     // itself; dedup against what listModels already emitted.
     const seen = new Set(data.map((m) => m.id));
-    const ts = Math.floor(Date.now() / 1000);
     // SECOND row producer. The entitlement filter above only governs rows that
     // came from listModels; this loop synthesizes its own, so filtering just the
     // first one left a free-only pool still advertising every live-only paid
@@ -160,7 +159,7 @@ export function handleModels(env = process.env) {
       data.push({
         id,
         object: 'model',
-        created: ts,
+        created: MODEL_CREATED,
         owned_by: row?.provider || 'windsurf',
         _windsurf_id: id,
         _source: 'live_catalog',
@@ -191,7 +190,7 @@ export function handleModels(env = process.env) {
       data.push({
         id: selector,
         object: 'model',
-        created: ts,
+        created: MODEL_CREATED,
         owned_by: 'windsurf',
         _windsurf_id: selector,
         _source: 'free_reachable',

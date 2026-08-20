@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
 
-const dashboard = readFileSync(new URL('../src/dashboard/index.html', import.meta.url), 'utf8');
+const dashboard = readFileSync(new URL('../src/dashboard/index.html', import.meta.url), 'utf8').replaceAll('\r\n', '\n');
 const checkUpdate = dashboard.match(/async checkUpdate\(\) \{[\s\S]*?\n  \},\n\n  async applyUpdate\(\)/)?.[0] || '';
 const applyUpdate = dashboard.match(/async applyUpdate\(\) \{[\s\S]*?\n  \},\n\n  _pollHealthAfterUpdate\(/)?.[0] || '';
 const rollbackUpdate = dashboard.match(/async rollbackUpdate\(\) \{[\s\S]*?\n  \},\n\n  \/\/ Restart the whole gateway/)?.[0] || '';

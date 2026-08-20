@@ -97,11 +97,11 @@ describe('F4 source — request id prefix migrated req- → req_', () => {
   it('no legacy req- prefix remains', () => {
     assert.doesNotMatch(src, /'req-'\s*\+\s*randomUUID/);
   });
-  it('exactly 5 req_ prefixed sites', () => {
+  it('exactly 6 req_ prefixed sites', () => {
     // The count is the point: it fails when a NEW request-id site is added, forcing
     // whoever adds it to confirm the prefix is req_ rather than the legacy req-.
-    // Bumped 4 → 5 for GET/DELETE /v1/responses/{id}, which mints its own id.
-    assert.equal((src.match(/'req_'\s*\+\s*randomUUID/g) || []).length, 5);
+    // Bumped 5 → 6 for POST /v1/completions.
+    assert.equal((src.match(/'req_'\s*\+\s*randomUUID/g) || []).length, 6);
   });
 });
 

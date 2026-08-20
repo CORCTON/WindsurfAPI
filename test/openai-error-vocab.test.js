@@ -131,11 +131,12 @@ describe('O10 source-level — OpenAI-family literals are official', () => {
   it('no bare not_found literal remains', () => {
     assert.doesNotMatch(src, /type: 'not_found'[^_]/);
   });
-  it('the two OpenAI no-account 503 branches use api_error, not auth_error', () => {
+  it('the OpenAI no-account 503 branches use api_error, not auth_error', () => {
     // The shared 401 API-key gate (serves all API families) keeps auth_error;
     // only the OpenAI-family no-account 503s were normalized.
+    // Bumped 2 → 3 for POST /v1/completions.
     const noAccount = src.match(/No active accounts\. POST \/auth\/login to add accounts\.', type: '(\w+)'/g) || [];
-    assert.equal(noAccount.length, 2, 'expected 2 OpenAI-family no-account branches');
+    assert.equal(noAccount.length, 3, 'expected 3 OpenAI-family no-account branches');
     for (const m of noAccount) assert.match(m, /type: 'api_error'/);
   });
 });

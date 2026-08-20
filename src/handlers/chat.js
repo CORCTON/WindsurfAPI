@@ -470,6 +470,34 @@ export function chatStreamError(message, type = 'upstream_error', code = null) {
   return { error: { message: sanitizeText(message || 'Upstream stream error'), type, code } };
 }
 
+// O12: OpenAI chat.completion / chat.completion.chunk bodies carry
+// service_tier next to system_fingerprint. This proxy has no paid-tier
+// routing, so every successful completion reports 'default'. Error
+// bodies are a different shape ({ error }) and must not grow this field.
+const DEFAULT_SERVICE_TIER = 'default';
+
+function applyChatCompletionCompatFields(data, fp) {
+  if (!data || (data.object !== 'chat.completion' && data.object !== 'chat.completion.chunk')) return data;
+  if (fp != null && data.system_fingerprint == null) data.system_fingerprint = fp;
+  if (data.service_tier == null) data.service_tier = DEFAULT_SERVICE_TIER;
+  return data;
+}
+
+function logprobsRequested(value) {
+  if (value == null || value === false || value === 0) return false;
+  if (value === true) return true;
+  const n = Number(value);
+  if (value !== '' && Number.isFinite(n)) return n !== 0;
+  return true;
+}
+
+function topLogprobsRequested(value) {
+  if (value == null || value === false || value === 0) return false;
+  const n = Number(value);
+  if (value !== '' && Number.isFinite(n)) return n > 0;
+  return true;
+}
+
 /**
  * Map a DEVIN_CONNECT classified error code (from devin-connect.js
  * classifyUpstreamError) to the OpenAI-shaped HTTP status + error type. A
@@ -2147,7 +2175,11 @@ let _connectDeps = {
   // (a mutation swapping connectParams.model back to `selector` passed every test).
   assignModel: _assignModel,
 };
-function toChatCompletion(...args) { return _connectDeps.toChatCompletion(...args); }
+async function toChatCompletion(...args) {
+  const out = await _connectDeps.toChatCompletion(...args);
+  if (out?.body) applyChatCompletionCompatFields(out.body);
+  return out;
+}
 function streamChatCompletion(...args) { return _connectDeps.streamChatCompletion(...args); }
 function assignModel(...args) { return _connectDeps.assignModel(...args); }
 export function __setConnectDeps(overrides = {}) { _connectDeps = { ..._connectDeps, ...overrides }; }
@@ -2976,6 +3008,34 @@ async function _handleChatCompletionsInner(body, context = {}) {
     };
   }
 
+  // O7: the upstream never returns token log-probabilities. Chat clients send
+  // a boolean; Completions clients send an integer 0–5. Anything other than
+  // omitted / false / 0 used to 200 with empty choices[].logprobs.
+  if (logprobsRequested(body.logprobs)) {
+    return {
+      status: 400,
+      body: {
+        error: {
+          message: 'This proxy does not support logprobs. The upstream backend does not return token log probabilities, so this proxy rejects them rather than silently dropping them (which would look like they took effect). Omit logprobs, or set it to false / 0.',
+          type: 'invalid_request_error',
+          param: 'logprobs',
+        },
+      },
+    };
+  }
+  if (topLogprobsRequested(body.top_logprobs)) {
+    return {
+      status: 400,
+      body: {
+        error: {
+          message: 'This proxy does not support top_logprobs. The upstream backend does not return token log probabilities, so this proxy rejects them rather than silently dropping them (which would look like they took effect). Omit top_logprobs, or set it to 0.',
+          type: 'invalid_request_error',
+          param: 'top_logprobs',
+        },
+      },
+    };
+  }
+
   // Heavy clients (OpenClaw 24KB, opencode + omo, Cline with full tool
   // catalog) ship system prompts that approach Cascade's ~30KB panel-
   // state ceiling. When that happens upstream intermittently returns
@@ -3555,12 +3615,9 @@ async function _handleChatCompletionsInner(body, context = {}) {
           // 须保留内部词供其 remap。
           const isOpenAIClient = (body.__route || 'chat') === 'chat';
           const send = (data) => {
-            // O9:见 streamResponse 的 send。connect 流的 chunk 由
-            // devin-connect-openai.js 预置 fp(§2.3),此处 == null 守卫防重复注入;
-            // 仅在极少数未预置场景兜底。error 帧不动。
-            if (data && data.object === 'chat.completion.chunk' && data.system_fingerprint == null) {
-              data.system_fingerprint = fp;
-            }
+            // O9/O12: connect 流 chunk 由 adapter 预置 fp；此处幂等补
+            // system_fingerprint 与 service_tier。error 帧不动。
+            applyChatCompletionCompatFields(data, fp);
             if (isOpenAIClient && data && data.error && typeof data.error.type === 'string') {
               data.error.type = normalizeOpenAIErrorType(data.error.type);
             }
@@ -4426,6 +4483,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
       body: {
         id: chatId, object: 'chat.completion', created, model: displayModel,
         system_fingerprint: systemFingerprint(displayModel),
+        service_tier: DEFAULT_SERVICE_TIER,
         choices: [{ index: 0, message, finish_reason: 'stop' }],
         usage: cachedUsage(messages, cached.text),
       },
@@ -5307,6 +5365,7 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
       body: {
         id, object: 'chat.completion', created, model,
         system_fingerprint: systemFingerprint(model),
+        service_tier: DEFAULT_SERVICE_TIER,
         choices: [{ index: 0, message, finish_reason: finishReason }],
         usage,
       },
@@ -5485,11 +5544,9 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
       // messages/gemini/responses 路由须保留内部词供下游 translator remap。
       const isOpenAIClient = (fpOpts?.route || 'chat') === 'chat';
       const send = (data) => {
-        // O9: 给每个 chat.completion.chunk 注入合成 system_fingerprint;error /
-        // usage-only 等其它帧不动。幂等 —— 已带值(如 connect 路径预置)则不覆盖。
-        if (data && data.object === 'chat.completion.chunk' && data.system_fingerprint == null) {
-          data.system_fingerprint = fp;
-        }
+        // O9/O12: 给每个 chat.completion.chunk 注入合成 system_fingerprint 与
+        // service_tier:'default'; error 帧不动。幂等 —— 已带值则不覆盖。
+        applyChatCompletionCompatFields(data, fp);
         if (isOpenAIClient && data && data.error && typeof data.error.type === 'string') {
           data.error.type = normalizeOpenAIErrorType(data.error.type);
         }

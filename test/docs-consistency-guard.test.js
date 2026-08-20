@@ -218,7 +218,7 @@ describe('docs: mutation specs and the gate agree', () => {
     for (const name of readdirSync(dir).filter((n) => n.endsWith('.json'))) {
       const spec = JSON.parse(read(join(dir, name)));
       for (const m of spec.mutations || []) {
-        const target = read(join(ROOT, m.file));
+        const target = read(join(ROOT, m.file)).replaceAll('\r\n', '\n');
         const hits = target.split(m.anchor).length - 1;
         if (hits !== 1) problems.push(`${name} :: hits=${hits} :: ${m.name.slice(0, 70)}`);
       }
