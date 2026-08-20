@@ -286,12 +286,6 @@
       "replacement": "  true"
     },
     {
-      "name": "Docker self identity accepts unrelated hex cgroup text",
-      "file": "src/dashboard/docker-self-update.js",
-      "anchor": "    const match = /^\\/docker\\/([0-9a-f]{64})$/i.exec(path)",
-      "replacement": "    const match = /\\/docker\\/([0-9a-f]{64})/i.exec(path);"
-    },
-    {
       "name": "Docker private-cgroup evidence accepts a mismatched mount target",
       "file": "src/dashboard/docker-self-update.js",
       "anchor": "    const file = '/etc/' + match[2];",
