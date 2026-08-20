@@ -370,9 +370,10 @@ encoded). That's exactly why §8.4/§8.6 are paid-only.
 ### 8.6 Surface prompt-cache tokens in usage
 
 `ModelUsageStats` carries `cache_read_tokens` / `cache_write_tokens` (recon
-verified field names). Absent on free tier (no caching). Once a paid/cached
-capture reveals the tags via §8.5, pin them on the SAME billing-tags var — the
-decoder routes cache_* into `usage` (OpenAI-standard shapes) instead of billing:
+verified field names). Absent on free tier (no caching). Live default already
+pins `5`/`4`; unset `DEVIN_CONNECT_BILLING_TAGS` keeps that map. Set `off` to
+decode nothing. The decoder routes cache_* into `usage` (OpenAI-standard shapes)
+instead of billing:
 
 ```sh
 # Paid-verified (live default): cache_read=5, cache_write=4.
@@ -381,7 +382,8 @@ DEVIN_CONNECT_BILLING_TAGS=cache_read_tokens=5,cache_write_tokens=4
 ```
 
 `usage` then gains `prompt_tokens_details.cached_tokens` (from cache_read) and
-`cache_creation_input_tokens` (from cache_write). Unset = neither key present.
+`cache_creation_input_tokens` (from cache_write). Unset = the cache-only default.
+Set `off` = neither cache key present.
 
 ### 8.7 finish_reason calibration (already live, free-tier safe)
 
@@ -459,8 +461,9 @@ temp cred store + an ephemeral pool account, so the real `accounts.json` /
 
 For router selectors (`adaptive`/`arena-*`, see §8.3) the response carries
 `actual_model_uid` — the concrete model that actually served the turn. Useful to
-verify AssignModel resolved sanely. Tag unknown from free capture; discover via
-§8.5 (it's a top-level STRING field, shows up in the `frame dump` line), then:
+verify AssignModel resolved sanely. It rides the `#7` metadata sub-message at
+inner tag `9` (frame-verified 2026-07-05, paid teams). It is not a top-level
+string. Unset = null. To surface it:
 
 ```sh
 # #7 inner tag 9, frame-verified 2026-07-05 (paid teams). Not top-level #13.
