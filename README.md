@@ -162,9 +162,9 @@ Dashboard：`http://你的IP:3003/dashboard`
 
 ```bash
 cp .env.example .env
-
-# 可选：提前把 language_server_linux_x64 放到 .docker-data/opt/windsurf/ 下
-# 不放也行，容器首次启动时会自动下载到 /opt/windsurf/
+# 空 API_KEY / DASHBOARD_PASSWORD 是 fail-closed（compose 默认 0.0.0.0，起来也是 401）。
+# compose 默认 DEVIN_CONNECT=1，不跑 Language Server，不会自动下载 LS。
+# 只有关掉 DEVIN_CONNECT、走 Cascade 时才会在缺二进制时尝试安装 LS。
 
 docker compose up -d --build
 docker compose logs -f
@@ -234,6 +234,8 @@ bash install-ls.sh
 
 cat > .env << 'EOF'
 PORT=3003
+# Empty API_KEY is fail-closed (401) even on localhost.
+# Local open access: WINDSURFAPI_ALLOW_UNAUTHENTICATED=1 and HOST=127.0.0.1
 API_KEY=
 DEFAULT_MODEL=claude-sonnet-4.6
 MAX_TOKENS=8192
@@ -241,6 +243,7 @@ LOG_LEVEL=info
 LS_BINARY_PATH=/opt/windsurf/language_server_linux_x64
 LS_DATA_DIR=/opt/windsurf/data
 LS_PORT=42100
+# Empty DASHBOARD_PASSWORD is fail-closed. Local open panel: DASHBOARD_ALLOW_NO_AUTH=1
 DASHBOARD_PASSWORD=
 EOF
 
@@ -396,9 +399,10 @@ curl -X DELETE http://localhost:3003/v1/responses/resp_xxx -H "Authorization: Be
 | 变量 | 默认值 | 干嘛的 |
 |---|---|---|
 | `PORT` | `3003` | 服务端口 |
-| `API_KEY` | 空 | 调 API 要带的密钥 留空就不验证 |
+| `API_KEY` | 空 | 调 API 要带的密钥。空=默认 fail-closed（401，本机 bind 也一样）。本机开放需 `WINDSURFAPI_ALLOW_UNAUTHENTICATED=1` 且本机 bind |
+| `WINDSURFAPI_ALLOW_UNAUTHENTICATED` | 关 | 空 `API_KEY` 时放行本机 bind。默认关。公网 bind 即使设了也不放行 |
 | `DATA_DIR` | 项目根目录 | 持久化 JSON 状态和 `logs/` 的目录，Docker 推荐设成 `/data` |
-| `DEFAULT_MODEL` | `claude-sonnet-4.6` | 不传 model 用哪个。必须是当前后端能解析的名字 —— connect 上解析不到的名字会静默降级成免费 selector |
+| `DEFAULT_MODEL` | `claude-sonnet-4.6` | 不传 model 用哪个。必须是当前后端能解析的名字。Connect 上解析不到默认 400 `model_not_found`（`WINDSURFAPI_STRICT_MODEL=0` 才静默降级到免费 selector） |
 | `MAX_TOKENS` | `8192` | 默认最大回复 token 数 |
 | `LOG_LEVEL` | `info` | debug / info / warn / error |
 | `WINDSURFAPI_LEAK_TRACE` | off | 推理/内容边界结构化日志(实验性,默认关闭)。开启后输出 `LEAK_TRACE` 前缀日志:原始流事件所属通道(content/reasoning)、think 标记、截断文本样本、settle 时 content/reasoning 字符数。用于在线抓取模型推理泄漏进 content 通道的问题。字段:channel/blockType/think/sample/len/reqId/account/msgId/contentChars/reasoningChars/rerouted |
@@ -424,11 +428,12 @@ curl -X DELETE http://localhost:3003/v1/responses/resp_xxx -H "Authorization: Be
 | `DEVIN_CLI_MODE` | `print` | `print` 为 `devin -p` 保守模式；`acp` 为实验 ACP stdio 后端，使用账号池上游 Windsurf apiKey 认证，默认不全量启用 |
 | `DEVIN_MAX_PROCS` | `1` | Devin CLI 最大并发进程数，避免 special-agent 路径把内存打爆 |
 | `DEVIN_CLI_USE_ACCOUNT_POOL` | `1` | 默认从 WindsurfAPI 账号池取一个账号并把 apiKey 注入 `WINDSURF_API_KEY`；设 `0` 表示 Devin CLI 自己管理登录态 |
-| `DASHBOARD_PASSWORD` | 空 | 后台密码 留空不设密码 |
+| `DASHBOARD_PASSWORD` | 空 | 后台密码。空=默认 fail-closed（本机 bind 也 401）。本机开放面板需 `DASHBOARD_ALLOW_NO_AUTH=1` |
 | `ALLOW_PRIVATE_PROXY_HOSTS` | 空 | 设为 `1` 允许在代理测试和登录时使用内网 IP（如 `192.168.x.x`、`10.x.x.x`）。默认留空仅允许公网地址 |
 | `CASCADE_REUSE_BY_CALLER` | `0` | 设为 `1` 启用 caller 级别回退复用。指纹未命中时，按 callerKey+model 回退到最近的 cascade。适合单用户 Claude Code 场景 |
 | `CASCADE_POOL_MAX` | `500` | 对话池最大条目数。单用户场景设 `1`–`5` 即可，减少资源占用 |
-| `STICKY_SESSION_ENABLED` | `0` | 设为 `1` 把同一会话固定在同一上游账号。DEVIN_CONNECT 上强烈建议开启：上游 prompt cache 按账号隔离且写入约为读取 10 倍单价，不固定则每轮换号、整段上下文重写。需要 caller 有 per-user 信号（`user` / `safety_identifier` / `prompt_cache_key` / Claude Code `metadata.user_id`）；单用户自部署无这些信号时配 `WINDSURFAPI_SINGLE_TENANT_CACHE=1`。观测：`/dashboard/api/connect-metrics` 的 `sticky` 字段 |
+| `CASCADE_REUSE_HASH_SYSTEM` | `1` | 默认把 system 打进复用指纹。设 `0` 退出（Claude Code 每轮改 cwd 时提高命中率，隔离变弱） |
+| `STICKY_SESSION_ENABLED` | `0` | 设为 `1` 把同一会话固定在同一上游账号。DEVIN_CONNECT 上强烈建议开启：上游 prompt cache 按账号隔离且写入约为读取 5.6 倍单价（`devin-connect.js` 17.8%-of-miss 口径），不固定则每轮换号、整段上下文重写。需要 caller 有 per-user 信号（`user` / `safety_identifier` / `prompt_cache_key` / Claude Code `metadata.user_id`）；单用户自部署无这些信号时配 `WINDSURFAPI_SINGLE_TENANT_CACHE=1`。观测：`/dashboard/api/connect-metrics` 的 `sticky` 字段 |
 | `STICKY_SESSION_TTL_MS` | `1800000` | 绑定 TTL（30 分钟）；活跃会话每轮自动续期 |
 | `STICKY_SESSION_MAX` | `10000` | 绑定表上限，LRU 驱逐 |
 | `RESPONSE_STORE_ENABLED` | `1` | Responses API 服务端会话状态。开启时 `previous_response_id` 可续接上下文(客户端只发新一轮);设 `0` 关闭后带该字段的请求返回 400,`GET`/`DELETE /v1/responses/{id}` 同样返回 400。按 callerKey 隔离:读取与删除与续接同一套作用域,别人的 id 一律 404(不泄漏是否存在)。**这句原本写"租户间不可互读",而那高估了保证的来源** —— 作用域本身**不是机密**:共享一个 API key 时 callerKey 是 `api:{hash(apiKey)}:user:{hash(body.user)}`,而 `user` 常是邮箱或账号 id,即可猜。真正挡住跨读的是 response id 的 **90 bit 熵**(`resp_` + UUIDv4 去横线取前 24 个 hex;96 bit 宽度减去落在切片内的 version/variant 固定位),实测作用域完全正确但 id 猜错一样 `not_found`。所以隔离在实践中成立,但它是"要撞对一个 90 bit 的 id",不是"作用域把租户分开了" —— 别把 `user` 当成访问控制用。**检索/删除没有请求体,身份信号走 header**:`GET /v1/responses/{id}` 带 `x-response-prompt-cache-key: <你 POST 时用的值>`。六种作用域信号都支持:`user` / `prompt_cache_key` / `safety_identifier` / `conversation` / `conversation_id` / `session_id`。**header 名把下划线换成连字符**(`x-response-conversation-id`);query 降级通道两种拼写都接受(`?conversation_id=` 与 `?conversation-id=`,其余多词信号同理)。取值必须与创建该响应时一致,否则 404。**只发一种信号并保持一致** —— 同时发多种不同的作用域信号时它们会被折叠成一个身份,所以多发一种就会改变派生出的 key(这是既有行为,不限于 query 通道)。**query 会被反代/CDN/浏览器历史记录,`user` 常含 PII,优先用 header** |

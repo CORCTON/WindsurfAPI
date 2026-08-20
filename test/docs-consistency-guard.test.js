@@ -511,6 +511,144 @@ describe('docs: version claims match the repository', () => {
     }
     assert.deepEqual(problems, [], `stale version claims in live docs:\n  ${problems.join('\n  ')}`);
   });
+
+  it('the packaged version has a CHANGELOG index row and a release-notes file', () => {
+    // CHANGELOG jumped 3.9.24 → 3.9.21 (missing 22/23) because nothing required
+    // the packaged version to own a notes file. Tag-vs-package.json is only
+    // checked in release.yml after the tag exists, so a bump without notes
+    // stayed green locally. Filename exception: v3.9.22 shipped as
+    // RELEASE_NOTES_v3.9.22.md — historical v-prefix, not a new convention.
+    const pkgVersion = JSON.parse(read(join(ROOT, 'package.json'))).version;
+    const notesDir = join(DOCS, 'releases');
+    const canonical = join(notesDir, `RELEASE_NOTES_${pkgVersion}.md`);
+    const historicalV = join(notesDir, `RELEASE_NOTES_v${pkgVersion}.md`);
+    const notesName = existsSync(canonical)
+      ? `RELEASE_NOTES_${pkgVersion}.md`
+      : existsSync(historicalV)
+        ? `RELEASE_NOTES_v${pkgVersion}.md`
+        : null;
+    assert.ok(
+      notesName,
+      `package.json ${pkgVersion} needs docs/releases/RELEASE_NOTES_${pkgVersion}.md `
+      + '(historical v-prefix is the only exception)',
+    );
+    const changelog = read(join(ROOT, 'CHANGELOG.md'));
+    const escaped = pkgVersion.replace(/\./g, '\\.');
+    assert.match(
+      changelog,
+      new RegExp(`\\[v${escaped}\\]\\(docs/releases/${notesName.replace(/\./g, '\\.')}\\)`),
+      `CHANGELOG.md must index v${pkgVersion} with a link to ${notesName}`,
+    );
+  });
+
+  it('every 3.9.x release-notes file is indexed in CHANGELOG.md', () => {
+    // CHANGELOG says "下面是 3.9.x 全系". Indexing HEAD while skipping
+    // 3.9.22/23 still made the packaged-version and count gates green.
+    const changelog = read(join(ROOT, 'CHANGELOG.md'));
+    const missing = [];
+    for (const name of readdirSync(join(DOCS, 'releases'))) {
+      const m = name.match(/^RELEASE_NOTES_v?(\d+\.\d+\.\d+)\.md$/);
+      if (!m) continue;
+      const [major, minor] = m[1].split('.').map(Number);
+      if (major !== 3 || minor !== 9) continue;
+      if (!changelog.includes(`](docs/releases/${name})`)) missing.push(name);
+    }
+    assert.deepEqual(missing, [], `3.9.x notes not indexed in CHANGELOG.md:\n  ${missing.join('\n  ')}`);
+  });
+
+  it('CHANGELOG release-notes count matches files on disk', () => {
+    // The index said 172 while 175 files sat on disk (22/23 were present but
+    // uncounted). A hand-edited number that is not derived from readdir is the
+    // same class of claim as a stale version string.
+    const files = readdirSync(join(DOCS, 'releases'))
+      .filter((n) => /^RELEASE_NOTES_/.test(n) && n.endsWith('.md'));
+    const changelog = read(join(ROOT, 'CHANGELOG.md'));
+    const m = changelog.match(/发布说明\s*\|\s*\*\*(\d+)\*\*\s*份/);
+    assert.ok(m, 'CHANGELOG.md must state the release-notes count as **N** 份');
+    assert.equal(
+      Number(m[1]),
+      files.length,
+      `CHANGELOG says ${m[1]} notes but docs/releases has ${files.length} RELEASE_NOTES_*.md files`,
+    );
+  });
+});
+
+describe('docs: reader-facing auth defaults match fail-closed code', () => {
+  // validateApiKey() fails closed when API_KEY is empty unless
+  // WINDSURFAPI_ALLOW_UNAUTHENTICATED=1 on a local bind. The README table and
+  // .env.example header used to say empty = open access / disable validation.
+  // Operators who copied that got 401 on the default 0.0.0.0 bind, or an
+  // unauthenticated gateway if they "fixed" it the wrong way.
+  const FORBIDDEN = [
+    /leave empty for open access/i,
+    /leave empty to disable validation/i,
+    /leave empty for no password/i,
+    /留空就不验证/,
+    /留空不设密码/,
+  ];
+
+  it('README and .env.example do not claim empty API_KEY is open access', () => {
+    const hits = [];
+    for (const rel_ of ['.env.example', 'README.md', 'README.en.md']) {
+      const body = read(join(ROOT, rel_));
+      for (const re of FORBIDDEN) {
+        if (re.test(body)) hits.push(`${rel_} matches ${re}`);
+      }
+    }
+    assert.deepEqual(hits, [], `stale open-access claims:\n  ${hits.join('\n  ')}`);
+  });
+
+  it('.env.example names the fail-closed opt-in next to API_KEY', () => {
+    const doc = read(join(ROOT, '.env.example'));
+    assert.match(doc, /WINDSURFAPI_ALLOW_UNAUTHENTICATED/);
+    assert.match(doc, /fail-closed|FAIL-CLOSED|fail closed/i);
+    // Dashboard must not claim API_KEY is the panel secret without the opt-in.
+    const dashBlock = doc.split('========== Dashboard ==========')[1] || '';
+    assert.match(dashBlock, /DASHBOARD_ALLOW_API_KEY_AS_PASSWORD/);
+    assert.doesNotMatch(
+      dashBlock.split('DASHBOARD_PASSWORD=')[0],
+      /accepted as the dashboard secret/i,
+    );
+  });
+
+  it('Windows exe README does not claim packaged runs ship with no secrets', () => {
+    // src/config.js generates API_KEY + DASHBOARD_PASSWORD on first packaged
+    // run and persists them beside the exe. The deploy note used to say the
+    // exe had no auth, which sent operators hunting for a lock that was
+    // already closed.
+    const body = read(join(ROOT, 'deploy', 'windows', 'README.md'));
+    assert.doesNotMatch(body, /内置默认\*\*没有 API_KEY/);
+    assert.match(body, /自动生成/);
+  });
+
+  it('.env.example does not claim CASCADE_REUSE_HASH_SYSTEM defaults off', () => {
+    const doc = read(join(ROOT, '.env.example'));
+    const idx = doc.indexOf('CASCADE_REUSE_HASH_SYSTEM');
+    assert.ok(idx >= 0, 'precondition: HASH_SYSTEM is documented');
+    const window = doc.slice(Math.max(0, idx - 400), idx + 80);
+    assert.doesNotMatch(window, /Already defaults to 0/i);
+    assert.match(window, /Default ON|默认.*开|default ON/i);
+  });
+
+  it('setup.sh writes the same DEFAULT_MODEL as config.js', () => {
+    // setup.sh used to emit claude-4.5-sonnet-thinking, a Cascade-era alias
+    // that is mapped:false on DEVIN_CONNECT and degrades to the free selector.
+    // config.js already defaults to claude-sonnet-4.6 when the env is unset.
+    const setup = read(join(ROOT, 'setup.sh'));
+    const config = read(join(ROOT, 'src', 'config.js'));
+    const configDefault = (config.match(/defaultModel:\s*process\.env\.DEFAULT_MODEL\s*\|\|\s*'([^']+)'/) || [])[1];
+    assert.ok(configDefault, 'precondition: config.js defaultModel fallback is a string literal');
+    assert.match(
+      setup,
+      new RegExp(`DEFAULT_MODEL=${configDefault.replace(/\./g, '\\.')}`),
+      `setup.sh must write DEFAULT_MODEL=${configDefault}`,
+    );
+    assert.doesNotMatch(
+      setup,
+      /DEFAULT_MODEL=claude-4\.5-sonnet-thinking/,
+      'setup.sh must not emit the Connect-unmapped Cascade alias',
+    );
+  });
 });
 
 describe('docs: in-repo anchor links resolve to a real heading', () => {

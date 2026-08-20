@@ -2,7 +2,7 @@
 
 <p align="center">
   <a href="#最近的版本">最近的版本</a> ·
-  <a href="docs/releases/">全部 175 份发布说明</a> ·
+  <a href="docs/releases/">全部 176 份发布说明</a> ·
   <a href="README.md">← 主 README</a>
 </p>
 
@@ -19,9 +19,9 @@
 
 | | |
 |---|---|
-| 发布说明 | **175** 份,v2.0.6 → v3.9.24 |
-| git tag | 186 个 |
-| 当前 | **v3.9.24**(2026-08-20) |
+| 发布说明 | **176** 份,v2.0.6 → v3.9.25 |
+| git tag | 187 个 |
+| 当前 | **v3.9.25**(2026-08-21) |
 | 运行时依赖 | **0** —— 从第一个版本保持到现在 |
 
 ```mermaid
@@ -29,7 +29,7 @@ flowchart LR
     A["v2.0.x<br/>118 个 tag<br/><br/>OpenAI 兼容层成型"]
     B["v3.0 – v3.8<br/><br/>Anthropic / Gemini 前端<br/>Dashboard 与账号池"]
     C["v3.9.0 – v3.9.16<br/><br/>DEVIN_CONNECT 直连<br/>native tool bridge"]
-    D["v3.9.17 – v3.9.24<br/><br/>工具方言 · reasoning 边界<br/>Connect 目录 · ACU opt-in"]
+    D["v3.9.17 – v3.9.25<br/><br/>工具方言 · reasoning 边界<br/>Connect 目录 · ACU opt-in"]
     A --> B --> C --> D
 
     classDef past fill:#8957e522,stroke:#8957e5
@@ -41,6 +41,10 @@ flowchart LR
 ## 最近的版本
 
 下面是 3.9.x 全系。更早的版本请直接翻 [`docs/releases/`](docs/releases/)。
+
+### [v3.9.25](docs/releases/RELEASE_NOTES_3.9.25.md) · 2026-08-21
+
+非流式挂断拆上游（messages / Gemini / Responses）、新安装 `DEFAULT_MODEL=claude-sonnet-4.6`、fail-closed 文档对齐。ACU `^22` 仍默认关。
 
 ### [v3.9.24](docs/releases/RELEASE_NOTES_3.9.24.md) · 2026-08-20
 

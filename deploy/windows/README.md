@@ -9,7 +9,7 @@
   - exe 内置默认:`DEVIN_CONNECT=1`(纯 HTTP 路,不需要 Linux 专用的 language server)、`HOST=127.0.0.1`(仅本机,不暴露局域网)、`PORT=3003`。
   - **所有状态存到 exe 同目录的 `Windsurf_data/` 文件夹**(accounts.json / stats / logs),与程序内部的只读快照隔离。想换位置可在同目录 `.env` 里设 `DATA_DIR=`。
   - **首次运行会自动打开** `http://127.0.0.1:3003/dashboard`(之后启动不再自动开;`WINDSURFAPI_NO_OPEN=1` 可关掉)。
-  - ⚠️ 内置默认**没有 API_KEY / 面板密码**。要加认证,在 exe 同目录放个 `.env` 写 `API_KEY=xxx` 和 `DASHBOARD_PASSWORD=xxx`(或用下面 B 的 `start.bat` 生成一份再拷过来)。
+  - 首次运行若同目录没有 `API_KEY` / `DASHBOARD_PASSWORD`,exe 会**自动生成**强随机值,写入同目录 `.env`,并在控制台打印一次。下次启动沿用,不必手写。要自己设,在 `.env` 里覆盖即可。
   - 关窗口 = 停止。换新版 = 下载新 exe 覆盖,`Windsurf_data/` 与 `.env` 不动。
 
 **B. 源码 + 脚本(需装 Node 20+,零 npm 依赖)** —— 开发/自更新首选,`git pull` 即拉最新。

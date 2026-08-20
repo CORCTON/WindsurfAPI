@@ -59,3 +59,98 @@ describe('every chat-shaped POST route threads bindClientAbort into context.sign
     });
   }
 });
+
+describe('translators forward context.signal into handleChatCompletions', () => {
+  // The route scan above stays green if handleMessages rebuilds effectiveContext
+  // without spreading `...context`. That was the original gap: AbortController
+  // bound at the route, never reaching chat.js. Inject the chat handler — the
+  // translators already accept context.handleChatCompletions / deps.handleChatCompletions.
+  const okChat = (seen) => async (_body, ctx) => {
+    seen.signal = ctx?.signal;
+    return {
+      status: 200,
+      body: {
+        id: 'chatcmpl-abort-probe',
+        object: 'chat.completion',
+        choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+      },
+    };
+  };
+
+  it('messages non-stream forwards signal', async () => {
+    const { handleMessages } = await import('../src/handlers/messages.js');
+    const ac = new AbortController();
+    const seen = {};
+    const result = await handleMessages(
+      { model: 'claude-sonnet-4.6', max_tokens: 16, messages: [{ role: 'user', content: 'hi' }] },
+      { signal: ac.signal, handleChatCompletions: okChat(seen) },
+    );
+    assert.equal(result.status, 200);
+    assert.equal(seen.signal, ac.signal);
+  });
+
+  it('messages forwards signal through the user-scoped effectiveContext rebuild', async () => {
+    // handleMessages rebuilds context when metadata.user_id is present.
+    // Dropping `...context` there would keep the route-scan and the
+    // no-subKey case green while aborting hang-up stopped reaching chat.js.
+    const { handleMessages } = await import('../src/handlers/messages.js');
+    const ac = new AbortController();
+    const seen = {};
+    const result = await handleMessages(
+      {
+        model: 'claude-sonnet-4.6',
+        max_tokens: 16,
+        messages: [{ role: 'user', content: 'hi' }],
+        metadata: { user_id: 'abort-probe-user' },
+      },
+      {
+        signal: ac.signal,
+        callerKey: 'api:abort-probe',
+        handleChatCompletions: okChat(seen),
+      },
+    );
+    assert.equal(result.status, 200);
+    assert.equal(seen.signal, ac.signal);
+  });
+
+  it('gemini non-stream forwards signal', async () => {
+    const { handleGemini } = await import('../src/handlers/gemini.js');
+    const ac = new AbortController();
+    const seen = {};
+    const result = await handleGemini(
+      'gemini-2.5-pro',
+      { contents: [{ role: 'user', parts: [{ text: 'hi' }] }] },
+      { signal: ac.signal, handleChatCompletions: okChat(seen) },
+      { stream: false },
+    );
+    assert.equal(result.status, 200);
+    assert.equal(seen.signal, ac.signal);
+  });
+
+  it('completions forwards signal', async () => {
+    const { handleCompletions } = await import('../src/handlers/completions.js');
+    const ac = new AbortController();
+    const seen = {};
+    const result = await handleCompletions(
+      { model: 'claude-sonnet-4.6', prompt: 'hi' },
+      { signal: ac.signal, handleChatCompletions: okChat(seen) },
+    );
+    assert.equal(result.status, 200);
+    assert.equal(seen.signal, ac.signal);
+  });
+
+  it('responses non-stream forwards signal via deps.context', async () => {
+    const { handleResponses } = await import('../src/handlers/responses.js');
+    const ac = new AbortController();
+    const seen = {};
+    const result = await handleResponses(
+      { model: 'claude-sonnet-4.6', input: 'hi' },
+      {
+        context: { signal: ac.signal, callerKey: 'api:abort-probe' },
+        handleChatCompletions: okChat(seen),
+      },
+    );
+    assert.equal(result.status, 200);
+    assert.equal(seen.signal, ac.signal);
+  });
+});

@@ -137,9 +137,9 @@ Dashboard: `http://YOUR_IP:3003/dashboard`
 
 ```bash
 cp .env.example .env
-
-# Optional: place language_server_linux_x64 under .docker-data/opt/windsurf/
-# If omitted, the container will auto-download it into /opt/windsurf/ on first boot.
+# Empty API_KEY / DASHBOARD_PASSWORD is fail-closed (compose binds 0.0.0.0).
+# Compose defaults to DEVIN_CONNECT=1 — no Language Server, no LS auto-download.
+# LS install on first boot only runs if you turn DEVIN_CONNECT off (Cascade).
 
 docker compose up -d --build
 docker compose logs -f
@@ -211,6 +211,8 @@ bash install-ls.sh
 
 cat > .env << 'EOF'
 PORT=3003
+# Empty API_KEY is fail-closed (401) even on localhost.
+# Local open access: WINDSURFAPI_ALLOW_UNAUTHENTICATED=1 and HOST=127.0.0.1
 API_KEY=
 DEFAULT_MODEL=claude-sonnet-4.6
 MAX_TOKENS=8192
@@ -218,6 +220,7 @@ LOG_LEVEL=info
 LS_BINARY_PATH=/opt/windsurf/language_server_linux_x64
 LS_DATA_DIR=/opt/windsurf/data
 LS_PORT=42100
+# Empty DASHBOARD_PASSWORD is fail-closed. Local open panel: DASHBOARD_ALLOW_NO_AUTH=1
 DASHBOARD_PASSWORD=
 EOF
 
@@ -311,14 +314,15 @@ In your client's settings for **Custom OpenAI Compatible**:
 | Variable | Default | Description |
 |---|---|---|
 | `PORT` | `3003` | Service port |
-| `API_KEY` | empty | API key required for requests. Leave empty to disable validation. |
+| `API_KEY` | empty | Caller key. Empty is fail-closed (401) even on localhost. Local open access requires `WINDSURFAPI_ALLOW_UNAUTHENTICATED=1` on a local bind. |
+| `WINDSURFAPI_ALLOW_UNAUTHENTICATED` | off | Allow empty `API_KEY` on a local bind. Default off. Ignored on a public bind. |
 | `DATA_DIR` | project root | Directory for persisted JSON state and `logs/`. Docker deployments should usually use `/data`. |
 | `CODEIUM_API_KEY` | empty | Direct API key from Windsurf (alternative to token-based auth). |
 | `CODEIUM_AUTH_TOKEN` | empty | Token from [windsurf.com/show-auth-token](https://windsurf.com/show-auth-token). |
 | `CODEIUM_EMAIL` | empty | Email for Windsurf account authentication. |
 | `CODEIUM_PASSWORD` | empty | Password for Windsurf account authentication. |
 | `CODEIUM_API_URL` | `https://server.self-serve.windsurf.com` | Windsurf cloud API endpoint. |
-| `DEFAULT_MODEL` | `claude-sonnet-4.6` | The model to use if `model` is not specified. Must be a name the active backend can resolve — a name Connect cannot resolve silently degrades to the free selector. |
+| `DEFAULT_MODEL` | `claude-sonnet-4.6` | The model to use if `model` is not specified. Must be a name the active backend can resolve. Unmapped Connect names return 400 `model_not_found` unless `WINDSURFAPI_STRICT_MODEL=0` (legacy silent degrade to the free selector). |
 | `MAX_TOKENS` | `8192` | Default maximum number of response tokens. |
 | `LOG_LEVEL` | `info` | debug / info / warn / error |
 | `WINDSURFAPI_IGNORE_CLOUD_FILTER` | `0` | On the Cascade transport, after per-account cloud catalogs sync, pool listings show their union and routing enforces each selected account's catalog. Set to `1` to restore the full static catalog. Missing, empty, or failed catalog syncs fail open. `DEVIN_CONNECT` uses its separate selector catalog. |
@@ -338,14 +342,14 @@ In your client's settings for **Custom OpenAI Compatible**:
 | `DEVIN_CLI_PATH` | `devin` | Devin CLI executable path. Docker/macOS deployments must install or mount it themselves. |
 | `DEVIN_CLI_MODE` | `print` | `print` uses conservative `devin -p`; `acp` is an experimental ACP stdio backend using upstream Windsurf account-pool apiKeys. |
 | `DEVIN_MAX_PROCS` | `1` | Maximum concurrent Devin CLI processes. |
-| `DASHBOARD_PASSWORD` | empty | Dashboard password. Leave empty for no password. |
+| `DASHBOARD_PASSWORD` | empty | Dashboard password. Empty is fail-closed even on localhost. Local open panel requires `DASHBOARD_ALLOW_NO_AUTH=1`. |
 | `ALLOW_PRIVATE_PROXY_HOSTS` | empty | Set to `1` to allow private/internal IPs (e.g., `192.168.x.x`, `10.x.x.x`) in proxy tests and login. Leave empty to only allow public addresses (default). |
 | `CASCADE_REUSE_STRICT` | `0` | Set to `1` for strict conversation reuse mode (waits for same fingerprint). |
 | `CASCADE_REUSE_STRICT_RETRY_MS` | `60000` | Retry delay in ms for strict reuse mode. |
 | `CASCADE_REUSE_HASH_SYSTEM` | `1` | System messages are hashed into the conversation reuse fingerprint by default. Set to `0` to opt out — raises the reuse hit rate for callers whose system prompt drifts every turn (Claude Code with `cwd` snapshots), at the cost of reuse isolation: two requests with different system prompts can then share one pooled conversation. |
 | `CASCADE_REUSE_BY_CALLER` | `0` | Set to `1` to enable caller-based fallback reuse. When fingerprint misses, falls back to the latest cascade for the same caller+model. Best for single-user Claude Code setups. |
 | `CASCADE_POOL_MAX` | `500` | Max conversation pool entries. Set to `1`–`5` for single-user setups to minimize resource usage. |
-| `STICKY_SESSION_ENABLED` | `0` | Set to `1` to pin each conversation to one upstream account. Strongly recommended on DEVIN_CONNECT: upstream prompt caches are per-account and a cache write costs ~10x a read, so without pinning every turn rotates accounts and re-writes the whole context. Requires a per-user signal on the caller (`user` / `safety_identifier` / `prompt_cache_key` / Claude Code `metadata.user_id`); single-user self-hosts without one set `WINDSURFAPI_SINGLE_TENANT_CACHE=1`. Observe via the `sticky` field of `/dashboard/api/connect-metrics`. |
+| `STICKY_SESSION_ENABLED` | `0` | Set to `1` to pin each conversation to one upstream account. Strongly recommended on DEVIN_CONNECT: upstream prompt caches are per-account and a cache write costs ~5.6× a read (`devin-connect.js` 17.8%-of-miss calibration), so without pinning every turn rotates accounts and re-writes the whole context. Requires a per-user signal on the caller (`user` / `safety_identifier` / `prompt_cache_key` / Claude Code `metadata.user_id`); single-user self-hosts without one set `WINDSURFAPI_SINGLE_TENANT_CACHE=1`. Observe via the `sticky` field of `/dashboard/api/connect-metrics`. |
 | `STICKY_SESSION_TTL_MS` | `1800000` | Binding TTL (30 min); active conversations auto-renew each turn. |
 | `STICKY_SESSION_MAX` | `10000` | Binding table cap, LRU-evicted. |
 | `RESPONSE_STORE_ENABLED` | `1` | Responses API server-side conversation state. With it on, `previous_response_id` continues a conversation (the client sends only the new turn); set `0` and such requests get a 400, as do `GET`/`DELETE /v1/responses/{id}`. Scoped by callerKey. Retrieval and deletion use the same scope as chaining: another caller's id always 404s, without revealing whether it exists. **This row used to say "tenants cannot read each other's conversations", which overstated where the guarantee comes from** — the scope is not a secret. Behind one shared API key the callerKey is `api:{hash(apiKey)}:user:{hash(body.user)}`, and `user` is typically an email or account id, i.e. guessable. What actually prevents a cross-read is the **90 bits of entropy in the response id** (`resp_` + a dash-stripped UUIDv4 truncated to 24 hex chars — 96 bits of width less the version/variant bits that fall inside the slice). Measured: with the scope entirely correct but the id wrong, the lookup still returns not_found. So the isolation does hold, but it holds because you have to hit a 90-bit id — not because the scope separates tenants. Do not treat `user` as an access control. **Retrieval/deletion carry no request body, so the identity signal rides a header**: `GET /v1/responses/{id}` with `x-response-prompt-cache-key: <the value you sent on POST>`. All six scope signals work: `user` / `prompt_cache_key` / `safety_identifier` / `conversation` / `conversation_id` / `session_id`. **Header names replace underscores with hyphens** (`x-response-conversation-id`); the query fallback accepts either spelling (`?conversation_id=` and `?conversation-id=`, and likewise for the other multi-word signals). It must match the value used when the response was created, otherwise 404. **Send ONE scope signal and send it consistently** — supplying several different scope signals folds them all into a single identity, so adding one changes the derived key (pre-existing behaviour, not specific to the query channel). **Query strings are logged by reverse proxies, CDNs and browser history and `user` often contains PII — prefer the header.** |

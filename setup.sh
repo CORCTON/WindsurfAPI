@@ -57,8 +57,10 @@ if [ ! -f .env ]; then
     DEVIN_CONNECT_LINE="DEVIN_CONNECT=1"
     RELOGIN_LINE="DEVIN_CONNECT_AUTO_RELOGIN=1"
   fi
-  # Loopback bind for local dev boxes. A non-local bind FAILS CLOSED unless
-  # API_KEY + DASHBOARD_PASSWORD are set, which trips people running from source.
+  # Chat API and dashboard both FAIL CLOSED with empty secrets, even on a
+  # loopback bind ("local bind" is not "no proxy"). Source installs must set
+  # API_KEY + DASHBOARD_PASSWORD, or opt in to local open access:
+  # WINDSURFAPI_ALLOW_UNAUTHENTICATED=1 / DASHBOARD_ALLOW_NO_AUTH=1.
   if [ "$OS" = "Darwin" ]; then
     HOST_LINE="HOST=127.0.0.1"
   else
@@ -67,11 +69,16 @@ if [ ! -f .env ]; then
   cat > .env << ENVEOF
 PORT=3003
 $HOST_LINE
+# Empty API_KEY is fail-closed (401) even on 127.0.0.1.
 API_KEY=
 DATA_DIR=
-DEFAULT_MODEL=claude-4.5-sonnet-thinking
+# Must be a DEVIN_CONNECT-resolvable name. The legacy Cascade alias
+# claude-4.5-sonnet-thinking is mapped:false on Connect and degrades to
+# the free selector. Matches src/config.js when DEFAULT_MODEL is unset.
+DEFAULT_MODEL=claude-sonnet-4.6
 MAX_TOKENS=8192
 LOG_LEVEL=info
+# Empty DASHBOARD_PASSWORD is fail-closed even on localhost.
 DASHBOARD_PASSWORD=
 ALLOW_PRIVATE_PROXY_HOSTS=
 
