@@ -334,9 +334,9 @@ decoded `model_uid` is a sane concrete selector.
 
 ### 8.4 Surface billing cost in usage (credit/acu)
 
-The response carries `credit_cost`/`committed_credit_cost`/`committed_acu_cost`,
-dropped today. These are absent on free tier (zero-valued → not encoded), so the
-tags can only be pinned from a paid response. Once known:
+The response carries `credit_cost`/`committed_credit_cost`/`committed_acu_cost`.
+Cache token tags are default-on (`5`/`4`). ACU `#22` is still opt-in — free-tier
+zeros are omitted on the wire, and live paid reconcile is not in this repo. Once known:
 
 ```sh
 # Default already decodes cache_read_tokens=5,cache_write_tokens=4.
@@ -375,7 +375,9 @@ capture reveals the tags via §8.5, pin them on the SAME billing-tags var — th
 decoder routes cache_* into `usage` (OpenAI-standard shapes) instead of billing:
 
 ```sh
-DEVIN_CONNECT_BILLING_TAGS="credit_cost=6,cache_read_tokens=14,cache_write_tokens=15"
+# Paid-verified (live default): cache_read=5, cache_write=4.
+# Do not copy the pre-calibration guess credit_cost=6 / cache=14/15.
+DEVIN_CONNECT_BILLING_TAGS=cache_read_tokens=5,cache_write_tokens=4
 ```
 
 `usage` then gains `prompt_tokens_details.cached_tokens` (from cache_read) and
@@ -461,7 +463,8 @@ verify AssignModel resolved sanely. Tag unknown from free capture; discover via
 §8.5 (it's a top-level STRING field, shows up in the `frame dump` line), then:
 
 ```sh
-DEVIN_CONNECT_ACTUAL_MODEL_TAG=13   # example — pin the real tag
+# #7 inner tag 9, frame-verified 2026-07-05 (paid teams). Not top-level #13.
+DEVIN_CONNECT_ACTUAL_MODEL_TAG=9
 ```
 
 The streaming `finish` event then carries `actualModel`. It is NOT echoed into

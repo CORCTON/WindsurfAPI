@@ -78,7 +78,7 @@ Two sections are worth reading even though they sit in superseded files:
 
 ### The rest of the handoffs are archive
 
-Newest first. All nine carry a banner naming the current handoff **and** a link back to this
+Newest first. All ten archived files carry a banner naming the current handoff **and** a link back to this
 index, so whichever one you open by accident, you are two clicks from the right place. That is
 worth keeping: **`ls docs/` does not sort chronologically** — `-B.md` sorts before `.md` (so the
 original `08-04` sorts *after* B/C/D/E), and `HANDOFF-2026-08-05.md` has a wrong filename date

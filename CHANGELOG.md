@@ -2,7 +2,7 @@
 
 <p align="center">
   <a href="#最近的版本">最近的版本</a> ·
-  <a href="docs/releases/">全部 172 份发布说明</a> ·
+  <a href="docs/releases/">全部 175 份发布说明</a> ·
   <a href="README.md">← 主 README</a>
 </p>
 
