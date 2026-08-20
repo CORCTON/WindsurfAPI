@@ -160,8 +160,10 @@ free-tier behavior; a sustained spike means the upstream is genuinely saturated
 - **Router models** (`adaptive`, `arena-*`): resolution via AssignModel is built
   but gated OFF (`DEVIN_CONNECT_ASSIGN_MODEL` unset) because the wire tags are
   inferred, not yet calibrated on a paid round-trip. §8 has the enable path.
-- **Billing passthrough** (`credit_cost`/`committed_acu_cost`): decode is built
-  but OFF until the tags are pinned (`DEVIN_CONNECT_BILLING_TAGS` unset). §8.
+- **Billing passthrough**: cache token tags `5`/`4` ship ON by default.
+  `committed_acu_cost` is descriptor-verified as top-level **double field 22**
+  (`leookun/devin-2api` extract) but stays **opt-in** until a paid frame
+  reconciles against official cycle ACU. §8.4.
 - Remaining P1/P2 hardening (hung-stream absolute deadline, quota-vs-tier
   classification, streaming transient-5xx replay, observability counters) are
   filed as backlog — not blockers for a free-tier cutover.
@@ -337,12 +339,14 @@ dropped today. These are absent on free tier (zero-valued → not encoded), so t
 tags can only be pinned from a paid response. Once known:
 
 ```sh
-# .env (tags are EXAMPLES — pin the real ones from a paid capture):
-DEVIN_CONNECT_BILLING_TAGS="credit_cost=6,committed_credit_cost=7,committed_acu_cost=8"
+# Default already decodes cache_read_tokens=5,cache_write_tokens=4.
+# ACU field number/type is in the Language Server descriptor (double #22).
+# Still opt-in: protobuf omits zeros; live paid reconcile is not in this repo.
+DEVIN_CONNECT_BILLING_TAGS=cache_read_tokens=5,cache_write_tokens=4,committed_acu_cost=^22
 ```
 
-`chat()` and the streaming `finish` event then carry a `billing` object. Unset =
-no billing keys, zero behavioral change.
+`^` means top-level of `GetChatMessageResponse`, not the `#7` metadata sub-message.
+Unset `DEVIN_CONNECT_BILLING_TAGS` keeps the cache-only default. Set to `off` to decode nothing.
 
 ### 8.5 Discover unknown metadata tags (the calibration master-key)
 

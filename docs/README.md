@@ -20,8 +20,8 @@ flowchart TD
     Q -->|"ship DEVIN_CONNECT"| CUT["DEVIN-CONNECT-CUTOVER.md<br/>prod is ON, code default is OFF"]
     Q -->|"understand it"| ARCH["review.html<br/>whole-system map"]
     Q -->|"know what was probed"| LED["AUDIT-LEDGER.md<br/>16 rounds, append-only"]
-    Q -->|"maintain it"| HO["HANDOFF-*.md<br/>1 live head + 9 archived"]
-    Q -->|"what changed"| REL["releases/<br/>172 notes, v2.0.6 → v3.9.21"]
+    Q -->|"maintain it"| HO["HANDOFF-*.md<br/>1 live head + 10 archived"]
+    Q -->|"what changed"| REL["releases/<br/>175 notes, v2.0.6 → v3.9.24"]
 
     classDef user fill:#1f6feb22,stroke:#1f6feb
     classDef maint fill:#8957e522,stroke:#8957e5
@@ -62,7 +62,7 @@ flowchart TD
 
 | # | File | Why |
 |---|---|---|
-| 1 | **[HANDOFF-2026-08-06.md](HANDOFF-2026-08-06.md)** | Current state, the still-unfixed list, and what is blocked on someone else. **Unreleased work, when there is any, is described here** — and there is some right now, so read its §6 before assuming the newest tag is what master builds. Read its §1 first (three operational rules that will trip you within minutes), then §4 (the judgement calls worth reusing). Deliberately short: it carries forward only what outlives a version, instead of restating history that already has a conclusion. |
+| 1 | **[HANDOFF-2026-08-20.md](HANDOFF-2026-08-20.md)** | Current state (v3.9.24), what to expose, what is blocked on someone else. Read §1 first (three operational traps), then §2 (public vs never-git). Product tag is v3.9.24; master may have post-tag test-spec commits that OTA will not treat as a release. |
 | 2 | **[AUDIT-LEDGER.md](AUDIT-LEDGER.md)** | Which subsystems were *actually probed*, the conclusion, and where the guard lives. Start with its "怎么读这份文件" section: the file is appended to per round and is **not** organised by topic, so that section is the only reliable entry point. It states its own round count and line-scale — **this row deliberately states neither**, because both belong to a file that grows every round, and the version of this row that did cite a round count went stale twice. |
 | 3 | **[DEVIN-CONNECT-CUTOVER.md](DEVIN-CONNECT-CUTOVER.md)** | Production cutover runbook. `DEVIN_CONNECT` is what production actually runs (the code default is OFF; the deployment sets it), so this is not optional. Paid wire-calibration procedure in §8. |
 
@@ -87,6 +87,7 @@ Trust this list, not the directory listing.
 
 | Handoff | Covers |
 |---|---|
+| [08-06](HANDOFF-2026-08-06.md) | v3.9.20 — Gemini tool-args, then the live head moved here |
 | [08-04-E](HANDOFF-2026-08-04-E.md) | v3.9.17–v3.9.19 — PR #241 merged, the digest ceiling and its missing half, the post-release fan-out review |
 | [08-04-D](HANDOFF-2026-08-04-D.md) | v3.9.15 — #234's last criterion, Cascade stream spend, CI node24 |
 | [08-04-C](HANDOFF-2026-08-04-C.md) | v3.9.14 — #240 budget split |
