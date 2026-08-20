@@ -72,9 +72,9 @@ $HOST_LINE
 # Empty API_KEY is fail-closed (401) even on 127.0.0.1.
 API_KEY=
 DATA_DIR=
-# Must be a DEVIN_CONNECT-resolvable name. The legacy Cascade alias
-# claude-4.5-sonnet-thinking is mapped:false on Connect and degrades to
-# the free selector. Matches src/config.js when DEFAULT_MODEL is unset.
+# Must be a DEVIN_CONNECT-resolvable name. Matches src/config.js when unset.
+# Legacy Cascade alias claude-4.5-sonnet-thinking is mapped:false on Connect:
+# default WINDSURFAPI_STRICT_MODEL=1 returns 400; =0 degrades to free selector.
 DEFAULT_MODEL=claude-sonnet-4.6
 MAX_TOKENS=8192
 LOG_LEVEL=info

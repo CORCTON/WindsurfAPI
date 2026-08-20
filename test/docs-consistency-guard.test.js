@@ -630,6 +630,28 @@ describe('docs: reader-facing auth defaults match fail-closed code', () => {
     assert.match(window, /Default ON|默认.*开|default ON/i);
   });
 
+  it('DEFAULT_MODEL comments do not present silent degrade as the Connect default', () => {
+    // WINDSURFAPI_STRICT_MODEL defaults to 1 → 400 model_not_found. Saying
+    // an unmapped name "degrades to the free selector" without naming the
+    // 400 / STRICT_MODEL=0 opt-out is the same class of lie as empty
+    // API_KEY = open access.
+    const windowAround = (body) => {
+      const idx = body.search(/^[ \t]*#?[ \t]*DEFAULT_MODEL=/m);
+      assert.ok(idx >= 0, 'precondition: DEFAULT_MODEL is declared');
+      return body.slice(Math.max(0, idx - 500), idx + 80);
+    };
+    for (const rel_ of ['.env.example', 'setup.sh']) {
+      const window = windowAround(read(join(ROOT, rel_)));
+      const claimsDegrade = /degrades to the free selector|静默降级|degrades to free selector/i.test(window);
+      if (!claimsDegrade) continue;
+      assert.match(
+        window,
+        /STRICT_MODEL|400/,
+        `${rel_}: silent-degrade wording must name STRICT_MODEL or 400`,
+      );
+    }
+  });
+
   it('setup.sh writes the same DEFAULT_MODEL as config.js', () => {
     // setup.sh used to emit claude-4.5-sonnet-thinking, a Cascade-era alias
     // that is mapped:false on DEVIN_CONNECT and degrades to the free selector.
