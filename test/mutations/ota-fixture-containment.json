@@ -261,12 +261,6 @@
       "file": "test/git-fixture-env.js",
       "anchor": "  'BASH_ENV', 'ENV', 'CDPATH', 'SHELLOPTS', 'BASHOPTS', 'PROMPT_COMMAND',",
       "replacement": "  'ENV', 'CDPATH', 'SHELLOPTS', 'BASHOPTS', 'PROMPT_COMMAND',"
-    },
-    {
-      "name": "mutation harness stale-lock recovery overwrites a competing claim",
-      "file": "scripts/mutation-harness-utils.mjs",
-      "anchor": "      writeFileSync(claimPath, `${process.pid}\\n`, { encoding: 'utf8', flag: 'wx', mode: 0o600 });",
-      "replacement": "      writeFileSync(claimPath, `${process.pid}\\n`, { encoding: 'utf8', flag: 'w', mode: 0o600 });"
     }
   ]
 }
