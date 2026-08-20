@@ -190,7 +190,7 @@ bash install-ls.sh
 # Or specify a custom URL:
 #   bash install-ls.sh --url https://example.com/language_server_linux_x64
 
-# ⚠️ Can't see opus-4.7 / other new models?
+# ⚠️ LS binary is old / want a different source?
 # The default download chain now uses the dwgx/windsurf-ls-release public mirror.
 # If the mirror does not cover your platform yet, copy the LS binary out of
 # the Windsurf desktop app bundle:
@@ -203,7 +203,11 @@ bash install-ls.sh
 #   # Install from the local desktop copy:
 #   bash install-ls.sh /path/to/language_server_linux_x64
 #
-# Once swapped, /v1/models will auto-discover the newer catalog from the cloud.
+# Note: swapping the LS binary does not change /v1/models.
+# The catalog is fetched by the proxy over HTTPS (GetCascadeModelConfigs /
+# GetCliModelConfigs). ideVersion is hardcoded in src/windsurf-api.js and is
+# not read from the binary — so the listing depends on what upstream grants
+# this account. A missing new model is an entitlement gap, not a stale file.
 
 cat > .env << 'EOF'
 PORT=3003

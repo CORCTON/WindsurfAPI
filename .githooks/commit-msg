@@ -1,0 +1,20 @@
+#!/bin/sh
+#
+# Refuse AI attribution trailers. The commit must only be signed dwgx.
+# commit-msg receives the path to the message file as $1.
+
+msg_file=$1
+[ -n "$msg_file" ] && [ -f "$msg_file" ] || exit 0
+
+if grep -Eiq 'Co-Authored-By:.*(Claude|Codex|Cursor|Copilot|GPT|OpenAI|Anthropic|Devin|Oz|Grok|xAI)|Generated with (Claude|Devin|Cursor|Copilot|Grok)|Made-with:[[:space:]]*(Cursor|Claude|Grok)' "$msg_file"; then
+  printf '\033[31mcommit-msg: refusing AI attribution in the commit message.\033[0m\n' >&2
+  cat >&2 <<'EOF'
+
+  Commits are signed dwgx only. Strip Co-Authored-By / Generated with …
+  trailers (including ones that rode in on an external PR) before committing.
+
+EOF
+  exit 1
+fi
+
+exit 0

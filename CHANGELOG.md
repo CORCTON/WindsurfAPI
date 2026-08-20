@@ -46,6 +46,14 @@ flowchart LR
 
 Cascade 元数据门、Connect 目录按账号同步、OpenAI 兼容补全(logprobs 400 / completions / 稳定 created)、ACU 解码 opt-in(默认不开 `^22`)。
 
+### [v3.9.23](docs/releases/RELEASE_NOTES_3.9.23.md) · 2026-08-17
+
+SWE-1.7 原生视觉、按账号刷新的在线模型目录、Claude Code system 消息兼容，以及 OTA 更新目标修正。
+
+### [v3.9.22](docs/releases/RELEASE_NOTES_v3.9.22.md) · 2026-08-16
+
+OTA 自更新三件套（tag 门禁 + 失败回滚 + UI）+ 工具族三个已知缺陷。文件名带 `v` 前缀，是历史拼名，不是新版本。
+
 ### [v3.9.21](docs/releases/RELEASE_NOTES_3.9.21.md) · 2026-08-08
 
 一份 16 条的外部审计清单,作者明确说明**自己没有验证过任何一条**。逐条裁定后: 11 条修掉,3 条判为"真实但不值得修"并写了理由,2 条本来就已覆盖。**其中 4 条报告把自己的成因说错了** —— 下面按修正后的成因描述。

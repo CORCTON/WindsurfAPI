@@ -125,6 +125,23 @@ function sendBodyTooLargeIfNeeded(res, err, style = 'openai') {
   return true;
 }
 
+/**
+ * Bind an AbortController to the HTTP response so a client hang-up mid-await
+ * tears down the in-flight upstream call.
+ *
+ * Stream translators (messages/gemini/responses) already abort via
+ * captureRes._clientDisconnected. Chat and completions already bound this at
+ * the route. The non-stream await on messages / gemini / responses did not —
+ * hanging up left the upstream running (the same partial-path class as
+ * Retry-After / include_usage). Guard on !writableEnded so a normal end is a
+ * no-op.
+ */
+export function bindClientAbort(res) {
+  const abortController = new AbortController();
+  res.on('close', () => { if (!res.writableEnded) abortController.abort(); });
+  return abortController;
+}
+
 export function extractToken(req) {
   // Anthropic SDK + OAI SDK compatibility: accept either header.
   const authHeader = String(req.headers['authorization'] || '').trim();
@@ -575,12 +592,9 @@ async function route(req, res) {
     // Thread a client-disconnect AbortSignal into the handler context so a
     // caller that hangs up mid-flight tears down the in-flight upstream call
     // and — on the DEVIN_CONNECT path — stops the failover loop from hopping
-    // fresh pooled accounts to a dead socket. The messages/gemini/responses
-    // routes drive their disconnect through their translator fake-res instead;
-    // this is the missing wiring on the direct OpenAI route. Guard on
-    // !writableEnded so the normal end-of-response 'close' is a no-op.
-    const abortController = new AbortController();
-    res.on('close', () => { if (!res.writableEnded) abortController.abort(); });
+    // fresh pooled accounts to a dead socket. Guard on !writableEnded so the
+    // normal end-of-response 'close' is a no-op.
+    const abortController = bindClientAbort(res);
     const result = await handleChatCompletions(body, {
       callerKey,
       nativeBridgeCallerKey: nativeBridgeCallerKeyForRequest(req, token, body, callerKey),
@@ -638,8 +652,7 @@ async function route(req, res) {
     const reqStartedAt = Date.now();
     const token = extractToken(req);
     const callerKey = callerKeyFromRequest(req, token, body);
-    const abortController = new AbortController();
-    res.on('close', () => { if (!res.writableEnded) abortController.abort(); });
+    const abortController = bindClientAbort(res);
     const result = await handleCompletions(body, {
       callerKey,
       nativeBridgeCallerKey: nativeBridgeCallerKeyForRequest(req, token, body, callerKey),
@@ -691,11 +704,13 @@ async function route(req, res) {
     const reqStartedAt = Date.now();
     const token = extractToken(req);
     const callerKey = callerKeyFromRequest(req, token, body);
+    const abortController = bindClientAbort(res);
     const result = await handleResponses(body, {
       context: {
         callerKey,
         nativeBridgeCallerKey: nativeBridgeCallerKeyForRequest(req, token, body, callerKey),
         ccCompat,
+        signal: abortController.signal,
       },
     });
     const processingMs = Date.now() - reqStartedAt;
@@ -866,11 +881,13 @@ async function route(req, res) {
     // accept-as-is when unknown). Passed into context as a seam for future
     // version-gated behavior; the translation layer does not branch on it today.
     const anthropicVersion = resolveAnthropicVersion(req);
+    const abortController = bindClientAbort(res);
     const result = await handleMessages(body, {
       callerKey,
       nativeBridgeCallerKey: nativeBridgeCallerKeyForRequest(req, token, body, callerKey),
       anthropicVersion,
       ccCompat,
+      signal: abortController.signal,
     });
     const requestId = 'req_' + randomUUID();
     const anthropicHeaders = {
@@ -934,9 +951,11 @@ async function route(req, res) {
     const alt = new URL(req.url, 'http://localhost').searchParams.get('alt');
     const token = extractToken(req);
     const callerKey = callerKeyFromRequest(req, token, body);
+    const abortController = bindClientAbort(res);
     const result = await handleGemini(parsed.model, body, {
       callerKey,
       nativeBridgeCallerKey: nativeBridgeCallerKeyForRequest(req, token, body, callerKey),
+      signal: abortController.signal,
     }, { stream: wantStream, alt });
     const geminiHeaders = { 'request-id': 'req_' + randomUUID() };
     if (result.stream) {
