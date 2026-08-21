@@ -1355,6 +1355,20 @@ export function addAccountByKey(apiKey, label = '', apiServerUrl = '') {
 }
 
 /**
+ * Add by whatever the dashboard/API caller pasted. A `devin-session-token$…`
+ * IS the upstream apiKey — RegisterUser only accepts a Firebase idToken and
+ * will 401 "failed to validate Devin token" if we send a session string
+ * there (#257). The OAuth callback already classified; POST /accounts did not.
+ */
+export async function addAccountByPastedSecret(secret, label = '', apiServerUrl = '') {
+  const value = String(secret || '');
+  if (value.startsWith('devin-session-token$')) {
+    return addAccountByKey(value, label, apiServerUrl);
+  }
+  return addAccountByToken(value, label);
+}
+
+/**
  * Add account via auth token.
  */
 export async function addAccountByToken(token, label = '') {

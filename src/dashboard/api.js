@@ -17,7 +17,7 @@ import {
 import { randomUUID } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 import {
-  getAccountList, getAccountCount, getAccountListStats, getAccountPublic, addAccountByKey, addAccountByToken,
+  getAccountList, getAccountCount, getAccountListStats, getAccountPublic, addAccountByKey, addAccountByToken, addAccountByPastedSecret,
   removeAccount, setAccountStatus, resetAccountErrors, updateAccountLabel,
   isAuthenticated, probeAccount, ensureLsForAccount,
   refreshCredits, refreshAllCredits, searchWebForAccount,
@@ -1361,7 +1361,7 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
 
       const account = body.api_key
         ? addAccountByKey(body.api_key, body.label, apiServerUrl)
-        : await addAccountByToken(body.token, body.label);
+        : await addAccountByPastedSecret(body.token, body.label, apiServerUrl);
 
       if (parsedProxy) {
         setAccountProxy(account.id, parsedProxy);
@@ -2537,9 +2537,7 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
       // A devin-session-token$ IS the apiKey — it must go through addAccountByKey,
       // NOT addAccountByToken (which runs RegisterUser and only accepts a Firebase
       // idToken). Route by prefix so both token shapes onboard correctly.
-      const account = classifyToken(token) === 'session'
-        ? addAccountByKey(token, '')
-        : await addAccountByToken(token, '');
+      const account = await addAccountByPastedSecret(token, '');
       scheduleAccountWarmup(account.id);
       completeSession(state);
       return json(res, 200, { success: true, account: { id: account.id, email: account.email, status: account.status } });

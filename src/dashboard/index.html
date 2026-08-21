@@ -4180,7 +4180,10 @@ docker compose up -d --force-recreate</pre>
         const btnEl = document.getElementById('login-btn');
         if (pwEl) pwEl.style.display = '';
         if (btnEl) btnEl.style.display = '';
-        return {};
+        // Do not return {}. addAccount / submitOAuthToken treat a missing
+        // error as toast.addFailed ("Add failed") — the #257 report.
+        const authErr = (data && data.error && (data.error.message || data.error)) || 'Unauthorized';
+        return { success: false, error: authErr };
       }
       // Surface non-2xx failures instead of silently returning error-shaped data
       // as if it were a valid result. Return contract unchanged (still `data`).
