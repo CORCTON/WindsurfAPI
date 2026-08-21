@@ -128,23 +128,17 @@ describe('#257 dashboard add-token after upgrade', () => {
     created.add(captured.body.account.id);
   });
 
-  it('POST /accounts with auth1_ stores it as an apiKey and does not call RegisterUser', async () => {
-    process.env.DASHBOARD_ALLOW_NO_AUTH = '1';
-    config.apiKey = '';
-    config.dashboardPassword = '';
-    configureBindHost('127.0.0.1');
-    const token = `auth1_${'y'.repeat(30)}`;
-    const { res, captured } = mkRes();
-    await handleDashboardApi(
-      'POST',
-      '/accounts',
-      { token, label: 'issue257-auth1' },
-      mkReq({}, '127.0.0.1'),
-      res,
-    );
-    assert.equal(captured.status, 200, JSON.stringify(captured.body));
-    assert.equal(captured.body?.account?.method, 'api_key');
-    created.add(captured.body.account.id);
+  it('addAccountByPastedSecret does not treat auth1_ as a pool apiKey', () => {
+    // Auth1 tokens are exchanged via WindsurfPostAuth (windsurf-login.js).
+    // Storing the raw string as apiKey looks like a successful add and then
+    // every chat request 401s. Session prefix and sk- are the only local keys.
+    const src = readFileSync(join(ROOT, 'src', 'auth.js'), 'utf8');
+    const start = src.indexOf('export async function addAccountByPastedSecret');
+    const end = src.indexOf('export async function addAccountByToken');
+    const fn = src.slice(start, end);
+    assert.match(fn, /kind === 'session'/);
+    assert.match(fn, /startsWith\('sk-'\)/);
+    assert.doesNotMatch(fn, /kind === 'auth1'/);
   });
 
   it('POST /batch-import with a session token adds locally and does not call RegisterUser', async () => {

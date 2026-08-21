@@ -1369,10 +1369,11 @@ export async function addAccountByPastedSecret(secret, label = '', apiServerUrl 
     throw err;
   }
   const kind = classifyToken(value);
-  // Session and Auth1 strings ARE the upstream apiKey. sk- pasted into the
-  // Auth Token box is the same shape the API-key field would have stored.
-  // Firebase JWTs stay on RegisterUser (kind === 'refresh').
-  if (kind === 'session' || kind === 'auth1' || value.startsWith('sk-')) {
+  // A devin-session-token$ IS the upstream apiKey. sk- pasted into the Auth
+  // Token box is the same shape the API-key field would have stored.
+  // auth1_ is a PostAuth intermediate (windsurf-login.js), not a pool key —
+  // storing it as apiKey adds a dead row. Firebase JWTs stay on RegisterUser.
+  if (kind === 'session' || value.startsWith('sk-')) {
     return addAccountByKey(value, label, apiServerUrl);
   }
   return addAccountByToken(value, label);
