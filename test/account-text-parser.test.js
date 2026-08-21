@@ -181,6 +181,13 @@ describe('parseAccountText', () => {
     assert.equal(out.accounts.length, 0, 'an unlabelled line must not become a credential');
   });
 
+  it('unwraps a show-auth-token URL line into the tokens bucket', () => {
+    const inner = `devin-session-token$${'u'.repeat(30)}`;
+    const out = parseAccountText(`https://windsurf.com/show-auth-token?token=${encodeURIComponent(inner)}\n`);
+    assert.equal(out.tokens.length, 1);
+    assert.equal(out.tokens[0], inner);
+  });
+
   it('keeps an unpaired token as a bare token rather than dropping it', () => {
     // Silently discarding a credential is the failure mode that reads as "import did
     // nothing", so pin that a token with no preceding email still comes out.

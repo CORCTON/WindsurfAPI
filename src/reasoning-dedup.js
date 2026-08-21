@@ -92,9 +92,23 @@ export function createStreamReasoningDedup({ wantThinking = false } = {}) {
   let seenReasoning = '';
   let held = '';
   let diverged = false;
+  let seenCapped = false;
 
   function noteReasoning(text) {
     if (!text) return;
+    // RSS bound on a default-on path. If we truncate, settle() must not
+    // treat held === capped-prefix as a full-reasoning duplicate — that
+    // would suppress a strict prefix of the real think (content loss).
+    if (seenReasoning.length >= HELD_CAP) {
+      seenCapped = true;
+      return;
+    }
+    const room = HELD_CAP - seenReasoning.length;
+    if (text.length > room) {
+      seenReasoning += text.slice(0, room);
+      seenCapped = true;
+      return;
+    }
     seenReasoning += text;
   }
 
@@ -125,10 +139,12 @@ export function createStreamReasoningDedup({ wantThinking = false } = {}) {
   function settle() {
     if (held) {
       // Verbatim full duplicate is suppressed ONLY when the caller explicitly
-      // requested thinking (wantThinking === true). Standard OpenAI SDK clients
-      // only read delta.content — reasoning_content is invisible to them, so
+      // requested thinking (wantThinking === true) AND seenReasoning was not
+      // truncated. A capped prefix matching held is a strict prefix of the
+      // real think, not a full duplicate. Standard OpenAI SDK clients only
+      // read delta.content — reasoning_content is invisible to them, so
       // suppressing identical content would yield an empty client answer.
-      const suppress = held === seenReasoning && wantThinking;
+      const suppress = held === seenReasoning && wantThinking && !seenCapped;
       const out = suppress ? '' : held;
       held = '';
       return { emit: out, suppressed: suppress };

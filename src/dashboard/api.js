@@ -1381,9 +1381,10 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
   }
 
   // POST /accounts/import-text — smart bulk import. Paste mixed token formats
-  // (session / auth1 / refresh-JWT / labeled pairs); the parser classifies each
-  // and adds via the existing addAccountByToken flow. SECURITY: never logs the
-  // pasted text or any token; results carry only id/email/kind, never raw token.
+  // (session / show-auth-token URL / refresh-JWT / labeled pairs); the parser
+  // classifies each and adds via addAccountByPastedSecret. auth1_ is skipped
+  // (PostAuth intermediate, not a pool key). SECURITY: never logs the pasted
+  // text or any token; results carry only id/email/kind, never raw token.
   if (subpath === '/accounts/import-text' && method === 'POST') {
     try {
       const text = String(body.text || '');
@@ -1398,15 +1399,21 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
       for (const raw of (parsed.tokens || [])) {
         const kind = classifyToken(raw);
         if (kind === 'unknown') { results.skipped.push({ kind, reason: 'unclassified' }); continue; }
+        if (kind === 'auth1') { results.skipped.push({ kind, reason: 'auth1_not_a_pool_key' }); continue; }
         try {
           const acc = await addByKind(raw, '');
           results.added.push({ id: acc.id, email: acc.email, kind });
         } catch (e) { results.failed.push({ kind, error: e.message }); }
       }
       for (const pair of (parsed.tokenPairs || [])) {
+        const pairKind = classifyToken(pair.token);
+        if (pairKind === 'auth1') {
+          results.skipped.push({ kind: pairKind, email: pair.email, reason: 'auth1_not_a_pool_key' });
+          continue;
+        }
         try {
           const acc = await addByKind(pair.token, pair.email || '');
-          results.added.push({ id: acc.id, email: acc.email || pair.email, kind: classifyToken(pair.token) });
+          results.added.push({ id: acc.id, email: acc.email || pair.email, kind: pairKind });
         } catch (e) { results.failed.push({ email: pair.email, error: e.message }); }
       }
       // Email/password accounts need the login flow (batch 2+); record as skipped.

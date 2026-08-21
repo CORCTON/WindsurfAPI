@@ -53,7 +53,9 @@ function acquireLsUseOrThrow(port) {
 
 export function isCascadeTransportError(err) {
   const msg = String(err?.message || err || '');
-  return /pending stream has been canceled|ECONNRESET|ERR_HTTP2|session closed|stream closed|panel state/i.test(msg);
+  const code = String(err?.code || '');
+  return /pending stream has been canceled|ECONNRESET|ERR_HTTP2|session closed|stream closed|panel state/i.test(msg)
+    || /^(ECONNRESET|ERR_HTTP2)/i.test(code);
 }
 
 function markCascadeTransportError(err) {

@@ -280,8 +280,8 @@
     },
     "smartImport": {
       "title": "Smart Import",
-      "desc": "Paste to auto-detect, batch supported. Recognizes Session Token / Auth1 / Firebase Refresh / email-password / labeled pairs, mixable.",
-      "placeholder": "devin-session-token$...  or  auth1_...  or  email----password  — one per line, mixable",
+      "desc": "Paste to auto-detect, batch supported. Recognizes Session Token / show-auth-token URL / Firebase Refresh / email-password / labeled pairs, mixable. auth1_ is an intermediate ticket, not a pool key.",
+      "placeholder": "devin-session-token$...  or  show-auth-token URL  or  email----password  — one per line, mixable",
       "button": "Smart Import",
       "empty": "Paste some tokens or accounts first",
       "importing": "Importing…",
@@ -1367,6 +1367,7 @@
     "ERR_CODEIUM_REGISTER_FAILED": "Codeium registration failed",
     "ERR_HTTP_REFERRER_BLOCKED": "Upstream rejected the request: the server's referrer is restricted for this Firebase API key. Check the login proxy / egress IP, or allow it in the Firebase console.",
     "ERR_AUTH1_TOKEN_MISSING": "Auth1 response missing token",
+    "ERR_AUTH1_NOT_A_POOL_KEY": "auth1_ is a PostAuth intermediate ticket, not a pool key. Finish login or paste a show-auth-token / session token instead.",
     "ERR_POSTAUTH_FAILED": "Windsurf PostAuth failed",
     "ERR_TOKEN_FETCH_FAILED": "Failed to fetch one-time auth token",
     "ERR_FIREBASE_TOKEN_MISSING": "Firebase response missing idToken",

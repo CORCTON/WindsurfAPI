@@ -280,8 +280,8 @@
     },
     "smartImport": {
       "title": "智能导入",
-      "desc": "粘贴即识别,支持批量。自动识别 Session Token / Auth1 / Firebase Refresh / 邮箱密码 / 标签配对,可混合。",
-      "placeholder": "devin-session-token$...  或  auth1_...  或  email----password  每行一个,可混合",
+      "desc": "粘贴即识别,支持批量。自动识别 Session Token / show-auth-token 链接 / Firebase Refresh / 邮箱密码 / 标签配对,可混合。auth1_ 是中间票,不能当池密钥。",
+      "placeholder": "devin-session-token$...  或  show-auth-token 链接  或  email----password  每行一个,可混合",
       "button": "智能导入",
       "empty": "先粘贴一些 token 或账号",
       "importing": "导入中…",
@@ -1367,6 +1367,7 @@
     "ERR_CODEIUM_REGISTER_FAILED": "Codeium 注册失败",
     "ERR_HTTP_REFERRER_BLOCKED": "上游拒绝请求：该 Firebase API Key 限制请求来源，服务器的 referrer 不在白名单内。请检查登录代理 / 出口 IP，或在 Firebase 控制台放行。",
     "ERR_AUTH1_TOKEN_MISSING": "Auth1 回应缺少 token",
+    "ERR_AUTH1_NOT_A_POOL_KEY": "auth1_ 是 PostAuth 中间票,不是池密钥。请走完登录,或改贴 show-auth-token / session token。",
     "ERR_POSTAUTH_FAILED": "Windsurf PostAuth 失败",
     "ERR_TOKEN_FETCH_FAILED": "获取一次性 Auth Token 失败",
     "ERR_FIREBASE_TOKEN_MISSING": "Firebase 回应缺少 idToken",

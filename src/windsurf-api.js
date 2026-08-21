@@ -545,7 +545,11 @@ export async function registerWithFirebaseToken(firebaseToken, opts = {}) {
         }
         return { apiKey, name, apiServerUrl, source };
       }
-      errors.push(`${source}=HTTP ${r.status} ${r.raw?.slice(0, 120) || '(empty)'}`);
+      // Redact first. A real Firebase JWT echoed in JSON is longer than
+      // 120 chars and slice-then-redact leaves `eyJ…` with only one dot,
+      // which misses the JWT regex and leaks into the dashboard toast.
+      const raw = redactCredentialFragments(r.raw || '').slice(0, 120);
+      errors.push(`${source}=HTTP ${r.status} ${raw || '(empty)'}`);
     } catch (e) {
       errors.push(`${source}=${e.message}`);
     }

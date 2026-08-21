@@ -13,7 +13,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { config } from '../src/config.js';
-import { configureBindHost, addAccountByKey, getAccountList, removeAccount, _resetLockoutForTests } from '../src/auth.js';
+import { configureBindHost, addAccountByKey, addAccountByPastedSecret, getAccountList, removeAccount, _resetLockoutForTests } from '../src/auth.js';
 import { handleDashboardApi } from '../src/dashboard/api.js';
 import { setRuntimeApiKey, setRuntimeDashboardPassword } from '../src/runtime-config.js';
 import { classifyToken } from '../src/dashboard/account-text-parser.js';
@@ -128,17 +128,16 @@ describe('#257 dashboard add-token after upgrade', () => {
     created.add(captured.body.account.id);
   });
 
-  it('addAccountByPastedSecret does not treat auth1_ as a pool apiKey', () => {
+  it('addAccountByPastedSecret rejects auth1_ without storing a key or calling RegisterUser', async () => {
     // Auth1 tokens are exchanged via WindsurfPostAuth (windsurf-login.js).
     // Storing the raw string as apiKey looks like a successful add and then
-    // every chat request 401s. Session prefix and sk- are the only local keys.
-    const src = readFileSync(join(ROOT, 'src', 'auth.js'), 'utf8');
-    const start = src.indexOf('export async function addAccountByPastedSecret');
-    const end = src.indexOf('export async function addAccountByToken');
-    const fn = src.slice(start, end);
-    assert.match(fn, /kind === 'session'/);
-    assert.match(fn, /startsWith\('sk-'\)/);
-    assert.doesNotMatch(fn, /kind === 'auth1'/);
+    // every chat request 401s. Sending it to RegisterUser is a confusing 400.
+    const before = snapshotIds();
+    await assert.rejects(
+      () => addAccountByPastedSecret(`auth1_${'x'.repeat(40)}`),
+      (err) => err && err.code === 'ERR_AUTH1_NOT_A_POOL_KEY',
+    );
+    assert.deepEqual(snapshotIds(), before);
   });
 
   it('POST /batch-import with a session token adds locally and does not call RegisterUser', async () => {
@@ -173,6 +172,14 @@ describe('#257 dashboard add-token after upgrade', () => {
 });
 
 describe('#257 UI maps a 401 add to the generic Add failed toast', () => {
+  it('stale-epoch drops do not return a bare {} that loadAccounts would paint', () => {
+    const html = readFileSync(join(ROOT, 'src', 'dashboard', 'index.html'), 'utf8');
+    const start = html.indexOf('if ((this._authEpoch || 0) !== epochAtStart)');
+    assert.ok(start >= 0);
+    const block = html.slice(start, html.indexOf('const data = await r.json()', start));
+    assert.match(block, /return \{ success: false, error: 'stale' \}/);
+  });
+
   it('the dashboard 401 handler returns success:false with the Unauthorized error', () => {
     // _apiRaw on 401 returns {}. submitOAuthToken / addAccount then see
     // !r.success and r.error === undefined → translateError falls through
@@ -187,7 +194,18 @@ describe('#257 UI maps a 401 add to the generic Add failed toast', () => {
 
   it('loadAccounts does not paint an empty table when the GET is a failed auth', () => {
     const html = readFileSync(join(ROOT, 'src', 'dashboard', 'index.html'), 'utf8');
-    assert.match(html, /d\.success === false && !Array\.isArray\(d\.accounts\)/);
+    assert.match(html, /!Array\.isArray\(d\?\.accounts\)/);
+  });
+
+  it('sketch dashboard uses the same fail-closed 401 and loadAccounts guards', () => {
+    const html = readFileSync(join(ROOT, 'src', 'dashboard', 'index-sketch.html'), 'utf8');
+    const start = html.indexOf('if (r.status === 401)');
+    assert.ok(start >= 0);
+    const block = html.slice(start, html.indexOf('if (r.status === 429)', start));
+    assert.match(block, /success:\s*false/);
+    assert.match(block, /error:\s*authErr/);
+    assert.match(html, /!Array\.isArray\(d\?\.accounts\)/);
+    assert.doesNotMatch(html, /if \(r\.status === 401\)[\s\S]{0,200}return \{\}/);
   });
 
   it('429 and fetch-throw also return success:false with an error field', () => {

@@ -31,10 +31,10 @@
  *      grep_search_v2, find, list_directory) the planner emits back into
  *      the caller's original OpenAI tool name (Read, Bash, Grep, Glob, ...).
  *
- *   3. When ANY tool the caller declared cannot be mapped, the entire
- *      request falls back to the existing emulation path. Mixed mapped/
- *      unmapped requests are not split — partial native coverage would
- *      confuse the planner about which tools it actually has.
+ *   3. Partition (v2.0.66): mapped tools go through trajectory-step
+ *      injection; unmapped tools keep the emulation preamble. Both can
+ *      coexist on one request. `all_mapped` mode still refuses mixed sets.
+ *      The file-top "fall back entirely" rule is the old v2.0.65 gate.
  *
  * Activation:
  *   WINDSURFAPI_NATIVE_TOOL_BRIDGE=1
@@ -1203,6 +1203,8 @@ export function parseNativeFunctionCallsFromText(text, callerLookup = new Map())
  * bridge mode. It withholds any partial block from content deltas until a
  * closing </function_calls> arrives, then converts it to OpenAI tool_calls.
  */
+const NATIVE_XML_BODY_MAX = 65_536;
+
 export class NativeFunctionCallStreamParser {
   constructor(callerLookup = new Map()) {
     this.callerLookup = callerLookup;
@@ -1241,7 +1243,9 @@ export class NativeFunctionCallStreamParser {
       const tail = this.buffer.slice(open);
       const closeMatch = tail.match(/<\/function_calls>/i);
       if (!closeMatch) {
-        if (flush) {
+        if (flush || tail.length > NATIVE_XML_BODY_MAX) {
+          // Incomplete native XML is dropped (existing flush policy). The
+          // cap stops unbounded RSS if the close tag never arrives.
           this.buffer = '';
         } else {
           this.buffer = tail;

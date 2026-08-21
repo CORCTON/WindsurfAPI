@@ -58,6 +58,12 @@ describe('stream error protocol', () => {
     });
   });
 
+  it('classifies ECONNRESET on err.code even when the message looks like auth', () => {
+    const err = Object.assign(new Error('unauthenticated'), { code: 'ECONNRESET' });
+    assert.equal(isCascadeTransportError(err), true);
+    assert.equal(isCascadeTransportError(new Error('unauthenticated')), false);
+  });
+
   it('classifies Cascade HTTP/2 cancellation as upstream transient', () => {
     const err = new Error('The pending stream has been canceled (caused by: )');
     assert.equal(isCascadeTransportError(err), true);

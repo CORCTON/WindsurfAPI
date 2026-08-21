@@ -155,11 +155,22 @@ describe('reasoning-dedup (incremental)', () => {
     assert.equal(d.release(), '');
   });
 
+  it('seenReasoning cap — a truncated think must not suppress a 1 MiB strict prefix', () => {
+    const d = createStreamReasoningDedup({ wantThinking: true });
+    const prefix = 'a'.repeat(1024 * 1024);
+    d.noteReasoning(prefix + 'TAIL-NOT-IN-CAP');
+    assert.deepEqual(d.feed(prefix), { emit: '', hold: true });
+    // Real reasoning continues past the cap. settle() must RELEASE, not
+    // treat the capped prefix as a verbatim full duplicate.
+    assert.deepEqual(d.settle(), { emit: prefix, suppressed: false });
+  });
+
   it('held cap — crossing HELD_CAP latches divergence and flushes instead of holding an unbounded buffer', () => {
     const d = createStreamReasoningDedup();
     const big = 'a'.repeat(1024 * 1024 + 1);
     d.noteReasoning(big + 'tail');
-    // Candidate exceeds the 1 MiB cap while still a prefix of the reasoning.
+    // Candidate exceeds the 1 MiB held cap (seenReasoning itself is also
+    // capped at HELD_CAP, so this is no longer a prefix — either way we flush).
     assert.deepEqual(d.feed(big), { emit: big, hold: false });
     // Divergence latched: even a matching chunk passes through now.
     assert.deepEqual(d.feed('a'), { emit: 'a', hold: false });

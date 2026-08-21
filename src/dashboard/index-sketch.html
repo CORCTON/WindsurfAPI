@@ -2208,13 +2208,21 @@ const App = {
     if (body) opts.body = JSON.stringify(body);
     try {
       const r = await fetch('/dashboard/api' + path, opts);
-      const data = await r.json();
+      const data = await r.json().catch(() => ({}));
       if (r.status === 401) {
-        document.getElementById('login-overlay').classList.remove('hidden');
-        return {};
+        document.getElementById('login-overlay')?.classList.remove('hidden');
+        const authErr = (data && data.error && (data.error.message || data.error)) || 'Unauthorized';
+        return { success: false, error: authErr };
+      }
+      if (r.status === 429) {
+        const lockErr = (data && data.error && (data.error.message || data.error)) || 'Too many failed attempts';
+        return { success: false, error: lockErr };
       }
       return data;
-    } catch (e) { this.toast(e.message, 'error'); return {}; }
+    } catch (e) {
+      this.toast(e.message, 'error');
+      return { success: false, error: e.message || 'network_error' };
+    }
   },
 
   poll(key, fn, ms) {
@@ -2728,6 +2736,8 @@ const App = {
       this.api('GET', '/accounts'),
       this.api('GET', '/overview').catch(() => null),
     ]);
+    // Same fail-closed as index.html: 401/429/offline must not wipe the table.
+    if (!Array.isArray(d?.accounts)) return;
     const instances = ov?.langServer?.instances || [];
     const poolCard = document.getElementById('ls-pool-card');
     if (poolCard) {

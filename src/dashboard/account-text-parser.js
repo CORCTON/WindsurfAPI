@@ -1,6 +1,6 @@
 // Smart account-text parser — ported from xinghuo-windsurf accountTextParser.js
 // (users own project). Pure string parsing, no network. Recognizes mixed formats:
-// devin-session-token$ / auth1_ / Firebase-refresh-JWT / email----password /
+// devin-session-token$ / show-auth-token URL / Firebase-refresh-JWT / email----password /
 // labeled pairs (邮箱:xxx + Token:auth1_xxx). CommonJS→ESM: exports at bottom.
 'use strict';
 
@@ -242,6 +242,20 @@ function parseAccountText(content) {
           password: mapResult[1],
           totpSecret: mapResult[2]
         });
+        continue;
+      }
+    }
+    if (/^https?:\/\//i.test(trimResult2)) {
+      try {
+        const inner = unwrapPastedSecret(trimResult2);
+        if (looksLikeToken(inner)) {
+          arr5.push({
+            type: "token",
+            raw: inner
+          });
+          continue;
+        }
+      } catch {
         continue;
       }
     }

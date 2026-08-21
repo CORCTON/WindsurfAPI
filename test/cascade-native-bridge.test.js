@@ -4,8 +4,8 @@
 //   1. canMapAllTools correctly admits supported tools and rejects mixed/
 //      unknown sets so emulation fallback fires.
 //   2. Forward + reverse argument translators round-trip per known tool.
-//   3. shouldUseNativeBridge auto-on heuristic fires for GPT/responses,
-//      stays off for Claude/Gemini and for unmapped tools.
+//   3. shouldUseNativeBridge is default-off (auto-on was removed). Explicit
+//      WINDSURFAPI_NATIVE_TOOL_BRIDGE=1 / all_mapped still work; OFF wins.
 //   4. buildAdditionalStepsFromHistory produces decodable trajectory step
 //      protos when prior assistant tool_calls + tool results are present.
 //   5. windsurf.parseTrajectorySteps surfaces native cascade step kinds
@@ -83,7 +83,7 @@ describe('canMapAllTools', () => {
   });
 });
 
-describe('shouldUseNativeBridge — auto-on heuristic', () => {
+describe('shouldUseNativeBridge — default-off + explicit gates', () => {
   const tools = [fnTool('Read'), fnTool('Bash')];
 
   it('GPT family on /v1/responses route → OFF (v2.0.70 reverts auto-on for GPT — cascade native grammar makes GPT fabricate)', () => {
@@ -192,8 +192,10 @@ describe('shouldUseNativeBridge — auto-on heuristic', () => {
     }
   });
 
-  it('OFF override beats auto-on', () => {
+  it('OFF override beats explicit on', () => {
+    const onOrig = process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE;
     const offOrig = process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE_OFF;
+    process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE = '1';
     process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE_OFF = '1';
     try {
       assert.equal(
@@ -201,6 +203,8 @@ describe('shouldUseNativeBridge — auto-on heuristic', () => {
         false,
       );
     } finally {
+      if (onOrig === undefined) delete process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE;
+      else process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE = onOrig;
       if (offOrig === undefined) delete process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE_OFF;
       else process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE_OFF = offOrig;
     }
@@ -343,6 +347,26 @@ describe('parseNativeFunctionCallsFromText', () => {
     assert.equal(b.text, ' suffix');
     assert.equal(b.toolCalls.length, 1);
     assert.deepEqual(JSON.parse(b.toolCalls[0].argumentsJson), { file_path: 'a.txt' });
+  });
+
+  it('stream parser drops an incomplete XML block once it exceeds 64KiB', () => {
+    const lookup = buildReverseLookup([fnTool('Read')]);
+    const parser = new NativeFunctionCallStreamParser(lookup);
+    parser.feed('<function_calls><invoke name="read_file">');
+    const overflow = parser.feed('x'.repeat(70_000));
+    assert.deepEqual(overflow, { text: '', toolCalls: [] });
+    assert.equal(parser.buffer, '');
+    const later = parser.feed('after-cap text');
+    assert.equal(later.text, 'after-cap text');
+  });
+
+  it('stream parser does not drop a large content delta that is not an XML block', () => {
+    const lookup = buildReverseLookup([fnTool('Read')]);
+    const parser = new NativeFunctionCallStreamParser(lookup);
+    const body = 'plain '.repeat(20_000);
+    const out = parser.feed(body);
+    assert.equal(out.text, body);
+    assert.equal(out.toolCalls.length, 0);
   });
 
   it('stream parser drops incomplete XML on flush', () => {

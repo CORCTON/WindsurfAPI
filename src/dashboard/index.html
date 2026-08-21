@@ -2617,8 +2617,8 @@ tbody tr:hover td { background: var(--surface-2); }
         <div id="local-windsurf-result" style="margin-top:12px"></div>
         <div style="margin-top:18px;border-top:1px solid var(--border);padding-top:14px">
           <div class="section-title" style="font-size:14px" data-i18n="section.smartImport.title">智能导入</div>
-          <div class="text-sm text-muted" style="margin:4px 0 10px" data-i18n="section.smartImport.desc">粘贴即识别,支持批量。自动识别 Session Token / Auth1 / Firebase Refresh / 邮箱密码 / 标签配对,可混合。</div>
-          <textarea id="import-text-area" class="input" rows="5" style="width:100%;font-family:var(--mono);font-size:12px;resize:vertical" data-i18n-placeholder="section.smartImport.placeholder" placeholder="devin-session-token$...  或  auth1_...  或  email----password  每行一个,可混合"></textarea>
+          <div class="text-sm text-muted" style="margin:4px 0 10px" data-i18n="section.smartImport.desc">粘贴即识别,支持批量。自动识别 Session Token / show-auth-token 链接 / Firebase Refresh / 邮箱密码 / 标签配对,可混合。auth1_ 是中间票,不能当池密钥。</div>
+          <textarea id="import-text-area" class="input" rows="5" style="width:100%;font-family:var(--mono);font-size:12px;resize:vertical" data-i18n-placeholder="section.smartImport.placeholder" placeholder="devin-session-token$...  或  show-auth-token 链接  或  email----password  每行一个,可混合"></textarea>
           <div style="margin-top:10px"><button class="btn btn-primary" onclick="App.importAccountsFromText()" data-i18n="section.smartImport.button">智能导入</button></div>
           <div id="import-text-result" style="margin-top:10px"></div>
         </div>
@@ -4152,7 +4152,12 @@ docker compose up -d --force-recreate</pre>
       // Stale-response guard: the auth context changed while this was in flight
       // (password switch / logout) — drop the result so it can't overwrite the
       // new session's view with data fetched under the old credential.
-      if ((this._authEpoch || 0) !== epochAtStart) return {};
+      if ((this._authEpoch || 0) !== epochAtStart) {
+        // Same shape as 401/429/offline. An empty object let loadAccounts
+        // paint an empty table when /overview 401'd first and bumped the
+        // epoch while GET /accounts was still in flight (#257).
+        return { success: false, error: 'stale' };
+      }
       const data = await r.json().catch(() => ({}));
       // 429 = IP brute-force lockout. Blindly continuing (esp. the 15s/30s poll
       // loops + the ~dozen parallel calls each panel fires) hammers the banned
@@ -6550,9 +6555,10 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       this.api('GET', this.accountsListUrl({ tier: this.accountsTier })),
       this.api('GET', '/overview').catch(() => null),
     ]);
-    // 401 / lockout / network: do not paint an empty table over a still-valid
-    // pool (#257). Overlay / toast already told the operator to re-auth.
-    if (d && d.success === false && !Array.isArray(d.accounts)) return;
+    // 401 / lockout / network / stale-epoch: do not paint an empty table
+    // over a still-valid pool (#257). Overlay / toast already told the
+    // operator to re-auth. Any non-array (including `{}`) is a failed GET.
+    if (!Array.isArray(d?.accounts)) return;
     // Reflect persisted tier filter + density on the toolbar controls.
     const tierSel = document.getElementById('accounts-tier-filter');
     if (tierSel && tierSel.value !== this.accountsTier) tierSel.value = this.accountsTier;

@@ -68,13 +68,10 @@ describe('audit #8 — reportError guard excludes wrapped transients', () => {
 
   it('a cascade transport error in an auth shell does NOT penalize', () => {
     // isCascadeTransportError feeds isUpstreamTransientError directly.
+    // Node's net errors put the syscall name on err.code, not always in message.
     const err = Object.assign(new Error('unauthenticated'), { code: 'ECONNRESET' });
-    // Only asserts when the client classifier actually treats it as transport.
-    if (isCascadeTransportError(err)) {
-      assert.equal(wouldReportError(err), false, 'transport error must veto the auth penalty');
-    } else {
-      assert.ok(true, 'not classified as transport by this build — skip');
-    }
+    assert.equal(isCascadeTransportError(err), true);
+    assert.equal(wouldReportError(err), false, 'transport error must veto the auth penalty');
   });
 
   // Note on deadlines: the guard mirrors the sibling ban guard EXACTLY
