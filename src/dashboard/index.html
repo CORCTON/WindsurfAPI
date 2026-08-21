@@ -6550,6 +6550,9 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       this.api('GET', this.accountsListUrl({ tier: this.accountsTier })),
       this.api('GET', '/overview').catch(() => null),
     ]);
+    // 401 / lockout / network: do not paint an empty table over a still-valid
+    // pool (#257). Overlay / toast already told the operator to re-auth.
+    if (d && d.success === false && !Array.isArray(d.accounts)) return;
     // Reflect persisted tier filter + density on the toolbar controls.
     const tierSel = document.getElementById('accounts-tier-filter');
     if (tierSel && tierSel.value !== this.accountsTier) tierSel.value = this.accountsTier;

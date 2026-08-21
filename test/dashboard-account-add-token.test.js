@@ -109,6 +109,44 @@ describe('#257 dashboard add-token after upgrade', () => {
     assert.equal(captured.body.account.email, 'issue257-session');
   });
 
+  it('POST /accounts with a show-auth-token URL extracts the session token', async () => {
+    process.env.DASHBOARD_ALLOW_NO_AUTH = '1';
+    config.apiKey = '';
+    config.dashboardPassword = '';
+    configureBindHost('127.0.0.1');
+    const inner = `devin-session-token$ws-issue257-url-${Date.now()}`;
+    const { res, captured } = mkRes();
+    await handleDashboardApi(
+      'POST',
+      '/accounts',
+      { token: `https://windsurf.com/show-auth-token?token=${encodeURIComponent(inner)}`, label: 'issue257-url' },
+      mkReq({}, '127.0.0.1'),
+      res,
+    );
+    assert.equal(captured.status, 200, JSON.stringify(captured.body));
+    assert.equal(captured.body?.success, true);
+    created.add(captured.body.account.id);
+  });
+
+  it('POST /accounts with auth1_ stores it as an apiKey and does not call RegisterUser', async () => {
+    process.env.DASHBOARD_ALLOW_NO_AUTH = '1';
+    config.apiKey = '';
+    config.dashboardPassword = '';
+    configureBindHost('127.0.0.1');
+    const token = `auth1_${'y'.repeat(30)}`;
+    const { res, captured } = mkRes();
+    await handleDashboardApi(
+      'POST',
+      '/accounts',
+      { token, label: 'issue257-auth1' },
+      mkReq({}, '127.0.0.1'),
+      res,
+    );
+    assert.equal(captured.status, 200, JSON.stringify(captured.body));
+    assert.equal(captured.body?.account?.method, 'api_key');
+    created.add(captured.body.account.id);
+  });
+
   it('POST /batch-import with a session token adds locally and does not call RegisterUser', async () => {
     process.env.DASHBOARD_ALLOW_NO_AUTH = '1';
     config.apiKey = '';
@@ -151,6 +189,11 @@ describe('#257 UI maps a 401 add to the generic Add failed toast', () => {
     const block = html.slice(start, html.indexOf('if (!r.ok)', start));
     assert.match(block, /success:\s*false/);
     assert.match(block, /error:\s*authErr/);
+  });
+
+  it('loadAccounts does not paint an empty table when the GET is a failed auth', () => {
+    const html = readFileSync(join(ROOT, 'src', 'dashboard', 'index.html'), 'utf8');
+    assert.match(html, /d\.success === false && !Array\.isArray\(d\.accounts\)/);
   });
 
   it('429 and fetch-throw also return success:false with an error field', () => {

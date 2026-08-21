@@ -398,6 +398,31 @@ function parseAccountText(content) {
     githubAccounts: arr4
   };
 }
+// Pull a token out of a show-auth-token / OAuth redirect URL. Bare strings
+// pass through. A URL with no token query/hash throws ERR_NO_TOKEN_IN_INPUT
+// so POST /accounts does not send the whole URL to RegisterUser (#257).
+function unwrapPastedSecret(input) {
+  const raw = String(input || '').trim();
+  if (!raw) return '';
+  if (!/^https?:\/\//i.test(raw)) return raw;
+  try {
+    const u = new URL(raw);
+    const pick = (params) => (params.get('access_token') || params.get('token') || params.get('auth_token') || '').trim();
+    const fromQuery = pick(u.searchParams);
+    if (fromQuery) return fromQuery;
+    const frag = u.hash.startsWith('#') ? u.hash.slice(1) : u.hash;
+    if (frag) {
+      const fromHash = pick(new URLSearchParams(frag));
+      if (fromHash) return fromHash;
+    }
+  } catch (e) {
+    if (e && e.code === 'ERR_NO_TOKEN_IN_INPUT') throw e;
+  }
+  const err = new Error('ERR_NO_TOKEN_IN_INPUT');
+  err.code = 'ERR_NO_TOKEN_IN_INPUT';
+  throw err;
+}
+
 function classifyToken(arg1) {
   const trimResult = (arg1 || "").trim();
   if (!trimResult) {
@@ -418,7 +443,7 @@ function classifyToken(arg1) {
   return "unknown";
 }
 
-export { parseAccountText, isValidEmail, looksLikeToken, classifyToken };
+export { parseAccountText, isValidEmail, looksLikeToken, classifyToken, unwrapPastedSecret };
 
 // Whitelabel: decode a devin-session-token$<JWT> payload to harvest email/exp
 // without any network call (ported from devinSessionImporter.js). auth1_ tokens

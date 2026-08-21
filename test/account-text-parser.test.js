@@ -5,6 +5,7 @@ import {
   isValidEmail,
   looksLikeToken,
   parseAccountText,
+  unwrapPastedSecret,
 } from '../src/dashboard/account-text-parser.js';
 
 // WHY THIS FILE EXISTS. account-text-parser.js was one of four src/ files never named in
@@ -64,6 +65,29 @@ describe('classifyToken', () => {
     assert.equal(classifyToken(LONG('this is a sentence ')), 'unknown');
     // `devin-` prefixed but not the session form: explicitly excluded from refresh.
     assert.equal(classifyToken(LONG('devin-something-else-')), 'unknown');
+  });
+});
+
+describe('unwrapPastedSecret', () => {
+  it('passes a bare session token through', () => {
+    assert.equal(unwrapPastedSecret('  devin-session-token$ws-fixture-abc  '), 'devin-session-token$ws-fixture-abc');
+  });
+
+  it('pulls token= out of a show-auth-token URL', () => {
+    const url = 'https://windsurf.com/show-auth-token?token=devin-session-token$ws-fixture-from-url';
+    assert.equal(unwrapPastedSecret(url), 'devin-session-token$ws-fixture-from-url');
+  });
+
+  it('pulls access_token out of a hash fragment', () => {
+    const url = 'https://windsurf.com/windsurf/signin#access_token=devin-session-token$ws-fixture-hash';
+    assert.equal(unwrapPastedSecret(url), 'devin-session-token$ws-fixture-hash');
+  });
+
+  it('throws ERR_NO_TOKEN_IN_INPUT when the URL has no token param', () => {
+    assert.throws(
+      () => unwrapPastedSecret('https://windsurf.com/show-auth-token?state=abc'),
+      /ERR_NO_TOKEN_IN_INPUT/,
+    );
   });
 });
 

@@ -39,6 +39,7 @@ import {
 } from './devin-connect-models.js';
 import { getLsAdmissionStatus, getLsMaintenanceRequests } from './langserver.js';
 import { bumpConnect } from './devin-connect-metrics.js';
+import { classifyToken, unwrapPastedSecret } from './dashboard/account-text-parser.js';
 
 import { join } from 'path';
 // accounts.json lives in the cluster-shared dir so add-account writes from
@@ -1361,8 +1362,17 @@ export function addAccountByKey(apiKey, label = '', apiServerUrl = '') {
  * there (#257). The OAuth callback already classified; POST /accounts did not.
  */
 export async function addAccountByPastedSecret(secret, label = '', apiServerUrl = '') {
-  const value = String(secret || '');
-  if (value.startsWith('devin-session-token$')) {
+  const value = unwrapPastedSecret(secret);
+  if (!value) {
+    const err = new Error('ERR_NO_TOKEN_IN_INPUT');
+    err.code = 'ERR_NO_TOKEN_IN_INPUT';
+    throw err;
+  }
+  const kind = classifyToken(value);
+  // Session and Auth1 strings ARE the upstream apiKey. sk- pasted into the
+  // Auth Token box is the same shape the API-key field would have stored.
+  // Firebase JWTs stay on RegisterUser (kind === 'refresh').
+  if (kind === 'session' || kind === 'auth1' || value.startsWith('sk-')) {
     return addAccountByKey(value, label, apiServerUrl);
   }
   return addAccountByToken(value, label);
