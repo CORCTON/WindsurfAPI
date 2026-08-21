@@ -17,7 +17,7 @@ import {
 import { randomUUID } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 import {
-  getAccountList, getAccountCount, getAccountListStats, getAccountPublic, addAccountByKey, addAccountByToken, addAccountByPastedSecret,
+  getAccountList, getAccountCount, getAccountListStats, getAccountPublic, addAccountByKey, addAccountByPastedSecret,
   removeAccount, setAccountStatus, resetAccountErrors, updateAccountLabel,
   isAuthenticated, probeAccount, ensureLsForAccount,
   refreshCredits, refreshAllCredits, searchWebForAccount,
@@ -1394,9 +1394,7 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
       // token shapes run RegisterUser (addAccountByToken). Route by classified
       // kind so a pasted session token doesn't fail against the Firebase-only
       // RegisterUser path.
-      const addByKind = (tok, label) => classifyToken(tok) === 'session'
-        ? addAccountByKey(tok, label)
-        : addAccountByToken(tok, label);
+      const addByKind = (tok, label) => addAccountByPastedSecret(tok, label);
       for (const raw of (parsed.tokens || [])) {
         const kind = classifyToken(raw);
         if (kind === 'unknown') { results.skipped.push({ kind, reason: 'unclassified' }); continue; }
@@ -2409,7 +2407,7 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
               scheduleAccountWarmup(binding.accountId);
             }
           } else if (item.kind === 'token') {
-            const account = await addAccountByToken(item.token, item.label);
+            const account = await addAccountByPastedSecret(item.token, item.label);
             if (item.proxy) {
               setAccountProxy(account.id, item.proxy);
               scheduleAccountWarmup(account.id);

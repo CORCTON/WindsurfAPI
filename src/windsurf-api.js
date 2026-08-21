@@ -20,7 +20,7 @@
 import http from 'http';
 import https from 'https';
 import { config, log } from './config.js';
-import { safeKeyRef } from './log-safety.js';
+import { redactCredentialFragments, safeKeyRef } from './log-safety.js';
 import { resolveProxyConnectHost } from './net-safety.js';
 
 const SERVER_HOSTS = [
@@ -550,7 +550,7 @@ export async function registerWithFirebaseToken(firebaseToken, opts = {}) {
       errors.push(`${source}=${e.message}`);
     }
   }
-  throw new Error(`RegisterUser failed both endpoints: ${errors.join(' | ')}`);
+  throw new Error(`RegisterUser failed both endpoints: ${redactCredentialFragments(errors.join(' | '))}`);
 }
 
 /**

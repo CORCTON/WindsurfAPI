@@ -65,6 +65,23 @@ describe('registerWithFirebaseToken — dual-path migration (v2.0.57 Fix 1)', ()
     );
   });
 
+  it('does not echo a JWT from the upstream body into the thrown error', async () => {
+    const jwt = `eyJhbGciOiJub25lIn0.${'b'.repeat(40)}.${'c'.repeat(40)}`;
+    const requestFn = async () => ({
+      status: 401,
+      data: { message: `invalid token ${jwt}` },
+      raw: `{"message":"invalid token ${jwt}"}`,
+    });
+    await assert.rejects(
+      () => registerWithFirebaseToken('fbtoken-ws-fixture', { requestFn }),
+      (err) => {
+        assert.match(String(err.message), /both endpoints/i);
+        assert.doesNotMatch(String(err.message), /eyJhbGciOiJub25lIn0/);
+        return true;
+      },
+    );
+  });
+
   it('rejects empty/missing token early', async () => {
     await assert.rejects(() => registerWithFirebaseToken(''), /firebase token required/i);
     await assert.rejects(() => registerWithFirebaseToken(null), /firebase token required/i);

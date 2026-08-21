@@ -4480,7 +4480,7 @@ export async function initAuth() {
   if (config.codeiumAuthToken) {
     for (const token of config.codeiumAuthToken.split(',').map(t => t.trim()).filter(Boolean)) {
       promises.push(
-        addAccountByToken(token).catch(err => log.error(`Token auth failed: ${err.message}`))
+        addAccountByPastedSecret(token).catch(err => log.error(`Token auth failed: ${err.message}`))
       );
     }
   }

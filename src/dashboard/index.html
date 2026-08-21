@@ -4160,7 +4160,8 @@ docker compose up -d --force-recreate</pre>
       // one clear "banned, retry in Ns" overlay instead of spamming.
       if (r.status === 429) {
         this.handleLockout(data.retryAfterMs || (data.error && parseInt(String(data.error).match(/(\d+)s/)?.[1], 10) * 1000) || 0);
-        return {};
+        const lockErr = (data && data.error && (data.error.message || data.error)) || 'Too many failed attempts';
+        return { success: false, error: lockErr };
       }
       if (r.status === 401) {
         // Stale/wrong stored password: drop it so polls stop re-sending a bad
@@ -4191,7 +4192,11 @@ docker compose up -d --force-recreate</pre>
         this.toast((data && data.error && (data.error.message || data.error)) || I18n.t('toast.requestFailed', { status: r.status }), 'error');
       }
       return data;
-    } catch (e) { this.toast(e.message, 'error'); return {}; }
+    } catch (e) {
+      const msg = e.message || 'network_error';
+      this.toast(msg, 'error');
+      return { success: false, error: msg };
+    }
   },
 
   stopAllPolls() {

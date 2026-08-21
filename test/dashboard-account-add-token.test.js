@@ -109,6 +109,27 @@ describe('#257 dashboard add-token after upgrade', () => {
     assert.equal(captured.body.account.email, 'issue257-session');
   });
 
+  it('POST /batch-import with a session token adds locally and does not call RegisterUser', async () => {
+    process.env.DASHBOARD_ALLOW_NO_AUTH = '1';
+    config.apiKey = '';
+    config.dashboardPassword = '';
+    configureBindHost('127.0.0.1');
+    const token = `devin-session-token$ws-issue257-batch-${Date.now()}`;
+    const { res, captured } = mkRes();
+    await handleDashboardApi(
+      'POST',
+      '/batch-import',
+      { text: JSON.stringify([{ token, label: 'issue257-batch' }]), autoAdd: true },
+      mkReq({}, '127.0.0.1'),
+      res,
+    );
+    assert.equal(captured.status, 200, JSON.stringify(captured.body));
+    assert.equal(captured.body?.successCount, 1, JSON.stringify(captured.body));
+    const id = captured.body?.results?.[0]?.account?.id;
+    assert.ok(id);
+    created.add(id);
+  });
+
   it('POST /accounts with a Firebase-shaped JWT still takes the RegisterUser path (mocked by empty token rejection)', async () => {
     // Pin the non-session branch: a JWT is classified refresh, not session, so
     // it must NOT be stored as a raw apiKey. We use an empty-string token to
@@ -130,6 +151,12 @@ describe('#257 UI maps a 401 add to the generic Add failed toast', () => {
     const block = html.slice(start, html.indexOf('if (!r.ok)', start));
     assert.match(block, /success:\s*false/);
     assert.match(block, /error:\s*authErr/);
+  });
+
+  it('429 and fetch-throw also return success:false with an error field', () => {
+    const html = readFileSync(join(ROOT, 'src', 'dashboard', 'index.html'), 'utf8');
+    assert.match(html, /error:\s*lockErr/);
+    assert.match(html, /return \{ success: false, error: msg \}/);
   });
 });
 

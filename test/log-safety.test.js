@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
-import { logHash, safeAccountRef, safeEmailRef, safeKeyRef } from '../src/log-safety.js';
+import { logHash, redactCredentialFragments, safeAccountRef, safeEmailRef, safeKeyRef } from '../src/log-safety.js';
 
 describe('log safety helpers', () => {
   it('keeps log references stable without exposing raw labels', () => {
@@ -20,6 +20,16 @@ describe('log safety helpers', () => {
     assert.doesNotMatch(accountRef, /operator@example\.test/);
     assert.doesNotMatch(emailRef, /operator@example\.test/);
     assert.doesNotMatch(keyRef, /sk-ws-01-secret/);
+  });
+
+  it('redacts session tokens and JWTs from operator-facing error text', () => {
+    const jwt = `${'eyJhbGciOiJub25lIn0'.padEnd(20, 'x')}.${'eyJzdWIiOiJhIn0'.padEnd(20, 'y')}.${'sig'.padEnd(20, 'z')}`;
+    const raw = `failed to validate Devin token: Invalid token ${jwt} and devin-session-token$ws-fixture.abc.def`;
+    const out = redactCredentialFragments(raw);
+    assert.doesNotMatch(out, /eyJhbGciOiJub25lIn0/);
+    assert.doesNotMatch(out, /devin-session-token\$ws-fixture/);
+    assert.match(out, /\[jwt-redacted\]/);
+    assert.match(out, /devin-session-token\$\[redacted\]/);
   });
 
   it('does not reintroduce raw account labels or API key prefixes in sensitive logs', () => {

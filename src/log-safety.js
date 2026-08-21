@@ -23,6 +23,15 @@ export function safeKeyRef(key, prefix = 'key') {
   return `${prefix}Hash=${logHash(key)}`;
 }
 
+// Operator-facing errors (dashboard toast, RegisterUser wrap) used to echo
+// upstream bodies that included the pasted JWT / session string (#257).
+export function redactCredentialFragments(text) {
+  return String(text ?? '')
+    .replace(/devin-session-token\$[A-Za-z0-9._-]+/g, 'devin-session-token$[redacted]')
+    .replace(/auth1_[A-Za-z0-9_-]{8,}/g, 'auth1_[redacted]')
+    .replace(/eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, '[jwt-redacted]');
+}
+
 // Client-supplied strings (model names, selectors) are interpolated straight into
 // log lines. Raw control characters let an authenticated caller forge log records
 // or inject ANSI escape sequences into an operator's terminal, so strip them at
