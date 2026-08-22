@@ -185,7 +185,7 @@ describe('#257 dashboard add-token after upgrade', () => {
     config.apiKey = '';
     config.dashboardPassword = '';
     configureBindHost('127.0.0.1');
-    const inner = `devin-session-token$ws-issue257-apikey-url-${Date.now()}`;
+    const inner = 'devin-session-token$ws-issue257-' + String(Date.now());
     const { res, captured } = mkRes();
     await handleDashboardApi(
       'POST',
