@@ -161,6 +161,84 @@ describe('#257 dashboard add-token after upgrade', () => {
     created.add(id);
   });
 
+  it('POST /accounts api_key with auth1_ does not store a pool key', async () => {
+    process.env.DASHBOARD_ALLOW_NO_AUTH = '1';
+    config.apiKey = '';
+    config.dashboardPassword = '';
+    configureBindHost('127.0.0.1');
+    const before = snapshotIds();
+    const { res, captured } = mkRes();
+    await handleDashboardApi(
+      'POST',
+      '/accounts',
+      { api_key: `auth1_${'x'.repeat(40)}`, label: 'issue257-auth1-as-key' },
+      mkReq({}, '127.0.0.1'),
+      res,
+    );
+    assert.equal(captured.status, 400, JSON.stringify(captured.body));
+    assert.equal(captured.body?.error, 'ERR_AUTH1_NOT_A_POOL_KEY');
+    assert.deepEqual(snapshotIds(), before);
+  });
+
+  it('POST /accounts api_key unwraps a show-auth-token URL', async () => {
+    process.env.DASHBOARD_ALLOW_NO_AUTH = '1';
+    config.apiKey = '';
+    config.dashboardPassword = '';
+    configureBindHost('127.0.0.1');
+    const inner = `devin-session-token$ws-issue257-apikey-url-${Date.now()}`;
+    const { res, captured } = mkRes();
+    await handleDashboardApi(
+      'POST',
+      '/accounts',
+      { api_key: `https://windsurf.com/show-auth-token?token=${encodeURIComponent(inner)}`, label: 'issue257-apikey-url' },
+      mkReq({}, '127.0.0.1'),
+      res,
+    );
+    assert.equal(captured.status, 200, JSON.stringify(captured.body));
+    assert.equal(captured.body?.success, true);
+    created.add(captured.body.account.id);
+    assert.equal(captured.body.account.method, 'api_key');
+  });
+
+  it('POST /accounts api_key still stores an unclassified short key locally', async () => {
+    process.env.DASHBOARD_ALLOW_NO_AUTH = '1';
+    config.apiKey = '';
+    config.dashboardPassword = '';
+    configureBindHost('127.0.0.1');
+    const key = `issue257-plain-${Date.now()}`;
+    assert.equal(classifyToken(key), 'unknown');
+    const { res, captured } = mkRes();
+    await handleDashboardApi(
+      'POST',
+      '/accounts',
+      { api_key: key, label: 'issue257-plain' },
+      mkReq({}, '127.0.0.1'),
+      res,
+    );
+    assert.equal(captured.status, 200, JSON.stringify(captured.body));
+    created.add(captured.body.account.id);
+    assert.equal(captured.body.account.method, 'api_key');
+  });
+
+  it('POST /accounts/import-text reports a token-less URL as failed, not silent zero', async () => {
+    process.env.DASHBOARD_ALLOW_NO_AUTH = '1';
+    config.apiKey = '';
+    config.dashboardPassword = '';
+    configureBindHost('127.0.0.1');
+    const { res, captured } = mkRes();
+    await handleDashboardApi(
+      'POST',
+      '/accounts/import-text',
+      { text: 'https://windsurf.com/show-auth-token?state=abc\n' },
+      mkReq({}, '127.0.0.1'),
+      res,
+    );
+    assert.equal(captured.status, 200, JSON.stringify(captured.body));
+    assert.equal(captured.body?.added?.length, 0);
+    assert.ok(captured.body?.failed?.length >= 1, JSON.stringify(captured.body));
+    assert.match(String(captured.body.failed[0].error || ''), /ERR_NO_TOKEN_IN_INPUT/);
+  });
+
   it('POST /accounts with a Firebase-shaped JWT still takes the RegisterUser path (mocked by empty token rejection)', async () => {
     // Pin the non-session branch: a JWT is classified refresh, not session, so
     // it must NOT be stored as a raw apiKey. We use an empty-string token to
@@ -181,8 +259,8 @@ describe('#257 UI maps a 401 add to the generic Add failed toast', () => {
   });
 
   it('the dashboard 401 handler returns success:false with the Unauthorized error', () => {
-    // _apiRaw on 401 returns {}. submitOAuthToken / addAccount then see
-    // !r.success and r.error === undefined → translateError falls through
+    // _apiRaw on 401 used to return {}. submitOAuthToken / addAccount then saw
+    // !r.success and r.error === undefined → translateError fell through
     // to toast.addFailed ("Add failed" / "添加失败") with no reason.
     const html = readFileSync(join(ROOT, 'src', 'dashboard', 'index.html'), 'utf8');
     const start = html.indexOf('if (r.status === 401)');
@@ -206,6 +284,8 @@ describe('#257 UI maps a 401 add to the generic Add failed toast', () => {
     assert.match(block, /error:\s*authErr/);
     assert.match(html, /!Array\.isArray\(d\?\.accounts\)/);
     assert.doesNotMatch(html, /if \(r\.status === 401\)[\s\S]{0,200}return \{\}/);
+    assert.match(html, /localStorage\.removeItem\('dp'\)/);
+    assert.match(html, /<option value="token" selected>/);
   });
 
   it('429 and fetch-throw also return success:false with an error field', () => {

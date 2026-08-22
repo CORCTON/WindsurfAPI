@@ -1361,7 +1361,7 @@ export function addAccountByKey(apiKey, label = '', apiServerUrl = '') {
  * will 401 "failed to validate Devin token" if we send a session string
  * there (#257). The OAuth callback already classified; POST /accounts did not.
  */
-export async function addAccountByPastedSecret(secret, label = '', apiServerUrl = '') {
+export async function addAccountByPastedSecret(secret, label = '', apiServerUrl = '', opts = {}) {
   const value = unwrapPastedSecret(secret);
   if (!value) {
     const err = new Error('ERR_NO_TOKEN_IN_INPUT');
@@ -1380,6 +1380,13 @@ export async function addAccountByPastedSecret(secret, label = '', apiServerUrl 
     throw err;
   }
   if (kind === 'session' || value.startsWith('sk-')) {
+    return addAccountByKey(value, label, apiServerUrl);
+  }
+  // The dashboard Type=API Key field (and batch-import kind=api_key) still
+  // means "this is a pool key" for unclassified strings. Without this, a
+  // short real apiKey would hit RegisterUser. auth1_ / JWT / session are
+  // classified above and must not take this branch.
+  if (opts && opts.unknownAsKey === true && kind === 'unknown') {
     return addAccountByKey(value, label, apiServerUrl);
   }
   return addAccountByToken(value, label);

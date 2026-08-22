@@ -188,6 +188,19 @@ describe('parseAccountText', () => {
     assert.equal(out.tokens[0], inner);
   });
 
+  it('unwraps a labeled Token: show-auth-token URL', () => {
+    const inner = `devin-session-token$${'L'.repeat(30)}`;
+    const out = parseAccountText(`Token: https://windsurf.com/show-auth-token?token=${encodeURIComponent(inner)}\n`);
+    assert.equal(out.tokens.length, 1, JSON.stringify(out));
+    assert.equal(out.tokens[0], inner);
+  });
+
+  it('keeps a token-less show-auth-token URL in the tokens bucket so import can fail visibly', () => {
+    const out = parseAccountText('https://windsurf.com/show-auth-token?state=abc\n');
+    assert.equal(out.tokens.length, 1, JSON.stringify(out));
+    assert.match(out.tokens[0], /^https:\/\/windsurf\.com\/show-auth-token/);
+  });
+
   it('keeps an unpaired token as a bare token rather than dropping it', () => {
     // Silently discarding a credential is the failure mode that reads as "import did
     // nothing", so pin that a token with no preceding email still comes out.

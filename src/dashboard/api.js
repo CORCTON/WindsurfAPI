@@ -1360,7 +1360,7 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
       }
 
       const account = body.api_key
-        ? addAccountByKey(body.api_key, body.label, apiServerUrl)
+        ? await addAccountByPastedSecret(body.api_key, body.label, apiServerUrl, { unknownAsKey: true })
         : await addAccountByPastedSecret(body.token, body.label, apiServerUrl);
 
       if (parsedProxy) {
@@ -1398,7 +1398,10 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
       const addByKind = (tok, label) => addAccountByPastedSecret(tok, label);
       for (const raw of (parsed.tokens || [])) {
         const kind = classifyToken(raw);
-        if (kind === 'unknown') { results.skipped.push({ kind, reason: 'unclassified' }); continue; }
+        if (kind === 'unknown' && !/^https?:\/\//i.test(String(raw))) {
+          results.skipped.push({ kind, reason: 'unclassified' });
+          continue;
+        }
         if (kind === 'auth1') { results.skipped.push({ kind, reason: 'auth1_not_a_pool_key' }); continue; }
         try {
           const acc = await addByKind(raw, '');
@@ -2426,7 +2429,7 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
               account: { id: account.id, email: account.email, status: account.status },
             };
           } else if (item.kind === 'api_key') {
-            const account = addAccountByKey(item.apiKey, item.label, item.apiServerUrl || '');
+            const account = await addAccountByPastedSecret(item.apiKey, item.label, item.apiServerUrl || '', { unknownAsKey: true });
             if (item.proxy) {
               setAccountProxy(account.id, item.proxy);
               scheduleAccountWarmup(account.id);

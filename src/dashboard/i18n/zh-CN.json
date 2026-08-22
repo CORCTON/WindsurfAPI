@@ -1368,6 +1368,8 @@
     "ERR_HTTP_REFERRER_BLOCKED": "上游拒绝请求：该 Firebase API Key 限制请求来源，服务器的 referrer 不在白名单内。请检查登录代理 / 出口 IP，或在 Firebase 控制台放行。",
     "ERR_AUTH1_TOKEN_MISSING": "Auth1 回应缺少 token",
     "ERR_AUTH1_NOT_A_POOL_KEY": "auth1_ 是 PostAuth 中间票,不是池密钥。请走完登录,或改贴 show-auth-token / session token。",
+    "ERR_NO_TOKEN_IN_INPUT": "这段粘贴里没有 token。请贴 session、API Key，或带 token= 的 show-auth-token 链接。",
+    "ERR_IMPORT_TEXT_EMPTY": "粘贴内容为空。",
     "ERR_POSTAUTH_FAILED": "Windsurf PostAuth 失败",
     "ERR_TOKEN_FETCH_FAILED": "获取一次性 Auth Token 失败",
     "ERR_FIREBASE_TOKEN_MISSING": "Firebase 回应缺少 idToken",

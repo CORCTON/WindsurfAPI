@@ -1758,7 +1758,7 @@ window._firebaseOAuth = async function(provider) {
       </div>
       <div class="frame">
         <div class="field-row">
-          <div class="field"><label class="field-label">Type</label><select class="select" id="acc-type"><option value="api_key">API Key</option><option value="token">Token</option></select></div>
+          <div class="field"><label class="field-label">Type</label><select class="select" id="acc-type"><option value="token" selected>Token</option><option value="api_key">API Key</option></select></div>
           <div class="field" style="flex:3"><label class="field-label">Key / Token</label><input class="input" id="acc-key" placeholder="paste here"></div>
           <div class="field"><label class="field-label">Label (optional)</label><input class="input" id="acc-label" placeholder="my-laptop"></div>
         </div>
@@ -2210,6 +2210,10 @@ const App = {
       const r = await fetch('/dashboard/api' + path, opts);
       const data = await r.json().catch(() => ({}));
       if (r.status === 401) {
+        this.password = null;
+        try { localStorage.removeItem('dp'); } catch {}
+        Object.values(this.pollers).forEach(clearInterval);
+        this.pollers = {};
         document.getElementById('login-overlay')?.classList.remove('hidden');
         const authErr = (data && data.error && (data.error.message || data.error)) || 'Unauthorized';
         return { success: false, error: authErr };

@@ -248,16 +248,19 @@ function parseAccountText(content) {
     if (/^https?:\/\//i.test(trimResult2)) {
       try {
         const inner = unwrapPastedSecret(trimResult2);
-        if (looksLikeToken(inner)) {
-          arr5.push({
-            type: "token",
-            raw: inner
-          });
-          continue;
-        }
+        arr5.push({
+          type: "token",
+          raw: inner
+        });
       } catch {
-        continue;
+        // Keep the URL so import-text reports failed (ERR_NO_TOKEN_IN_INPUT)
+        // instead of added=0 skipped=0 failed=0.
+        arr5.push({
+          type: "token",
+          raw: trimResult2
+        });
       }
+      continue;
     }
     if (looksLikeToken(trimResult2)) {
       arr5.push({
@@ -293,7 +296,19 @@ function parseAccountText(content) {
     if (matchResult) {
       const trimResult3 = trimResult2.substring(matchResult[0].length).trim();
       if (trimResult3) {
-        if (looksLikeToken(trimResult3)) {
+        if (/^https?:\/\//i.test(trimResult3)) {
+          try {
+            arr5.push({
+              type: "token",
+              raw: unwrapPastedSecret(trimResult3)
+            });
+          } catch {
+            arr5.push({
+              type: "token",
+              raw: trimResult3
+            });
+          }
+        } else if (looksLikeToken(trimResult3)) {
           arr5.push({
             type: "token",
             raw: trimResult3

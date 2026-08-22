@@ -19,7 +19,7 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import {
   validateApiKey, isAuthenticated, getAccountList, getAccountCount,
-  addAccountByEmail, addAccountByKey, addAccountByPastedSecret, removeAccount,
+  addAccountByEmail, addAccountByPastedSecret, removeAccount,
   configureBindHost, emitNoAuthWarnings, getDroughtSummary, ensureLsForAccount,
   checkLockout, failedAuthAttempt, successfulAuthAttempt,
 } from './auth.js';
@@ -508,7 +508,7 @@ async function route(req, res) {
             const parsedProxy = await parseAndValidateAccountProxy(acct.proxy);
             let result;
             if (acct.api_key) {
-              result = addAccountByKey(acct.api_key, acct.label);
+              result = await addAccountByPastedSecret(acct.api_key, acct.label, '', { unknownAsKey: true });
             } else if (acct.token) {
               result = await addAccountByPastedSecret(acct.token, acct.label);
             } else if (acct.email && acct.password) {
@@ -530,7 +530,7 @@ async function route(req, res) {
       const parsedProxy = await parseAndValidateAccountProxy(body.proxy);
       let account;
       if (body.api_key) {
-        account = addAccountByKey(body.api_key, body.label);
+        account = await addAccountByPastedSecret(body.api_key, body.label, '', { unknownAsKey: true });
       } else if (body.token) {
         account = await addAccountByPastedSecret(body.token, body.label);
       } else if (body.email && body.password) {
