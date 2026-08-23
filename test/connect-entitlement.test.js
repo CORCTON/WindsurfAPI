@@ -24,6 +24,15 @@ describe('isConnectSelectorAllowedForAccount — connect-namespace entitlement',
     }
   });
 
+  it('#258 drought-safe selectors stay blocked on a free account', () => {
+    // Drought allowlist must not leak into entitlement. swe-1-7 is weekly-
+    // quota-exempt on Pro; unpaid accounts still get /upgrade.
+    assert.equal(isConnectSelectorAllowedForAccount(free, 'swe-1-7'), false);
+    assert.equal(isConnectSelectorAllowedForAccount(free, 'swe-1-7-medium'), false);
+    assert.equal(isConnectSelectorAllowedForAccount(free, 'glm-5-2'), false);
+    assert.equal(isConnectSelectorAllowedForAccount(pro, 'swe-1-7'), true);
+  });
+
   it('paid selector (fable) is BLOCKED on a free account', () => {
     assert.equal(isConnectSelectorAllowedForAccount(free, 'claude-5-fable-medium'), false);
     assert.equal(isConnectSelectorAllowedForAccount(free, 'claude-opus-4-8-medium'), false);

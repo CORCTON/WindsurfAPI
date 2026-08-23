@@ -161,6 +161,18 @@ export const FREE_TIER_SELECTOR = 'swe-1-6-slow';
 // routed to a free account, which the upstream would reject as permission_denied.
 export const FREE_REACHABLE_SELECTORS = new Set(['swe-1-6-slow']);
 
+// Paid-plan selectors that do not consume the weekly quota bucket (#258,
+// Pro probe 2026-08-23: weeklyPercent=0 still 200). Used ONLY by the drought
+// gate. Do NOT add these to FREE_REACHABLE_SELECTORS — that set is unpaid-tier
+// entitlement, and putting swe-1-7 / glm-5-2 there routes paid models onto
+// free accounts. Canonical resolved selectors only; glm-5.1 is an alias of
+// glm-5-2 and is omitted. swe-1-6-slow stays in FREE_REACHABLE, not here.
+export const DROUGHT_SAFE_SELECTORS = new Set([
+  'swe-1-7',
+  'swe-1-7-medium',
+  'glm-5-2',
+]);
+
 // ── Live catalog (audit 2026-07-12: snapshot staleness fix) ──────────────
 // The committed CATALOG_SELECTORS snapshot is a point-in-time capture (105
 // models, frame-verified 2026-06-30). Unlike the Cascade catalog — which

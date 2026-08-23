@@ -33,6 +33,7 @@ import {
 } from './models.js';
 import {
   FREE_REACHABLE_SELECTORS,
+  DROUGHT_SAFE_SELECTORS,
   setLiveCatalogSelectors,
   clearLiveCatalogSelectors,
   isConnectSelectorCatalogIndependent,
@@ -283,6 +284,9 @@ export function isConnectSelectorBlockedByDrought(selector) {
   if (!selector) return false;
   if (!isDroughtRestrictEnabled()) return false;
   if (!isDroughtMode()) return false;
+  // Weekly-quota-exempt paid selectors (#258). Separate from
+  // FREE_REACHABLE_SELECTORS so unpaid accounts stay off swe-1-7 / glm-5-2.
+  if (DROUGHT_SAFE_SELECTORS.has(selector)) return false;
   return !isConnectSelectorCurrentlyFree(selector);
 }
 

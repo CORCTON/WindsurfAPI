@@ -23,7 +23,7 @@ import assert from 'node:assert/strict';
 import {
   addAccountByKey, removeAccount, getAccountInternal,
   isDroughtMode, isModelBlockedByDrought, isConnectSelectorBlockedByDrought,
-  getDroughtSummary,
+  isConnectSelectorAllowedForAccount, getDroughtSummary,
 } from '../src/auth.js';
 
 const CONNECT_FREE_SELECTOR = 'swe-1-6-slow';
@@ -109,6 +109,24 @@ describe('drought gate — Connect selector namespace (#234)', () => {
     }
     assert.equal(isDroughtMode(), false);
     assert.equal(isConnectSelectorBlockedByDrought(PREMIUM_SELECTOR), false);
+  });
+
+  it('lets #258 weekly-quota-exempt selectors through without widening free-tier entitlement', () => {
+    process.env.DROUGHT_RESTRICT_PREMIUM = '1';
+    mkDryPool();
+    assert.equal(isDroughtMode(), true);
+    // Literal names: do not import DROUGHT_SAFE_SELECTORS or the assertion
+    // would pass even if the set were emptied.
+    for (const sel of ['swe-1-7', 'swe-1-7-medium', 'glm-5-2']) {
+      assert.equal(isConnectSelectorBlockedByDrought(sel), false, `drought must admit ${sel}`);
+      assert.equal(isConnectSelectorAllowedForAccount({ tier: 'free' }, sel), false,
+        `${sel} must stay off unpaid accounts`);
+      assert.equal(isConnectSelectorAllowedForAccount({ tier: 'pro' }, sel), true,
+        `${sel} stays allowed on pro`);
+    }
+    assert.equal(isConnectSelectorBlockedByDrought('glm-5.1'), true,
+      'drought matches the resolved selector; glm-5.1 is an alias, not in the set');
+    assert.equal(isConnectSelectorBlockedByDrought(PREMIUM_SELECTOR), true);
   });
 
   it('treats an empty selector as not blocked', () => {
