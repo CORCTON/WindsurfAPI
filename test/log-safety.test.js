@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
-import { logHash, redactCredentialFragments, safeAccountRef, safeEmailRef, safeKeyRef } from '../src/log-safety.js';
+import { logHash, redactCredentialFragments, sliceRedactedJson, safeAccountRef, safeEmailRef, safeKeyRef } from '../src/log-safety.js';
 
 describe('log safety helpers', () => {
   it('keeps log references stable without exposing raw labels', () => {
@@ -30,6 +30,19 @@ describe('log safety helpers', () => {
     assert.doesNotMatch(out, /devin-session-token\$ws-fixture/);
     assert.match(out, /\[jwt-redacted\]/);
     assert.match(out, /devin-session-token\$\[redacted\]/);
+  });
+
+  it('sliceRedactedJson redacts before truncating a JWT-bearing body', () => {
+    const jwt = `eyJhbGciOiJub25lIn0.${'b'.repeat(40)}.${'c'.repeat(40)}`;
+    const sliced = sliceRedactedJson({ message: `invalid token ${jwt}` }, 80);
+    assert.doesNotMatch(sliced, /eyJhbGciOiJub25lIn0/);
+    assert.ok(sliced.length <= 80);
+  });
+
+  it('windsurf-login does not slice raw JSON before redaction', () => {
+    const src = readFileSync('src/dashboard/windsurf-login.js', 'utf8');
+    assert.doesNotMatch(src, /JSON\.stringify\([^)]*\)\.slice\(0,\s*120\)/);
+    assert.match(src, /sliceRedactedJson/);
   });
 
   it('does not reintroduce raw account labels or API key prefixes in sensitive logs', () => {

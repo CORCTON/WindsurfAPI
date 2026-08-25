@@ -2394,6 +2394,7 @@ const App = {
   /* ── overview ── */
   async loadOverview() {
     const d = await this.api('GET', '/overview') || {};
+    if (d.success === false) return;
     try {
       const h = await fetch('/health').then(r => r.json()).catch(() => null);
       if (h) {
@@ -3068,6 +3069,7 @@ const App = {
   /* ── models ── */
   async loadModels() {
     const [m, a] = await Promise.all([this.api('GET', '/models'), this.api('GET', '/model-access')]);
+    if (m?.success === false || a?.success === false) return;
     this.allModels = m.models || [];
     this.modelAccessConfig = a.mode ? a : { mode: 'all', list: [] };
     document.querySelector(`input[name="model-mode"][value="${this.modelAccessConfig.mode}"]`).checked = true;
@@ -3118,6 +3120,7 @@ const App = {
   /* ── proxy ── */
   async loadProxy() {
     const d = await this.api('GET', '/proxy');
+    if (d?.success === false) return;
     if (d.global) {
       document.getElementById('proxy-type').value = d.global.type || 'http';
       document.getElementById('proxy-host').value = (d.global.host || '').replace(/:\d+$/, '');
@@ -3132,6 +3135,7 @@ const App = {
       document.getElementById('proxy-current').textContent = 'not configured';
     }
     const accts = await this.api('GET', '/accounts?view=summary&pageSize=200');
+    if (accts?.success === false) return;
     const tbody = document.querySelector('#proxy-accounts-table tbody');
     const pa = d.perAccount || {};
     tbody.innerHTML = (accts.accounts || []).map(a => {
@@ -3331,6 +3335,7 @@ const App = {
   /* ── bans ── derive from /accounts; the sketch's original `/bans` 404'd. */
   async loadBans() {
     const d = await this.api('GET', '/accounts?view=summary&filter=flagged&pageSize=200');
+    if (d?.success === false) return;
     const accounts = d.accounts || [];
     const errored = accounts.filter(a => a.status === 'error' || (a.errorCount || 0) > 0);
     const rateLimited = accounts.filter(a => a.rateLimited);

@@ -32,6 +32,14 @@ export function redactCredentialFragments(text) {
     .replace(/eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, '[jwt-redacted]');
 }
 
+// Slice AFTER redaction. RegisterUser used to slice(0,120) first, which
+// split a JWT at the first dot so the regex missed it. Same trap is in
+// windsurf-login PostAuth / OneTimeToken error wrapping.
+export function sliceRedactedJson(value, n = 120) {
+  const raw = typeof value === 'string' ? value : JSON.stringify(value ?? '');
+  return redactCredentialFragments(raw).slice(0, n);
+}
+
 // Client-supplied strings (model names, selectors) are interpolated straight into
 // log lines. Raw control characters let an authenticated caller forge log records
 // or inject ANSI escape sequences into an operator's terminal, so strip them at

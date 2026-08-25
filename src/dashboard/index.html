@@ -5544,6 +5544,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       this.api('GET', '/connect-metrics').catch(() => null),
     ]);
     if (!isCurrent()) return;
+    if (d?.success === false) return;
     this.renderNativeBridgeTelemetry(d);
     // Fetch /health (no auth) in parallel for version/commit info
     try {
@@ -7522,6 +7523,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       this.api('GET', '/models'),
       this.api('GET', '/model-access'),
     ]);
+    if (modelData?.success === false || accessData?.success === false) return;
     this.allModels = modelData.models || [];
     this.modelAccessConfig = accessData.mode ? accessData : { mode: 'all', list: [], defaultModel: '' };
     document.querySelector(`input[name="model-mode"][value="${this.modelAccessConfig.mode}"]`).checked = true;
@@ -7635,6 +7637,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
   // ─── Proxy ───────────────────────────────────
   async loadProxy() {
     const d = await this.api('GET', '/proxy');
+    if (d?.success === false) return;
     if (d.global) {
       document.getElementById('proxy-type').value = d.global.type || 'http';
       document.getElementById('proxy-host').value = (d.global.host || '').replace(/:\d+$/, '');
@@ -7657,6 +7660,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       page: this.proxyPage,
       pageSize: this.proxyPageSize,
     }));
+    if (accts?.success === false) return;
     this.renderTablePagination('proxy-accounts', accts, 'proxyPage', 'proxyPageSize');
     const tbody = document.querySelector('#proxy-accounts-table tbody');
     const pa = d.perAccount || {};
@@ -9454,6 +9458,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       pageSize: this.bansPageSize,
       filter: 'flagged',
     }));
+    if (d?.success === false) return;
     this.renderTablePagination('ban', d, 'bansPage', 'bansPageSize');
     const accounts = d.accounts || [];
     const stats = d.stats || {};

@@ -7,7 +7,7 @@ import http from 'http';
 import https from 'https';
 import { config, log } from '../config.js';
 import { resolveProxyConnectHost } from '../net-safety.js';
-import { safeEmailRef, safeKeyRef, logHash } from '../log-safety.js';
+import { safeEmailRef, safeKeyRef, logHash, sliceRedactedJson } from '../log-safety.js';
 import { isSocks, createSocksTunnel } from '../socks.js';
 import { getEmailLockThreshold, getEmailLockMs, getBackendSwitch } from '../runtime-config.js';
 
@@ -107,7 +107,7 @@ async function postAuthDualPath(auth1Token, fingerprint, proxy, preferredHost = 
       if (res.status >= 200 && res.status < 300 && res.data?.sessionToken) {
         return { res, label };
       }
-      lastErr = new Error(`PostAuth ${label} HTTP ${res.status}: ${JSON.stringify(res.data).slice(0, 120)}`);
+      lastErr = new Error(`PostAuth ${label} HTTP ${res.status}: ${sliceRedactedJson(res.data)}`);
     } catch (e) {
       lastErr = new Error(`PostAuth ${label}: ${e.message}`);
     }
@@ -158,10 +158,10 @@ async function oneTimeTokenDualPath(body, fingerprint, proxy, preferredHost = nu
           firstRes = res;
           firstLabel = label;
         }
-        lastErr = new Error(`OneTimeToken ${label} HTTP ${res.status}: ${JSON.stringify(res.data).slice(0, 120)}`);
+        lastErr = new Error(`OneTimeToken ${label} HTTP ${res.status}: ${sliceRedactedJson(res.data)}`);
         continue;
       }
-      lastErr = new Error(`OneTimeToken ${label} HTTP ${res.status}: ${JSON.stringify(res.data).slice(0, 120)}`);
+      lastErr = new Error(`OneTimeToken ${label} HTTP ${res.status}: ${sliceRedactedJson(res.data)}`);
     } catch (e) {
       lastErr = new Error(`OneTimeToken ${label}: ${e.message}`);
     }
@@ -381,7 +381,7 @@ async function httpsRequestRetrying(url, opts, postData, proxy, label = 'request
       const res = await httpsRequest(url, opts, postData, proxy);
       if (res.status >= 500 && res.status < 600) {
         log.warn(`${label} upstream ${res.status} (attempt ${i + 1}/${delays.length})`);
-        lastErr = new Error(`Windsurf upstream ${res.status}: ${JSON.stringify(res.data || '').slice(0, 120)}`);
+        lastErr = new Error(`Windsurf upstream ${res.status}: ${sliceRedactedJson(res.data || '')}`);
         continue;
       }
       return res;
@@ -439,7 +439,7 @@ async function fetchCheckUserLoginMethod(email, fingerprint, proxy) {
       WINDSURF_CHECK_LOGIN_METHOD_URL, { method: 'POST', headers }, body, proxy
     );
     if (res.status !== 200 || !res.data || typeof res.data !== 'object') {
-      log.warn(`CheckUserLoginMethod non-200 (${res.status}): ${JSON.stringify(res.data || '').slice(0, 120)}`);
+      log.warn(`CheckUserLoginMethod non-200 (${res.status}): ${sliceRedactedJson(res.data || '')}`);
       return null;
     }
     // Empirically (2026-04-29) the Vercel function will sometimes serve

@@ -571,6 +571,12 @@ describe('docs: version claims match the repository', () => {
       `CHANGELOG says ${m[1]} notes but docs/releases has ${files.length} RELEASE_NOTES_*.md files`,
     );
   });
+
+  it('HISTORY-LEDGER.md does not present v3.9.21 as the live product tag', () => {
+    const hist = read(join(DOCS, 'HISTORY-LEDGER.md')).slice(0, 2500);
+    assert.match(hist, /不是现状/);
+    assert.match(hist, /HANDOFF-2026-08-20\.md/);
+  });
 });
 
 describe('docs: reader-facing auth defaults match fail-closed code', () => {

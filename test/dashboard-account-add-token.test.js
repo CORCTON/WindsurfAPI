@@ -275,6 +275,24 @@ describe('#257 UI maps a 401 add to the generic Add failed toast', () => {
     assert.match(html, /!Array\.isArray\(d\?\.accounts\)/);
   });
 
+  it('overview/models/proxy/bans loaders bail on success:false instead of painting empty', () => {
+    const sliceFn = (html, name) => {
+      const start = html.indexOf(`async ${name}()`);
+      assert.ok(start >= 0, `missing async ${name}()`);
+      return html.slice(start, start + 2500);
+    };
+    for (const rel of ['src/dashboard/index.html', 'src/dashboard/index-sketch.html']) {
+      const html = readFileSync(join(ROOT, rel), 'utf8');
+      for (const name of ['loadOverview', 'loadModels', 'loadProxy', 'loadBans']) {
+        assert.match(
+          sliceFn(html, name),
+          /success === false/,
+          `${rel} ${name} must bail on success:false`,
+        );
+      }
+    }
+  });
+
   it('sketch dashboard uses the same fail-closed 401 and loadAccounts guards', () => {
     const html = readFileSync(join(ROOT, 'src', 'dashboard', 'index-sketch.html'), 'utf8');
     const start = html.indexOf('if (r.status === 401)');

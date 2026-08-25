@@ -153,6 +153,10 @@ const CATALOG_SELECTORS = new Set(
 
 // The only selector a free-tier account can actually run. Used as the safe
 // default when DEVIN_CONNECT is enabled but the requested model isn't mapped.
+// Catalog-independent unpaid fallback. Live GetCliModelConfigs may omit it
+// (#258: reporter's catalog had no swe-1-6-slow). Do NOT retarget this to
+// swe-1-7 / glm-5-2 — those are drought-safe on Pro, not unpaid entitlement.
+// STRICT_MODEL=1 already 400s unmapped names instead of silent-degrading here.
 export const FREE_TIER_SELECTOR = 'swe-1-6-slow';
 // Canonical selectors a free-tier account can actually run. Per this module's
 // docstring, free resolves ONLY swe-1-6-slow; every other selector returns
