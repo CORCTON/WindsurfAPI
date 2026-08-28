@@ -1,0 +1,44 @@
+services:
+  windsurf2api:
+    image: ghcr.io/dwgx/windsurf-api:latest
+    pull_policy: always
+    container_name: windsurf2api
+    restart: unless-stopped
+    init: true
+    environment:
+      HOST: 0.0.0.0
+      PORT: "3003"
+      DATA_DIR: /data
+      API_KEY: ${WINDSURF_API_KEY:?required}
+      DASHBOARD_PASSWORD: ${WINDSURF_DASHBOARD_PASSWORD:?required}
+      DEFAULT_MODEL: glm-5-2
+      DEVIN_CONNECT: "1"
+      DEVIN_CONNECT_LIVENESS_PROBE: "1"
+      STICKY_SESSION_ENABLED: "1"
+      WINDSURFAPI_SINGLE_TENANT_CACHE: "1"
+      WINDSURFAPI_STRICT_MODEL: "1"
+      LOG_LEVEL: info
+    expose:
+      - "3003"
+    volumes:
+      - windsurf2api-data:/data
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:3003/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+    networks:
+      - dokploy-network
+
+volumes:
+  windsurf2api-data:
+    name: windsurf2api-data
+
+networks:
+  dokploy-network:
+    external: true
