@@ -26,7 +26,7 @@ services:
         - CMD
         - node
         - -e
-        - fetch('http://127.0.0.1:3003/v1/models',{headers:{authorization:'Bearer '+process.env.API_KEY}}).then(async r=>{if(!r.ok)process.exit(1);const b=await r.json();const ids=new Set((b.data||[]).map(m=>m.id));process.exit(ids.has('glm-5-2')&&ids.has('swe-1-7-medium')?0:1)}).catch(()=>process.exit(1))
+        - fetch('http://127.0.0.1:3003/v1/models',{headers:{authorization:'Bearer '+process.env.API_KEY}}).then(async r=>{if(!r.ok){console.error('catalog_http_'+r.status);process.exit(1)}const b=await r.json();const ids=new Set((b.data||[]).map(m=>m.id));const required=['glm-5-2','swe-1-7-medium'];console.log(JSON.stringify({required,relevant:[...ids].filter(id=>id.includes('glm-5')||id.includes('swe-1-7'))}));process.exit(required.every(id=>ids.has(id))?0:1)}).catch(e=>{console.error(e.message);process.exit(1)})
       interval: 30s
       timeout: 5s
       start_period: 30s
