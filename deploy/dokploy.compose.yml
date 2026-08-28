@@ -2,7 +2,6 @@ services:
   windsurf2api:
     image: ghcr.io/dwgx/windsurf-api:latest
     pull_policy: always
-    container_name: windsurf2api
     restart: unless-stopped
     init: true
     environment:
