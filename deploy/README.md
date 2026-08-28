@@ -9,7 +9,7 @@ single-tenant cache signal are enabled. The zero-billable liveness probe checks
 account sessions in the background. Experimental wire tags, session reuse, custom
 rate-limit values, and debug tracing stay at upstream defaults.
 
-`/v1/models` is authoritative. Condor must fail fast if `glm-5-2` or
+`/v1/models` is authoritative. Condor must fail fast if `glm-5-2-max` or
 `swe-1-7-medium` is not present for the connected Devin account; never synthesize
 catalog entries in another proxy. The container healthcheck verifies both model
 IDs against the authenticated live catalog.
