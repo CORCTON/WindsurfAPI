@@ -80,6 +80,16 @@ describe('/v1/models — live-catalog synthesis (audit v3.2.4)', () => {
     );
   });
 
+  it('prefers the current model family over a stale alias for the same selector', () => {
+    setLiveCatalogSelectors([
+      { selector: 'glm-5-2', provider: 'zhipu', alias: 'glm-5.2' },
+    ]);
+    const { data } = handleModels(ENV_ON);
+
+    assert.ok(data.some((model) => model.id === 'glm-5.2'));
+    assert.ok(!data.some((model) => model.id === 'glm-5.1'));
+  });
+
   it('non-DEVIN_CONNECT deployment returns the full list without live synthesis', () => {
     setLiveCatalogSelectors([{ selector: 'grok-4-5-medium', provider: 'xai' }]);
     // Explicitly override the inherited process environment. Maintainers often

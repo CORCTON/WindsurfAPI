@@ -5,7 +5,7 @@
     "test/cloud-catalog-backend-boundary.test.js",
     "test/models-live-catalog.test.js"
   ],
-  "expectBaselinePass": 34,
+  "expectBaselinePass": 35,
   "mutations": [
     {
       "name": "the original defect: dashboard stops annotating and reports everything reachable",
@@ -94,8 +94,8 @@
     {
       "name": "/v1/models stops deduplicating MODELS aliases by resolved selector",
       "file": "src/handlers/models.js",
-      "anchor": "      if (!reachability.reachable || representedSelectors.has(reachability.selector)) return [];",
-      "replacement": "      if (!reachability.reachable) return [];"
+      "anchor": "        represented.set(reachability.selector, candidate);",
+      "replacement": "        represented.set(`${reachability.selector}:${candidate.id}`, candidate);"
     },
     {
       "name": "/v1/models live-only producer duplicates a selector already represented by an alias",

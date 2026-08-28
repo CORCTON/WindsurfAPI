@@ -1,7 +1,8 @@
 services:
   windsurf2api:
-    image: ghcr.io/dwgx/windsurf-api:latest
-    pull_policy: always
+    build:
+      context: https://github.com/CORCTON/WindsurfAPI.git#production
+      dockerfile: Dockerfile
     restart: unless-stopped
     init: true
     environment:
@@ -10,7 +11,7 @@ services:
       DATA_DIR: /data
       API_KEY: ${WINDSURF_API_KEY:?required}
       DASHBOARD_PASSWORD: ${WINDSURF_DASHBOARD_PASSWORD:?required}
-      DEFAULT_MODEL: glm-5-2
+      DEFAULT_MODEL: glm-5.2
       DEVIN_CONNECT: "1"
       DEVIN_CONNECT_LIVENESS_PROBE: "1"
       STICKY_SESSION_ENABLED: "1"
@@ -26,7 +27,7 @@ services:
         - CMD
         - node
         - -e
-        - fetch('http://127.0.0.1:3003/v1/models',{headers:{authorization:'Bearer '+process.env.API_KEY}}).then(async r=>{if(!r.ok){console.error('catalog_http_'+r.status);process.exit(1)}const b=await r.json();const ids=new Set((b.data||[]).map(m=>m.id));const hasGlm52High=['glm-5.2','glm-5-2','glm-5.1'].some(id=>ids.has(id));const missing=[...(!hasGlm52High?['glm-5.2 High']:[]),...(!ids.has('swe-1-7-medium')?['swe-1-7-medium']:[])];if(missing.length){console.error(JSON.stringify({missing}));process.exit(1)}}).catch(e=>{console.error(e.message);process.exit(1)})
+        - fetch('http://127.0.0.1:3003/v1/models',{headers:{authorization:'Bearer '+process.env.API_KEY}}).then(async r=>{if(!r.ok){console.error('catalog_http_'+r.status);process.exit(1)}const b=await r.json();const ids=new Set((b.data||[]).map(m=>m.id));const missing=[...(!ids.has('glm-5.2')?['glm-5.2']:[]),...(!ids.has('swe-1-7-medium')?['swe-1-7-medium']:[])];if(missing.length){console.error(JSON.stringify({missing}));process.exit(1)}}).catch(e=>{console.error(e.message);process.exit(1)})
       interval: 30s
       timeout: 5s
       start_period: 30s

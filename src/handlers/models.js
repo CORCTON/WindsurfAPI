@@ -125,16 +125,31 @@ export function handleModels(env = process.env) {
     // correct as a namespace boundary and is why the check has to be redone here.
     const isReachable = buildConnectReachability(effectiveEnv);
     // Discovery is a selector catalog, not an alias catalog. Several public names
-    // can resolve to the same upstream selector. Keep the first stable client-facing
-    // name and suppress the rest so one upstream model is not listed repeatedly.
-    const representedSelectors = new Set();
-    data = data.flatMap((m) => {
+    // can resolve to the same upstream selector. Prefer the client-facing name whose
+    // normalized spelling matches that selector; a stale compatibility alias must
+    // not hide the current model family from exact /models preflight checks.
+    const represented = new Map();
+    const representativeRank = (id, selector) => {
+      const normalized = id.toLowerCase().replace(/\./g, '-');
+      const canonical = selector.toLowerCase();
+      return canonical === normalized || canonical.startsWith(`${normalized}-`) ? 1 : 0;
+    };
+    for (const m of data) {
       const reachability = isReachable(m._windsurf_id);
-      if (!reachability.reachable || representedSelectors.has(reachability.selector)) return [];
-      representedSelectors.add(reachability.selector);
+      if (!reachability.reachable) continue;
       const supportsImages = imageCapabilityBySelector.get(reachability.selector);
-      return [typeof supportsImages === 'boolean' ? { ...m, supports_images: supportsImages } : m];
-    });
+      const candidate = typeof supportsImages === 'boolean'
+        ? { ...m, supports_images: supportsImages }
+        : m;
+      const current = represented.get(reachability.selector);
+      if (!current
+        || representativeRank(candidate.id, reachability.selector)
+          > representativeRank(current.id, reachability.selector)) {
+        represented.set(reachability.selector, candidate);
+      }
+    }
+    data = [...represented.values()];
+    const representedSelectors = new Set(represented.keys());
     // Producers #2 and #3 below are keyed by SELECTOR, not by a MODELS id, so they cannot
     // go through isReachable — it resolves its argument through resolveConnectSelector.
     // They keep the entitlement check directly.
