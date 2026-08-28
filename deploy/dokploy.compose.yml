@@ -10,7 +10,7 @@ services:
       DATA_DIR: /data
       API_KEY: ${WINDSURF_API_KEY:?required}
       DASHBOARD_PASSWORD: ${WINDSURF_DASHBOARD_PASSWORD:?required}
-      DEFAULT_MODEL: glm-5-2-max
+      DEFAULT_MODEL: glm-5-2
       DEVIN_CONNECT: "1"
       DEVIN_CONNECT_LIVENESS_PROBE: "1"
       STICKY_SESSION_ENABLED: "1"
@@ -26,7 +26,7 @@ services:
         - CMD
         - node
         - -e
-        - fetch('http://127.0.0.1:3003/v1/models',{headers:{authorization:'Bearer '+process.env.API_KEY}}).then(async r=>{if(!r.ok){console.error('catalog_http_'+r.status);process.exit(1)}const b=await r.json();const ids=new Set((b.data||[]).map(m=>m.id));const required=['glm-5-2-max','swe-1-7-medium'];console.log(JSON.stringify({required,relevant:[...ids].filter(id=>id.includes('glm-5')||id.includes('swe-1-7'))}));process.exit(required.every(id=>ids.has(id))?0:1)}).catch(e=>{console.error(e.message);process.exit(1)})
+        - fetch('http://127.0.0.1:3003/v1/models',{headers:{authorization:'Bearer '+process.env.API_KEY}}).then(async r=>{if(!r.ok){console.error('catalog_http_'+r.status);process.exit(1)}const b=await r.json();const selectors=new Set((b.data||[]).map(m=>m._windsurf_id||m.id));const required=['glm-5-2','swe-1-7-medium'];const missing=required.filter(id=>!selectors.has(id));if(missing.length){console.error(JSON.stringify({missing}));process.exit(1)}}).catch(e=>{console.error(e.message);process.exit(1)})
       interval: 30s
       timeout: 5s
       start_period: 30s
