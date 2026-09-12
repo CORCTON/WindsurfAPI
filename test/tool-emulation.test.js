@@ -12,6 +12,7 @@ import {
   buildSkinnyToolPreambleForProto,
   normalizeMessagesForCascade,
   pickToolDialect,
+  interleaveParallelToolMessages,
 } from '../src/handlers/tool-emulation.js';
 
 describe('ToolCallStreamParser', () => {
@@ -943,5 +944,81 @@ describe('repairToolCallArguments', () => {
       },
     ]);
     assert.equal(JSON.parse(repaired.argumentsJson).command, 'npm test');
+  });
+});
+
+describe('interleaveParallelToolMessages', () => {
+  it('splits batch tool_calls with matching results into alternating pairs', () => {
+    const messages = [
+      { role: 'user', content: 'run two commands' },
+      {
+        role: 'assistant',
+        content: 'Executing both tools',
+        reasoning_content: 'Need to run tool 1 then tool 2',
+        tool_calls: [
+          { id: 'call_1', type: 'function', function: { name: 'bash', arguments: '{"command":"pwd"}' } },
+          { id: 'call_2', type: 'function', function: { name: 'bash', arguments: '{"command":"ls"}' } },
+        ],
+      },
+      { role: 'tool', tool_call_id: 'call_1', content: '/workspace' },
+      { role: 'tool', tool_call_id: 'call_2', content: 'file.txt' },
+      { role: 'user', content: 'next' },
+    ];
+
+    const out = interleaveParallelToolMessages(messages);
+    assert.equal(out.length, 6, '1 user + 2 pairs (4 msgs) + 1 user = 6 messages');
+
+    // Turn 1
+    assert.equal(out[1].role, 'assistant');
+    assert.equal(out[1].content, 'Executing both tools');
+    assert.equal(out[1].reasoning_content, 'Need to run tool 1 then tool 2');
+    assert.deepEqual(out[1].tool_calls.map((t) => t.id), ['call_1']);
+    assert.equal(out[2].role, 'tool');
+    assert.equal(out[2].tool_call_id, 'call_1');
+
+    // Turn 2
+    assert.equal(out[3].role, 'assistant');
+    assert.equal(out[3].content, null, 'subsequent turns should have null content');
+    assert.equal(out[3].reasoning_content, undefined, 'reasoning stripped on subsequent turns');
+    assert.deepEqual(out[3].tool_calls.map((t) => t.id), ['call_2']);
+    assert.equal(out[4].role, 'tool');
+    assert.equal(out[4].tool_call_id, 'call_2');
+
+    // Subsequent user message
+    assert.equal(out[5].content, 'next');
+  });
+
+  it('preserves unmatched tool results and non-parallel messages intact', () => {
+    const messages = [
+      {
+        role: 'assistant',
+        tool_calls: [
+          { id: 'c1', type: 'function', function: { name: 'f1', arguments: '{}' } },
+          { id: 'c2', type: 'function', function: { name: 'f2', arguments: '{}' } },
+        ],
+      },
+      { role: 'tool', tool_call_id: 'c1', content: 'r1' },
+      { role: 'tool', tool_call_id: 'c_extra', content: 'r_extra' },
+    ];
+
+    const out = interleaveParallelToolMessages(messages);
+    assert.equal(out.length, 4);
+    assert.equal(out[0].tool_calls[0].id, 'c1');
+    assert.equal(out[1].tool_call_id, 'c1');
+    assert.equal(out[2].tool_calls[0].id, 'c2');
+    assert.equal(out[3].tool_call_id, 'c_extra', 'unmatched tool result appended without drop');
+  });
+
+  it('leaves single-tool calls or unresponded calls untouched', () => {
+    const single = [
+      { role: 'assistant', tool_calls: [{ id: 'c1' }] },
+      { role: 'tool', tool_call_id: 'c1', content: 'ok' },
+    ];
+    assert.deepEqual(interleaveParallelToolMessages(single), single);
+
+    const pending = [
+      { role: 'assistant', tool_calls: [{ id: 'c1' }, { id: 'c2' }] },
+    ];
+    assert.deepEqual(interleaveParallelToolMessages(pending), pending);
   });
 });
