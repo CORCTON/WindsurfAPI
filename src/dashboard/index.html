@@ -4500,11 +4500,11 @@ docker compose up -d --force-recreate</pre>
         <div class="field mt-3">
           <label class="field-label">${this.esc(f.label)}</label>
           ${f.type === 'select' ? `
-            <select class="select" data-name="${f.name}">
+            <select class="select" data-name="${this.esc(f.name)}">
               ${f.options.map(o => `<option value="${this.esc(o.value)}" ${o.value === f.value ? 'selected' : ''}>${this.esc(o.label)}</option>`).join('')}
             </select>
           ` : `
-            <input class="input" data-name="${f.name}" type="${f.type || 'text'}" placeholder="${this.esc(f.placeholder || '')}" value="${this.esc(f.value || '')}">
+            <input class="input" data-name="${this.esc(f.name)}" type="${f.type || 'text'}" placeholder="${this.esc(f.placeholder || '')}" value="${this.esc(f.value || '')}">
           `}
           ${f.hint ? `<div class="field-hint">${this.esc(f.hint)}</div>` : ''}
         </div>
@@ -6163,7 +6163,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
             <tr><td style="color:var(--text-muted);width:120px">${I18n.t('loginResult.fields.email')}</td><td>${this.esc(r.email)}</td></tr>
             <tr><td style="color:var(--text-muted)">${I18n.t('loginResult.fields.name')}</td><td>${this.esc(r.name || '-')}</td></tr>
             <tr><td style="color:var(--text-muted)">${I18n.t('loginResult.fields.apiKey')}</td><td><code class="break-all">${this.esc(r.apiKey_masked || r.apiKey || '')}</code></td></tr>
-            ${r.account ? `<tr><td style="color:var(--text-muted)">${I18n.t('loginResult.fields.accountId')}</td><td><code>${r.account.id}</code> <span class="badge active">${r.account.status}</span></td></tr>` : ''}
+            ${r.account ? `<tr><td style="color:var(--text-muted)">${I18n.t('loginResult.fields.accountId')}</td><td><code>${this.esc(r.account.id)}</code> <span class="badge active">${this.esc(r.account.status)}</span></td></tr>` : ''}
           </table>
         </div>`);
       return;
@@ -6737,7 +6737,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
         <td style="text-align:center"><input type="checkbox" class="acct-select" data-id="${this.escJsAttr(a.id)}"${isSelected ? ' checked' : ''} aria-label="Select ${this.esc(a.id)}" onchange="App.toggleAccountSelect('${this.escJsAttr(a.id)}',this.checked)"></td>
         <td style="box-shadow: inset 3px 0 0 ${hlColor};" title="${this.esc(hlLabel)}">
           <button class="expand-chevron ${isExpanded ? 'open' : ''}" onclick="App.toggleAccountDetail('${this.escJsAttr(a.id)}')" title="${I18n.t('account.detail.toggle')}" aria-label="${I18n.t('account.detail.toggle')}" aria-expanded="${isExpanded ? 'true' : 'false'}">▸</button>
-          <code>${a.id}</code>
+          <code>${this.esc(a.id)}</code>
         </td>
         <td>${this.esc(a.email)}</td>
         <td>
@@ -6749,7 +6749,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
         <td>${rpmCell}</td>
         <td>${creditCell}</td>
         <td>${capsHtml}</td>
-        <td><span style="display:inline-flex;align-items:center;gap:6px;"><span style="width:7px;height:7px;border-radius:50%;background:${hlColor};flex:none;"></span><span class="badge no-dot ${a.status}">${a.status}</span>${rateLimitBadge}</span></td>
+        <td><span style="display:inline-flex;align-items:center;gap:6px;"><span style="width:7px;height:7px;border-radius:50%;background:${hlColor};flex:none;"></span><span class="badge no-dot ${this.esc(a.status)}">${this.esc(a.status)}</span>${rateLimitBadge}</span></td>
         <td style="color:${a.errorCount > 0 ? 'var(--error)' : 'inherit'};font-variant-numeric:tabular-nums;text-align:right;">${a.errorCount}</td>
         <td class="text-sm nowrap" style="font-variant-numeric:tabular-nums;">${a.lastUsed ? new Date(a.lastUsed).toLocaleString() : '-'}</td>
         <td class="nowrap">
@@ -6934,7 +6934,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
             <span class="model-group-count">${availIn}/${models.length}</span>
           </div>
           <div class="model-chips">
-            ${models.map(m => `<div class="detail-model-chip ${blocked.has(m.id) ? 'blocked' : ''}" title="${m.id}">
+            ${models.map(m => `<div class="detail-model-chip ${blocked.has(m.id) ? 'blocked' : ''}" title="${this.esc(m.id)}">
               <span class="detail-model-chip-dot"></span>
               <span class="detail-model-chip-name">${this.esc(m.id)}</span>
               ${m.credit != null ? `<span class="detail-model-chip-cost" title="${T('creditPerCall')}">${m.credit}${T('creditUnit')}</span>` : `<span class="detail-model-chip-cost" style="color:var(--text-dim);background:transparent;border-color:var(--border)">—</span>`}
@@ -6991,7 +6991,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
           <div class="detail-card-head"><span class="dot" style="background:var(--info)"></span>${T('runtime.title')}</div>
           <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:20px">
             <div class="detail-kv">
-              <span class="k">${T('runtime.status')}</span><span class="v"><span class="badge ${a.status}">${a.status}</span>${a.rateLimited ? ` <span class="badge warn">${I18n.t('card.rateLimit.badge')}</span>` : ''}${!a.rateLimited && a.capacityThrottled ? ` <span class="badge" style="background:var(--info-bg,rgba(96,165,250,.15));color:var(--info,#60a5fa)" title="${this.esc(I18n.t('card.capacity.tip'))}">${I18n.t('card.capacity.badge')}</span>` : ''}</span>
+              <span class="k">${T('runtime.status')}</span><span class="v"><span class="badge ${this.esc(a.status)}">${this.esc(a.status)}</span>${a.rateLimited ? ` <span class="badge warn">${I18n.t('card.rateLimit.badge')}</span>` : ''}${!a.rateLimited && a.capacityThrottled ? ` <span class="badge" style="background:var(--info-bg,rgba(96,165,250,.15));color:var(--info,#60a5fa)" title="${this.esc(I18n.t('card.capacity.tip'))}">${I18n.t('card.capacity.badge')}</span>` : ''}</span>
               <span class="k">${T('runtime.errors')}</span><span class="v" style="color:${a.errorCount > 0 ? 'var(--error)' : 'inherit'}">${a.errorCount || 0}</span>
               <span class="k">${T('runtime.rpm')}</span><span class="v">${a.rpmUsed ?? 0} / ${a.rpmLimit ?? 0}</span>
             </div>
@@ -7001,7 +7001,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
               <span class="k">${T('runtime.creditsFetched')}</span><span class="v">${fmtAgo(cr.fetchedAt)}</span>
             </div>
             <div class="detail-kv">
-              <span class="k">${T('runtime.accountId')}</span><span class="v"><code>${a.id}</code></span>
+              <span class="k">${T('runtime.accountId')}</span><span class="v"><code>${this.esc(a.id)}</code></span>
               <span class="k">${T('runtime.apiKey')}</span><span class="v"><code>${this.esc(a.apiKey_masked || a.keyPrefix || '')}</code></span>
               ${cr.lastError ? `<span class="k">${T('runtime.lastError')}</span><span class="v" style="color:var(--error);font-size:11px">${this.esc(cr.lastError).slice(0, 80)}</span>` : ''}
             </div>
@@ -7667,7 +7667,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     tbody.innerHTML = (accts.accounts || []).map(a => {
       const p = pa[a.id];
       return `<tr>
-        <td>${this.esc(a.email)} <code class="text-xs">${a.id}</code></td>
+        <td>${this.esc(a.email)} <code class="text-xs">${this.esc(a.id)}</code></td>
         <td>${p ? `<code>${this.esc(p.type)}://${p.username ? this.esc(p.username) + '@' : ''}${this.esc(p.host)}:${this.esc(String(p.port))}</code>` : `<span class="text-sm text-dim">${I18n.t('proxy.none')}</span>`}</td>
         <td class="nowrap">
           <div class="btn-group">
@@ -9486,8 +9486,8 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     tbody.innerHTML = accounts.map(a => {
       const flagged = a.status === 'error' || a.errorCount > 0;
       return `<tr style="${flagged ? 'background:rgba(239,68,68,.03)' : ''}">
-        <td>${this.esc(a.email)} <code class="text-xs">${a.id}</code></td>
-        <td><span class="badge ${a.status}">${a.status}</span></td>
+        <td>${this.esc(a.email)} <code class="text-xs">${this.esc(a.id)}</code></td>
+        <td><span class="badge ${this.esc(a.status)}">${this.esc(a.status)}</span></td>
         <td style="color:${a.errorCount > 0 ? 'var(--error)' : 'inherit'}">${a.errorCount}</td>
         <td class="text-sm">${a.lastUsed ? new Date(a.lastUsed).toLocaleString() : '-'}</td>
         <td class="nowrap">
