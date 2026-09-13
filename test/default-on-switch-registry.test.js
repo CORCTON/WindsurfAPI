@@ -71,11 +71,11 @@ const LEDGER = {
   // ── Found only after the `=== '0'` pattern was added ──
   // These have no `'1'` literal at all: they are default-ON purely because only an
   // explicit '0' turns them off, which is why every earlier pattern missed them.
-  CASCADE_COMPACT_CLAUDE_SYSTEM: {
-    waived: 'off routes the Claude system prompt through the full neutralizer instead of '
-      + 'the compact path (client.js:207). No test drives it — newly visible, not newly '
-      + 'created. Worth one; recorded rather than quietly skipped.',
-  },
+  // Off path IS tested now: client-invariants.test.js drives it to '0' and asserts the
+  // caller's prompt comes back un-compacted, and test/mutations/client-invariants.json
+  // re-introduces the dead switch to prove that assertion bites. This entry read
+  // `waived: "No test drives it ... Worth one"` until that test existed.
+  CASCADE_COMPACT_CLAUDE_SYSTEM: { tested: true },
   CASCADE_REUSE_HASH_SYSTEM: {
     waived: 'off stops hashing the system prompt into the reuse key (returns \'\'), which '
       + 'only changes cache-key granularity, not output. No test drives it.',

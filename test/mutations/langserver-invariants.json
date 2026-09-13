@@ -1,0 +1,58 @@
+{
+  "_baseline_provenance": "MEASURED 2026-09-13 on the author's Windows box, Node v24.19.0, worktree .claude/worktrees/guards-core2 branched from origin/master 924a017. Declared value 15. Exact command: `node --import ./scripts/mutation-network-deny.mjs --import ./test/setup-env.mjs --test --test-reporter=tap test/langserver-invariants.test.js` -> `# tests 15 / # pass 15 / # fail 0 / # skipped 0 / # todo 0 / # cancelled 0`, IDENTICAL over seven consecutive runs (four inside the mutation loop, three standalone). Cross-checked with the harness's OWN counting semantics: scripts/mutation-harness-utils.mjs throws at import on Windows ('mutation harness requires git at a trusted absolute path'), so tmp/harness-reporter.mjs is a verbatim copy of its reporter half used as `--test-reporter=./tmp/harness-reporter.mjs`; the aggregate summary was {tests 15, failed 0, passed 15, cancelled 0, skipped 0, todo 0, topLevel 6, suites 6}, IDENTICAL over three consecutive runs and equal to the TAP counts. This spec names ONE test file, so the harness's combined invocation and a per-file invocation are the same argv by construction and there is no per-file-vs-combined gap to report. DRIFT DISCLOSURE: this file mixes synchronous pure-function assertions with three loopback http2/net fixtures on 127.0.0.1 (allowed by scripts/mutation-network-deny.mjs; no outside destination is contacted); every server is closed in a `finally` before the test returns, and every env write is restored. If guard 2 rejects 15 on the Linux runner, re-measure there with `node scripts/spec-baseline-audit.mjs langserver-invariants` and change the number in its own commit; do NOT narrow the mutations to make it start.",
+  "_scope_note": "src/langserver.js (65 KB) had zero mutation specs before this file. Its existing assertions are split across langserver-resource, langserver-redact, langserver-binary-update, platform-ls-paths and four v*-issue-fixes files, so no single existing file could carry 5-8 biting mutations; this spec pins them through one NEW file, test/langserver-invariants.test.js. The eight mutations are the boundaries the 2026-09-13 audit named for this module: the port-readiness signature gate (the audit's #1 finding — probeLanguageServerPort is the only probe here that checks the gRPC signature, while the frequently-called waitPortReady does not check it at all), the child-process env allowlist, three credential-redaction paths, stderr severity classification, and the two memory-policy caps that #174 was filed for. All eight were applied one at a time and MEASURED CAUGHT against this exact suite: fail count 1 each, with the mutated run executing the same 15 tests as the baseline every time (harness guard 5), and the tree restored with `git checkout HEAD --` between mutations. Two of the eight (the unparseable-URL redaction fallback and the host-memory cap) had no existing assertion anywhere in the tree; the rest make already-existing guards re-checkable by mutation.",
+  "tests": [
+    "test/langserver-invariants.test.js"
+  ],
+  "expectBaselinePass": 15,
+  "mutations": [
+    {
+      "name": "probeLanguageServerPort accepts any HTTP/2 listener instead of only a gRPC-signature one — the readiness gate reports a squatter on the LS port as 'ready', and the account API key plus the CSRF token are then sent to it. This is the exact hole the 2026-09-13 audit recorded against waitPortReady (:1114), which waits for a TCP-level connect with no signature check at all; probeLanguageServerPort is the function in this module that does check",
+      "file": "src/langserver.js",
+      "anchor": "          finish(looksLikeLs);",
+      "replacement": "          finish(true);"
+    },
+    {
+      "name": "buildLanguageServerEnv stops applying LS_ENV_ALLOWLIST and copies the whole parent environment — the LS child process (a binary we do not control) receives DASHBOARD_PASSWORD, WINDSURFAPI_API_KEY, AWS_SECRET_ACCESS_KEY and every other credential the proxy process holds",
+      "file": "src/langserver.js",
+      "anchor": "  for (const key of LS_ENV_ALLOWLIST) {",
+      "replacement": "  for (const key of Object.keys(source)) {"
+    },
+    {
+      "name": "redactProxyUrl prints the proxy password for an object-shaped proxy — the redaction marker becomes '(auth=<password>)', so the credential lands in logs and in the dashboard wherever the pool is described",
+      "file": "src/langserver.js",
+      "anchor": "    return `${host}:${port}${urlOrProxy.username ? ' (auth=true)' : ''}`;",
+      "replacement": "    return `${host}:${port}${urlOrProxy.username ? ` (auth=${urlOrProxy.password || ''})` : ''}`;"
+    },
+    {
+      "name": "redactProxyUrl's unparseable-string fallback returns the input unchanged — a proxy URL the WHATWG parser rejects (a space in the host, a typo) is the one case with no second redaction layer, so the password is logged verbatim exactly when the operator is already having a bad day",
+      "file": "src/langserver.js",
+      "anchor": "    return String(urlOrProxy).replace(/\\/\\/([^:@/\\s]+):([^@/\\s]*)@/g, '//***:***@');",
+      "replacement": "    return String(urlOrProxy);"
+    },
+    {
+      "name": "classifyLanguageServerStderr drops the whole failure-word tier — 'connection refused by upstream', 'request timed out' and 'segmentation fault' become info, so an LS that never came up is filtered out of every warn/error log view and the operator sees a healthy-looking startup",
+      "file": "src/langserver.js",
+      "anchor": "  if (/\\b(?:failed|failure|exception|denied|refused|timed?\\s*out|not found|cannot|could not|invalid|unavailable|crash|segmentation fault)\\b/i.test(s)) return 'warn';",
+      "replacement": "  if (false) return 'warn';"
+    },
+    {
+      "name": "detectMemoryLimitBytes stops discarding a cgroup limit that exceeds host memory — a container that reports the HOST's memory (or a v1 sentinel that survives the absurd-value filter) raises the measured limit above what the machine has, and estimateDefaultMaxLsInstances then sizes the pool for memory that does not exist (#174)",
+      "file": "src/langserver.js",
+      "anchor": "    .filter(n => hostTotal <= 0 || n <= hostTotal);",
+      "replacement": "    .filter(() => true);"
+    },
+    {
+      "name": "estimateDefaultMaxLsInstances loses its hard cap — a large host sizes the pool from total/perInstance alone (64 GB / 700 MB = 93 LS instances at ~600 MB RSS each), which is the memory blowup #174 was filed for; the floor of 2 is kept so this mutation isolates the cap",
+      "file": "src/langserver.js",
+      "anchor": "  return Math.max(2, Math.min(20, Math.floor(total / per)));",
+      "replacement": "  return Math.max(2, Math.floor(total / per));"
+    },
+    {
+      "name": "the LS_PREWARM_DEFAULT=0 kill switch stops reading its env var — the documented way to stop warming a default LS at startup (low-memory pools) becomes inert, and a host that cannot afford the extra instance starts one anyway",
+      "file": "src/langserver.js",
+      "anchor": "  return process.env.LS_PREWARM_DEFAULT !== '0' && MAX_LS_INSTANCES > 1;",
+      "replacement": "  return process.env.LS_PREWARM_DEFAULT !== '__never__' && MAX_LS_INSTANCES > 1;"
+    }
+  ]
+}

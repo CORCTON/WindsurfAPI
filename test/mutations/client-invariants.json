@@ -1,0 +1,58 @@
+{
+  "_baseline_provenance": "MEASURED 2026-09-13 on the author's Windows box, Node v24.19.0, worktree .claude/worktrees/guards-core2 branched from origin/master 924a017. Declared value 14. Exact command: `node --import ./scripts/mutation-network-deny.mjs --import ./test/setup-env.mjs --test --test-reporter=tap test/client-invariants.test.js` -> `# tests 14 / # pass 14 / # fail 0 / # skipped 0 / # todo 0 / # cancelled 0`, IDENTICAL over seven consecutive runs (four inside the mutation loop, three standalone). Cross-checked with the harness's OWN counting semantics: scripts/mutation-harness-utils.mjs throws at import on Windows ('mutation harness requires git at a trusted absolute path'), so tmp/harness-reporter.mjs is a verbatim copy of its reporter half used as `--test-reporter=./tmp/harness-reporter.mjs`; the aggregate summary was {tests 14, failed 0, passed 14, cancelled 0, skipped 0, todo 0, topLevel 4, suites 4}, IDENTICAL over three consecutive runs and equal to the TAP counts. This spec names ONE test file, so the harness's combined invocation and a per-file invocation are the same argv by construction and there is no per-file-vs-combined gap to report. DRIFT DISCLOSURE: this file is synchronous pure-function assertion with no timers, no child processes, no sockets and no leftover env mutation (every env write is restored in a `finally`), which is why it was written as a NEW single-purpose file instead of aggregating the eight partial files that already touch src/client.js. If guard 2 rejects 14 on the Linux runner, re-measure there with `node scripts/spec-baseline-audit.mjs client-invariants` and change the number in its own commit; do NOT narrow the mutations to make it start.",
+  "_scope_note": "src/client.js (73 KB) had zero mutation specs before this file, and its existing assertions are split across eight partial files (client-content, client-panel-retry, stream-stall, stream-error, report-error-transient-guard, v2069/v2070/v2074/v2079-issue-fixes), so no single existing file could carry 5-8 biting mutations. This spec therefore pins its mutations through one NEW file, test/client-invariants.test.js, whose assertions were written against the invariants rather than the implementation. All eight mutations were applied one at a time and MEASURED CAUGHT against this exact suite: fail counts 2,1,2,1,1,1,1,1 with the mutated run executing the same 14 tests as the baseline every time (harness guard 5), and the tree restored with `git checkout HEAD --` between mutations.",
+  "tests": [
+    "test/client-invariants.test.js"
+  ],
+  "expectBaselinePass": 14,
+  "mutations": [
+    {
+      "name": "the WebFetch auto-approve enable gate flips from opt-in to opt-out — WINDSURFAPI_NATIVE_TOOL_BRIDGE_WEBFETCH_AUTO_APPROVE no longer has to be exactly '1', so a deployment that only ever set the ORIGINS list starts auto-approving model-initiated fetches with no prompt in front of the user",
+      "file": "src/client.js",
+      "anchor": "  if (process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE_WEBFETCH_AUTO_APPROVE !== '1') return false;",
+      "replacement": "  if (process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE_WEBFETCH_AUTO_APPROVE === '0') return false;"
+    },
+    {
+      "name": "the declared request origin stops binding the allowed URL — a fetch whose own origin hint names a different site is auto-approved against the allowlist entry that happens to match its URL, so the approval is granted for the wrong origin",
+      "file": "src/client.js",
+      "anchor": "  if (originHint && originHint !== requestUrl.origin) return false;",
+      "replacement": "  if (false) return false;"
+    },
+    {
+      "name": "canonicalWebUrl stops trimming the trailing slash — a bare-origin allowlist entry ('https://example.com') canonicalizes to href 'https://example.com/' and no longer equals its own origin, so it silently degrades to an exact-URL match and the documented origin form stops auto-approving anything",
+      "file": "src/client.js",
+      "anchor": "    href: parsed.href.replace(/\\/+$/, ''),",
+      "replacement": "    href: parsed.href,"
+    },
+    {
+      "name": "the binary-placeholder length guard is raised past any real body — an untyped block carrying a base64 'data' field falls through to JSON.stringify and its raw payload is replayed into Cascade's text history (the channel that has no image path)",
+      "file": "src/client.js",
+      "anchor": "  if (/\"data\"\\s*:\\s*\"[A-Za-z0-9+/=]{128,}\"/.test(raw)) {",
+      "replacement": "  if (/\"data\"\\s*:\\s*\"[A-Za-z0-9+/=]{1000000,}\"/.test(raw)) {"
+    },
+    {
+      "name": "isImageLikeBlock stops recognizing media_type 'image/*' — an Anthropic-shaped image block with no 'image' type field is treated as an unknown block, so its base64 body rides into the text history instead of the '[Image omitted from text history]' placeholder",
+      "file": "src/client.js",
+      "anchor": "    || part?.media_type?.startsWith?.('image/');",
+      "replacement": "    || false;"
+    },
+    {
+      "name": "contentToString returns '' for a non-string, non-array content — a caller that sends a single content block object (rather than an array) has that whole turn deleted from the prompt without an error, and the model answers a different conversation",
+      "file": "src/client.js",
+      "anchor": "  return content == null ? '' : JSON.stringify(content);",
+      "replacement": "  return '';"
+    },
+    {
+      "name": "the CASCADE_COMPACT_CLAUDE_SYSTEM=0 escape hatch stops reading its env var — the documented way back to 'send the caller's system prompt as written' becomes inert, and every Claude-Code-shaped prompt is replaced by the compact boilerplate with no switch to stop it",
+      "file": "src/client.js",
+      "anchor": "  if (process.env.CASCADE_COMPACT_CLAUDE_SYSTEM === '0') return neutralizeIdentityForCascade(stripped);",
+      "replacement": "  if (process.env.CASCADE_COMPACT_CLAUDE_SYSTEM === '__never__') return neutralizeIdentityForCascade(stripped);"
+    },
+    {
+      "name": "isCascadeTransportError stops matching 'panel state' — an LS that answers InitializeCascadePanelState with 'panel state not found' is classified as a model error, so the warmup recovery path no longer resets the session state and every later request on that port repeats the same handshake against a panel the LS has already forgotten",
+      "file": "src/client.js",
+      "anchor": "  return /pending stream has been canceled|ECONNRESET|ERR_HTTP2|session closed|stream closed|panel state/i.test(msg)",
+      "replacement": "  return /pending stream has been canceled|ECONNRESET|ERR_HTTP2|session closed|stream closed/i.test(msg)"
+    }
+  ]
+}
