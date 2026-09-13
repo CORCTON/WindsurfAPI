@@ -2222,6 +2222,13 @@ const App = {
         const lockErr = (data && data.error && (data.error.message || data.error)) || 'Too many failed attempts';
         return { success: false, error: lockErr };
       }
+      // Force the failure envelope onto non-2xx bodies (mirrors index.html) so
+      // the `success === false` loader guards stay reachable on 404/500 (#257).
+      if (!r.ok) {
+        const failed = (data && typeof data === 'object' && !Array.isArray(data)) ? { ...data } : {};
+        failed.success = false;
+        return failed;
+      }
       return data;
     } catch (e) {
       this.toast(e.message, 'error');
@@ -3375,6 +3382,9 @@ const App = {
     // v2.0.56: refresh credentials snapshot when the panel opens.
     this.loadCredentials();
     const r = await this.api('GET', '/experimental');
+    // Keep the last good panel on a failed read instead of showing the flag as
+    // off and the pool as empty (#257).
+    if (r?.success === false) return;
     const flag = r.flags?.cascadeConversationReuse ?? r.cascadeConversationReuse;
     const cb = document.getElementById('exp-cascade-reuse');
     if (cb) cb.checked = !!flag;
@@ -3402,6 +3412,8 @@ const App = {
   async loadCredentials() {
     try {
       const d = await this.api('GET', '/settings/credentials');
+      // Do not relabel a live credential as "unset" because the read failed (#257).
+      if (d?.success === false) return;
       const ks = document.getElementById('credentials-apikey-source');
       const km = document.getElementById('credentials-apikey-masked');
       const ds = document.getElementById('credentials-dashboardpw-source');
@@ -3460,6 +3472,9 @@ const App = {
     const holder = document.getElementById('system-prompts-editor');
     if (!holder) return;
     const sp = await this.api('GET', '/system-prompts');
+    // A failed read must not replace the editor with the "no editable prompts"
+    // placeholder — that says the backend has none, which is a different claim (#257).
+    if (sp?.success === false) return;
     const prompts = sp?.prompts || {};
     const keys = Object.keys(prompts);
     if (!keys.length) {

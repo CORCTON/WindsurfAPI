@@ -4192,9 +4192,15 @@ docker compose up -d --force-recreate</pre>
         return { success: false, error: authErr };
       }
       // Surface non-2xx failures instead of silently returning error-shaped data
-      // as if it were a valid result. Return contract unchanged (still `data`).
+      // as if it were a valid result. The body still comes back to the caller,
+      // but `success: false` is forced onto it so every `success === false`
+      // loader guard stays reachable on 404/500 — and on a non-JSON error body,
+      // where there is nothing to spread (#257).
       if (!r.ok) {
         this.toast((data && data.error && (data.error.message || data.error)) || I18n.t('toast.requestFailed', { status: r.status }), 'error');
+        const failed = (data && typeof data === 'object' && !Array.isArray(data)) ? { ...data } : {};
+        failed.success = false;
+        return failed;
       }
       return data;
     } catch (e) {
@@ -6490,6 +6496,9 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
       const qs = new URLSearchParams({ view: 'summary', page: '1', pageSize: '1000' });
       if (this.accountsTier) qs.set('tier', this.accountsTier);
       const r = await this.api('GET', `/accounts?${qs.toString()}`);
+      // A failed read used to download an empty pool file and toast "exported
+      // 0 accounts" (#257). Keep the failure visible instead of producing it.
+      if (r?.success === false) return;
       const accounts = r.accounts || [];
       const payload = { _exportedAt: new Date().toISOString(), count: accounts.length, tier: this.accountsTier || 'all', accounts };
       const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
@@ -8893,6 +8902,9 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
 
   async loadExperimental() {
     const d = await this.api('GET', '/experimental');
+    // A failed read must not repaint the panel with "everything off": the
+    // operator would then switch on flags that were already on (#257).
+    if (d?.success === false) return;
     const cb = document.getElementById('exp-cascade-reuse');
     if (cb) cb.checked = !!d.flags?.cascadeConversationReuse;
     // v2.0.58 — drought-mode premium gate toggle.
@@ -8950,6 +8962,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
   async loadClineCompat() {
     let d;
     try { d = await this.api('GET', '/cline-compat'); } catch { return; }
+    if (d?.success === false) return;
     const badge = document.getElementById('cline-compat-badge');
     if (badge) badge.style.display = d.enabled ? '' : 'none';
     const repairs = document.getElementById('cline-compat-repairs');
@@ -8964,6 +8977,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
   async loadCcCompat() {
     let d;
     try { d = await this.api('GET', '/cc-compat'); } catch { return; }
+    if (d?.success === false) return;
     const badge = document.getElementById('cc-compat-badge');
     if (badge) badge.style.display = d.enabled ? '' : 'none';
     const schema = document.getElementById('cc-compat-schema');
@@ -8978,6 +8992,10 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     const sp = await this.api('GET', '/system-prompts');
     const spHolder = document.getElementById('system-prompts-editor');
     if (!spHolder) return;
+    // Keep the editor (and the save-diff baseline) intact when the read fails;
+    // repainting it empty invites the operator to "restore" defaults over a
+    // still-valid override set (#257).
+    if (sp?.success === false) return;
     // Stash originals so saveSystemPrompt can diff before→after in the save gate.
     this._systemPromptOriginals = { ...(sp.prompts || {}) };
     const labels = {
@@ -9090,6 +9108,8 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     // UI prefs (booleans, shared across browsers via backend).
     try {
       const p = await this.api('GET', '/settings/prefs');
+      // A failed read must not reset the toggles to defaults (#257).
+      if (p?.success === false) throw new Error(p.error || 'prefs_unavailable');
       this._prefs = p.prefs || {};
       const cb = document.getElementById('set-oauth-skip-chooser');
       if (cb) cb.checked = !!this._prefs.oauthSkipChooser;
@@ -9109,7 +9129,13 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     const body = document.getElementById('set-breaker-body');
     if (!body) return;
     let k = {};
-    try { k = (await this.api('GET', '/breaker-config'))?.knobs || {}; } catch { /* defaults */ }
+    try {
+      const r = await this.api('GET', '/breaker-config');
+      // Repainting on a failed read would fill every input with the hardcoded
+      // defaults; one onchange then PUTs those defaults as the live config (#257).
+      if (r?.success === false) return;
+      k = r?.knobs || {};
+    } catch { /* defaults */ }
     const v = (key, d) => (k[key]?.value ?? d);
     const min = (ms) => Math.round(ms / 60000);
     const num = (id, key, val, lo, hi, step, labelKey, hintKey) => `
@@ -9161,6 +9187,9 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     let s = {};
     try {
       s = await this.api('GET', '/runtime-env-status') || {};
+      // A failed read would render all six backend switches as OFF — the exact
+      // opposite of what may be running (#257).
+      if (s?.success === false) return;
     } catch { /* fall through — show all off/read-only */ }
     const sw = s.switches || {};
     const rowStyle = 'display:flex;align-items:center;justify-content:space-between;gap:12px;padding:7px 0;border-bottom:1px solid var(--border)';
@@ -9260,6 +9289,9 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     let t = {};
     try {
       const r = await this.api('GET', '/experimental');
+      // On a failed read, leave the inputs alone: they fall back to defaults
+      // otherwise, and the next onchange would persist those defaults (#257).
+      if (r?.success === false) return;
       t = r.tunables || {};
     } catch { /* fall through to defaults */ }
     // Each row: label + numeric input (or toggle for the on/off knobs). Values
@@ -9354,6 +9386,8 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
   async loadCredentials() {
     try {
       const d = await this.api('GET', '/settings/credentials');
+      // Do not relabel a live credential as "unset" because the read failed (#257).
+      if (d?.success === false) return;
       document.getElementById('credentials-apikey-source').textContent = '[' + (d.apiKeySource || 'unset') + ']';
       document.getElementById('credentials-apikey-masked').textContent = d.apiKey_masked || ('(' + (I18n.t('credentials.unset') || 'unset') + ')');
       document.getElementById('credentials-dashboardpw-source').textContent = '[' + (d.dashboardPasswordSource || 'unset') + ']';

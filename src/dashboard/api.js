@@ -167,7 +167,16 @@ function resolveCorsOrigin(req) {
 }
 
 function json(res, status, body) {
-  const data = JSON.stringify(body);
+  // Error envelopes carry `success: false`, the same key 2xx bodies use for
+  // `success: true`, so a client can tell "this request failed" apart from
+  // "this payload happens to have no success key" (#257). Scoped to non-2xx
+  // statuses so no successful response body changes shape.
+  const payload = status >= 400
+    && body && typeof body === 'object' && !Array.isArray(body)
+    && !Object.prototype.hasOwnProperty.call(body, 'success')
+    ? { ...body, success: false }
+    : body;
+  const data = JSON.stringify(payload);
   const headers = {
     'Content-Type': 'application/json',
     'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
