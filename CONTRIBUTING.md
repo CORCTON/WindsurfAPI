@@ -80,7 +80,11 @@ flowchart TD
 `npm run test:release`（逐文件进程隔离）。**当前数字见
 [最新交接文档](docs/README.md) 的门禁表，本文不复述** —— 这里此前钉着 v3.9.14 的
 "3418 / 261"，而那之后又发了五个版本。一个数字写在不是它权威来源的地方就会烂。
-全量 `npm test` 的总数会因 `--test-force-exit` 的输出竞态轻微波动，所以别拿它的数字对账。
+全量 `npm test` 的总数**不再漂**：2026-09-13 实测，真正的原因不是"输出竞态"而是
+`--test-force-exit` 会在跑完**部分 suite 之后**就让进程以 **0** 退出 —— 同一份字节跑 12 次得到
+**8 个不同的数字（34…72）**，去掉它之后 **10/10 稳定**。该 flag 已从 `package.json`、
+`scripts/run-test-shard.mjs` 与三个 harness 脚本中移除。**不要加回来**：
+截断是静默的，而挂起会被 shard runner 点名。
 
 **门禁全绿并不等于你没弄坏东西。** 测试套件**不跑**突变 spec（`test/mutations/*.json`），
 所以如果你改的那一行正好是某条突变的 anchor，它会静默失配 —— 而你和 CI 都看不见。
@@ -162,8 +166,12 @@ count comes from `npm run test:release` (one process per file). **The current nu
 the gate table of the newest handoff ([docs/README.md](docs/README.md) points at it) and is
 deliberately not repeated here** — this spot used to pin "3418 / 261 as of v3.9.14" and five
 releases shipped after that. A number written anywhere other than its authoritative source
-rots. Totals from a plain `npm test` drift slightly because of an output race under
-`--test-force-exit`, so don't reconcile against that number.
+rots. Totals from a plain `npm test` **no longer drift**: measured 2026-09-13, the cause was not
+an "output race" but `--test-force-exit` ending the process after **part of the suites** and
+still exiting **0** — twelve identical runs of one file gave **eight distinct counts (34..72)**,
+and **10/10 stable** without it. The flag was removed from `package.json`,
+`scripts/run-test-shard.mjs` and the three harness scripts. **Do not re-add it**: a truncation is
+silent, a hang is named by the shard runner.
 
 **A green gate does not mean you broke nothing.** The test suite does **not** run the mutation
 specs (`test/mutations/*.json`), so if you edit a line one of them anchors on, the anchor

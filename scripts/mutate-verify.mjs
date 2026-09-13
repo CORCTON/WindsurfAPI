@@ -140,7 +140,10 @@ function runSuite(tests) {
     '--import', './scripts/mutation-network-deny.mjs',
     '--import', './test/setup-env.mjs',
     '--test-reporter=./scripts/mutation-harness-utils.mjs',
-    '--test', '--test-force-exit', ...tests,
+    // No --test-force-exit: measured on the Linux runner it ends the run early and still
+    // exits 0, so a suite can report fewer tests than it owns (12 identical runs: 8 distinct
+    // counts with it, 10/10 stable without). Guard 5 exists to refuse exactly that evidence.
+    '--test', ...tests,
   ];
   // NODE_TEST_CONTEXT must not reach the child. When this harness is itself invoked from
   // inside `node --test` — which is exactly what a regression test for the harness does —

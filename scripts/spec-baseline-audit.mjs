@@ -52,7 +52,7 @@ function measure(tests) {
         '--import', './scripts/mutation-network-deny.mjs',
         '--import', './test/setup-env.mjs',
         '--test-reporter=./scripts/mutation-harness-utils.mjs',
-        '--test', '--test-force-exit', ...tests,
+        '--test', ...tests,
       ],
       {
         cwd: workspace.root,

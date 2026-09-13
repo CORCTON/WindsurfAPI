@@ -102,7 +102,7 @@ function runTests() {
     '--import', './scripts/mutation-network-deny.mjs',
     '--import', './test/setup-env.mjs',
     '--test-reporter=./scripts/mutation-harness-utils.mjs',
-    '--test', '--test-force-exit', ...spec.tests,
+    '--test', ...spec.tests,
   ];
   try {
     return {

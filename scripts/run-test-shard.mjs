@@ -54,7 +54,10 @@ export function selectShard(files, shardIndex, shardTotal) {
 
 function runOne(file, timeoutMs) {
   return new Promise(resolveRun => {
-    const child = spawn(process.execPath, ['--import', TEST_SETUP, '--test', '--test-force-exit', file], {
+    const child = spawn(process.execPath,     // No --test-force-exit: measured on the Linux runner it ends the run early and still
+    // exits 0, so a file can report green having run only part of its suites. A hang is a named
+    // failure here (timedOut is reported); a truncation is not.
+['--import', TEST_SETUP, '--test', file], {
       cwd: process.cwd(),
       env: process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
