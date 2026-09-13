@@ -21,7 +21,7 @@
 
      export PATH=~/.local/share/mise/installs/node/24/bin:$PATH   # Node 24 必需 / required
      npm run test:release          # 权威口径 / the authoritative gate
-     node --import ./test/setup-env.mjs --test --test-force-exit test/你的.test.js
+     node --import ./test/setup-env.mjs --test test/你的.test.js
 
      Node 22 会让一条 absolute-deadline 测试挂起并连带取消约 80 个 —— 那不是你的 bug。
      Node 22 hangs one deadline test and cancels ~80 others; not your bug. -->
