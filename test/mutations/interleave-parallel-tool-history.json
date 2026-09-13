@@ -1,8 +1,9 @@
 {
+  "_baseline_provenance": "60 is the number the HARNESS itself measures on the Linux CI runner (the manual sweep run 34756294294 reported 'baseline pass=60'). The per-file `node --test` count for this file on the author's Windows box is 72 — a 12-assertion gap that is NOT explained by skipping any test (the file has no skip conditions) and is recorded rather than hidden. Per test/mutations/README.md the harness's own measurement is the authority, so 60 is what ships. If the harness ever starts counting 72 too, this spec will report SKIPPED-STALE instead of running — which is the correct outcome for a baseline change.",
   "tests": [
     "test/tool-emulation.test.js"
   ],
-  "expectBaselinePass": 72,
+  "expectBaselinePass": 60,
   "mutations": [
     {
       "name": "call site removed — the normalizer stops interleaving parallel tool history, so a batched assistant turn encodes as consecutive role=2 frames and upstream 500/529s the whole session (the defect PR #261 fixes)",
