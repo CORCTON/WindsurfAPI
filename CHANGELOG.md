@@ -19,9 +19,9 @@
 
 | | |
 |---|---|
-| 发布说明 | **183** 份,v2.0.6 → v3.9.32 |
+| 发布说明 | **184** 份,v2.0.6 → v3.9.33 |
 | git tag | 193 个 |
-| 当前 | **v3.9.32**(2026-09-13) |
+| 当前 | **v3.9.33**(2026-09-14) |
 | 运行时依赖 | **0** —— 从第一个版本保持到现在 |
 
 ```mermaid
@@ -29,7 +29,7 @@ flowchart LR
     A["v2.0.x<br/>118 个 tag<br/><br/>OpenAI 兼容层成型"]
     B["v3.0 – v3.8<br/><br/>Anthropic / Gemini 前端<br/>Dashboard 与账号池"]
     C["v3.9.0 – v3.9.16<br/><br/>DEVIN_CONNECT 直连<br/>native tool bridge"]
-    D["v3.9.17 – v3.9.32<br/><br/>工具方言 · reasoning 边界<br/>Connect 目录 · ACU opt-in"]
+    D["v3.9.17 – v3.9.33<br/><br/>工具方言 · reasoning 边界<br/>Connect 目录 · ACU opt-in"]
     A --> B --> C --> D
 
     classDef past fill:#8957e522,stroke:#8957e5
@@ -41,6 +41,10 @@ flowchart LR
 ## 最近的版本
 
 下面是 3.9.x 全系。更早的版本请直接翻 [`docs/releases/`](docs/releases/)。
+
+### [v3.9.33](docs/releases/RELEASE_NOTES_3.9.33.md) · 2026-09-14
+
+工具前言阶梯不再构造注定被丢弃的那一档：病态 `$ref` 钻石形请求 **−92%**，普通请求无可测变化。无 API 破坏，响应逐字节相同，ACU `^22` 仍默认关。
 
 ### [v3.9.32](docs/releases/RELEASE_NOTES_3.9.32.md) · 2026-09-13
 
