@@ -176,6 +176,72 @@ describe('reasoning-dedup (incremental)', () => {
     assert.deepEqual(d.feed('a'), { emit: 'a', hold: false });
     assert.deepEqual(d.settle(), { emit: '', suppressed: false });
   });
+
+  // The cap is written on TWO lines and only one of them carries weight.
+  //
+  //   line 78   const HELD_CAP = 1024 * 1024;          <- the bound that binds
+  //   line 121  if (candidate.length > HELD_CAP) {     <- shadowed, see below
+  //
+  // feed() only reaches line 121 after `seenReasoning.startsWith(candidate)`
+  // said yes, and a prefix is never longer than the string it prefixes — so
+  // candidate.length <= seenReasoning.length. noteReasoning() truncates
+  // seenReasoning at HELD_CAP. Therefore `candidate.length > HELD_CAP` is never
+  // true, the branch is unreachable, and its body is in any case a duplicate of
+  // the divergence path directly below it (same emit, same latch, same clear).
+  // Raising THAT threshold cannot change anything; raising the constant does.
+  //
+  // `test/mutations/reasoning-dedup-incremental.json` records the threshold
+  // mutation as a DOCUMENTED SURVIVOR and keeps the constant mutation expected
+  // CAUGHT. The two assertions below are why: one pins the client-visible
+  // property, the other pins the premise that makes the survivor equivalent.
+  it('a verbatim duplicate larger than the cap is DELIVERED, never held to completion and never suppressed', () => {
+    const L = 1024 * 1024;
+    // Precondition (ledger round 12's rule): the same shape below the cap IS
+    // suppressed, so this test cannot pass on a run where suppression never
+    // happens at all. Without it, a dead dedup and a working one would be
+    // indistinguishable here.
+    const small = createStreamReasoningDedup({ wantThinking: true });
+    small.noteReasoning('The answer is 42.');
+    assert.deepEqual(small.feed('The answer is 42.'), { emit: '', hold: true });
+    assert.deepEqual(small.settle(), { emit: '', suppressed: true });
+
+    const big = 'a'.repeat(L);
+    const d = createStreamReasoningDedup({ wantThinking: true });
+    d.noteReasoning(big + big); // 2 MiB of reasoning, exactly duplicated as content
+    let delivered = '';
+    for (const chunk of [big, big]) {
+      const r = d.feed(chunk);
+      if (!r.hold) delivered += r.emit;
+    }
+    const settled = d.settle();
+    delivered += settled.emit;
+    assert.equal(settled.suppressed, false,
+      'a duplicate longer than the cap must not be suppressed: the accumulated reasoning is '
+      + 'truncated at HELD_CAP, so held can never equal the real reasoning. Suppressing here '
+      + 'is the empty-answer shape the wantThinking/seenCapped gates exist to prevent');
+    assert.equal(delivered.length, 2 * big.length,
+      'the whole 2 MiB duplicate must reach the client — holding it to completion and dropping '
+      + 'it at settle() is the unbounded-buffer plus content-loss shape');
+  });
+
+  it('premise: the accumulated reasoning is truncated at HELD_CAP — what makes the doubled threshold an equivalent transform', () => {
+    // Identifier-level on purpose. This pins the PREMISE, not the mutated
+    // comparison's text: as long as noteReasoning refuses to grow seenReasoning
+    // past the same HELD_CAP the content bound compares against, a matching
+    // chunk cannot be longer than the cap and the threshold at line 121 is
+    // unreachable. If this goes red, the premise is gone, the survivor in
+    // test/mutations/reasoning-dedup-incremental.json stops being equivalent,
+    // and that spec has to be re-read rather than trusted.
+    const src = readFileSync(new URL('../src/reasoning-dedup.js', import.meta.url), 'utf8');
+    assert.match(src, /const HELD_CAP = /,
+      'the cap must stay a single named constant shared by both bounds');
+    assert.match(src, /if \(seenReasoning\.length >= HELD_CAP\) \{/,
+      'noteReasoning must stop growing the accumulated reasoning at the cap');
+    assert.match(src, /const room = HELD_CAP - seenReasoning\.length;/,
+      'noteReasoning must compute the remaining room against the cap');
+    assert.match(src, /seenReasoning \+= text\.slice\(0, room\);/,
+      'noteReasoning must truncate the accumulated reasoning to that room');
+  });
 });
 
 // The off-switch. This is the only default-ON behaviour change in the

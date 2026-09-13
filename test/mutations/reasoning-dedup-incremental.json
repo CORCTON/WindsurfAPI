@@ -2,7 +2,7 @@
   "tests": [
     "test/reasoning-dedup.test.js"
   ],
-  "expectBaselinePass": 19,
+  "expectBaselinePass": 21,
   "mutations": [
     {
       "name": "prefix check replaced by unconditional true — content NEVER diverges, every chunk is held and the whole response is silently dropped at settle() (the old silent-hold content-loss defect)",
@@ -41,10 +41,17 @@
       "replacement": "const suppress = held === seenReasoning && wantThinking;"
     },
     {
-      "name": "held cap doubled — a >1 MiB verbatim duplicate is held instead of flushed, re-opening the unbounded-buffer shape on the default-on path",
+      "name": "DOCUMENTED SURVIVOR: held cap threshold doubled. The shape it names (a >1 MiB duplicate held instead of flushed) cannot be re-opened from this line, and no assertion can go red on it. feed() reaches the threshold only after `seenReasoning.startsWith(candidate)` said yes, and a prefix is never longer than the string it prefixes; noteReasoning truncates seenReasoning at the same HELD_CAP, so `candidate.length > HELD_CAP` is never true — 0 executions of the cap-crossing body across 1572 driven scenarios (lengths around 1 and 2 MiB, chunk sizes straddling the cap, both wantThinking values) on the real bytes. The body is also equivalent to the DIVERGE branch directly below it (same emit, same latch, same clear), so even reaching it would change nothing. Measured on the shipped path (handleChatCompletions, 2 MiB verbatim duplicate): identical wire bytes with and without this mutation, same sha256 prefix. The bound that IS observable is the constant, so the mutation one line up (constant doubled) is CAUGHT. Premise pinned by test/reasoning-dedup.test.js 'premise: the accumulated reasoning is truncated at HELD_CAP'.",
       "file": "src/reasoning-dedup.js",
       "anchor": "if (candidate.length > HELD_CAP) {",
-      "replacement": "if (candidate.length > 2 * HELD_CAP) {"
+      "replacement": "if (candidate.length > 2 * HELD_CAP) {",
+      "expectCaught": false
+    },
+    {
+      "name": "the cap doubled where doubling actually MOVES a bound — the constant, not the shadowed threshold. The reasoning accumulation and the held buffer both stop bounding at 1 MiB, so a 2 MiB verbatim duplicate is held to completion and suppressed at settle(): the client gets an EMPTY answer (measured on the shipped path: contentBytes 0, where the unmutated build delivers all 2097152)",
+      "file": "src/reasoning-dedup.js",
+      "anchor": "const HELD_CAP = 1024 * 1024;",
+      "replacement": "const HELD_CAP = 2 * 1024 * 1024;"
     },
     {
       "name": "release() emptied — the failure path (stream error/abort) silently drops the held tail, the exact loss settle() is forbidden from causing",
