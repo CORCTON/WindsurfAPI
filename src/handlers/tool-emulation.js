@@ -652,8 +652,30 @@ function resolveLocalSchemaRef(ref, root) {
 // same event-loop stall wearing a different hat.
 const SCHEMA_INLINE_NODE_BUDGET = 50000;
 
+// Schema keys the compact preamble keeps. Hoisted: this was rebuilt — one Set of
+// 11 strings — on EVERY object node the stripper visits, and a $ref that fans out
+// makes that tens of thousands of nodes (see the budget above). It is a constant,
+// so it is the same Set for every node and every request.
+const SCHEMA_KEEP_KEYS = new Set(['type', 'enum', 'properties', 'items', 'required', 'oneOf', 'anyOf', 'allOf', 'const', 'format', 'additionalProperties']);
+
 function newSchemaInlineBudget() {
-  return { remaining: SCHEMA_INLINE_NODE_BUDGET, exhausted: false };
+  return { remaining: SCHEMA_INLINE_NODE_BUDGET, exhausted: false, refs: new Map() };
+}
+
+// resolveLocalSchemaRef is pure in (ref, root), but a diamond repeats the same
+// pointer in SIBLING positions, so one pointer is re-resolved on every visit — tens
+// of thousands of times for a single schema, each visit rebuilding the split path
+// array. Cache them per (root, ref) for the lifetime of one build: `budget` already
+// threads through the whole recursion, and `root` is fixed per tool, so the cache
+// can never mix two roots up. It changes how often the same pointer is walked —
+// never which tier wins or what that tier says.
+function resolveRefCached(ref, root, budget) {
+  let byRef = budget.refs.get(root);
+  if (!byRef) { byRef = new Map(); budget.refs.set(root, byRef); }
+  if (byRef.has(ref)) return byRef.get(ref);
+  const resolved = resolveLocalSchemaRef(ref, root);
+  byRef.set(ref, resolved);
+  return resolved;
 }
 
 function stripSchemaDocs(schema, root = schema, refStack = [], budget = newSchemaInlineBudget()) {
@@ -673,18 +695,21 @@ function stripSchemaDocs(schema, root = schema, refStack = [], budget = newSchem
     // Leaving `{$ref: ...}` in the output would dangle because we strip $defs
     // below, and the model would have nothing to resolve the pointer against.
     if (refStack.includes(ref)) return { type: 'object' };
-    const resolved = resolveLocalSchemaRef(ref, root);
+    const resolved = resolveRefCached(ref, root, budget);
     if (!resolved) return { type: 'object' };
     const siblings = Object.fromEntries(Object.entries(schema).filter(([k]) => k !== '$ref'));
     return stripSchemaDocs({ ...resolved, ...siblings }, root, [...refStack, ref], budget);
   }
-  const KEEP = new Set(['type', 'enum', 'properties', 'items', 'required', 'oneOf', 'anyOf', 'allOf', 'const', 'format', 'additionalProperties']);
   const out = {};
-  for (const [k, v] of Object.entries(schema)) {
-    if (!KEEP.has(k)) continue;
+  // Object.keys() + a direct read instead of Object.entries(): same property order,
+  // same enumerability filter, the same value read once per key — without the
+  // [key, value] pair array Object.entries() allocates for every node.
+  for (const k of Object.keys(schema)) {
+    const v = schema[k];
+    if (!SCHEMA_KEEP_KEYS.has(k)) continue;
     if (k === 'properties' && v && typeof v === 'object') {
       const props = {};
-      for (const [pk, pv] of Object.entries(v)) props[pk] = stripSchemaDocs(pv, root, refStack, budget);
+      for (const pk of Object.keys(v)) { const pv = v[pk]; props[pk] = stripSchemaDocs(pv, root, refStack, budget); }
       out[k] = props;
     } else if ((k === 'items' || k === 'oneOf' || k === 'anyOf' || k === 'allOf') && v) {
       out[k] = stripSchemaDocs(v, root, refStack, budget);
