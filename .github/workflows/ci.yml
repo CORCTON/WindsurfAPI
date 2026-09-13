@@ -6,7 +6,7 @@ on:
   pull_request:
     branches: [master]
   # Manual mutation sweep (Actions -> CI -> Run workflow). Deliberately NOT on the PR path:
-  # each mutation re-runs its spec's whole test suite, so all 42 specs is hours, and a gate
+  # each mutation re-runs its spec's whole test suite, so all 44 specs is hours, and a gate
   # nobody can afford to run is worse than no gate — that is the warning in the specs job's
   # own comment. Until 2026-09-13 nothing in this repo ever executed `npm run mutate`.
   workflow_dispatch:
