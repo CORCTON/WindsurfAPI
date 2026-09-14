@@ -1057,10 +1057,14 @@ export function buildGetChatMessageRequest({ token, messages, model, sessionId, 
   };
   const mergedMessages = [];
   for (const m of messages || []) {
-    // system turns are hoisted to field #2 on the wire — they vanish from the
-    // chat sequence, so look past them when judging same-source adjacency.
+    // Default: system turns hoist to field #2 and vanish from the chat
+    // sequence, so look past them when judging same-source adjacency.
+    // COLLAPSE_SYSTEM=1 keeps them in the sequence (wrapped into the next
+    // user), so they break adjacency the same way a real turn does — looking
+    // past them would merge the surrounding users and squeeze the system
+    // out of its injection slot.
     let pi = mergedMessages.length - 1;
-    while (pi >= 0 && mergedMessages[pi].role === 'system') pi--;
+    while (pi >= 0 && mergedMessages[pi].role === 'system' && !collapseSystem) pi--;
     const prev = pi >= 0 ? mergedMessages[pi] : null;
     if (prev && prev.role === m.role && isMergeableText(prev) && isMergeableText(m)) {
       const a = messageText(prev.content);

@@ -1355,6 +1355,23 @@ describe('buildGetChatMessageRequest — collapse system messages', () => {
     assert.equal(textOf(messages[1]), '<system>\nFOR NEXT USER\n</system>\nnew question');
   });
 
+  it('does not merge users across a mid-conversation system when collapse is on', () => {
+    const proto = buildGetChatMessageRequest({
+      token: TOKEN,
+      model: 'm',
+      messages: [
+        { role: 'user', content: 'q1' },
+        { role: 'system', content: 'MID' },
+        { role: 'user', content: 'q2' },
+      ],
+      env: { DEVIN_CONNECT_COLLAPSE_SYSTEM: '1' },
+    });
+    assert.deepEqual(cmsOf(proto).map(textOf), [
+      'q1',
+      '<system>\nMID\n</system>\nq2',
+    ]);
+  });
+
   it('trailing system content becomes a final synthetic user turn', () => {
     const proto = buildGetChatMessageRequest({
       token: TOKEN,
