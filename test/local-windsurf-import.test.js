@@ -54,6 +54,7 @@ describe('getCandidateStateDbPaths', () => {
     const joined = paths.join('|');
     assert.ok(joined.includes('Windsurf'), 'should include base Windsurf path');
     assert.ok(joined.includes('Windsurf - Next') || joined.includes('Windsurf-Next'), 'should include Windsurf Next flavor');
+    assert.ok(joined.includes('Devin'), 'should include rebranded Devin flavor');
   });
 
   it('uses platform-appropriate base directories', () => {
