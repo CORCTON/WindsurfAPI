@@ -61,12 +61,19 @@ describe('backend-router selectBackend — behaviour parity with legacy', () => 
   });
 
   it('does not treat gpt-5.60 as a Devin Local gpt-5.6 SKU', () => {
-    const sel = selectBackend({
+    const env = { DEVIN_CLI_ENABLED: '1', DEVIN_CLI_MODE: 'acp' };
+    // No uid: hijack would be special_agent / devin_local_only.
+    const noUid = selectBackend({ modelInfo: { name: 'gpt-5.60' }, env });
+    assert.equal(noUid.flow, 'legacy');
+    assert.notEqual(noUid.reason, 'devin_local_only');
+    // With uid the fall-through is cascade, still not the local-only branch.
+    const withUid = selectBackend({
       modelInfo: { name: 'gpt-5.60', modelUid: 'gpt-5-60' },
-      env: { DEVIN_CLI_ENABLED: '1', DEVIN_CLI_MODE: 'acp' },
+      env,
     });
-    assert.equal(sel.flow, 'cascade');
-    assert.equal(sel.reason, 'modelUid');
+    assert.equal(withUid.flow, 'cascade');
+    assert.equal(withUid.reason, 'modelUid');
+    assert.notEqual(withUid.reason, 'devin_local_only');
   });
 
   it('swe-2 catalog entries use backend=special_agent (not the gpt-5.6 local-only branch)', () => {
