@@ -560,6 +560,16 @@
       "mergedAt": "2026-09-14",
       "title": "fix(responses): normalize multimodal content in tool call output items",
       "summary": "function_call_output / custom_tool_call_output 的数组 output 原先 stringifyMaybe 成扁平文本,Connect 路径上 data-URL 图进不了 #10 images。normalizeMessageContent 让带 type 的 content block 走既有 H-1 归一化,无 type 的数组回退 stringifyMaybe。下游核过:devin-connect 对 role:tool 调 extractInlineImages,默认 tag 10,图真的进通道。配套 nginx.conf:compose 里 :ro 挂载且 nginx 是唯一前置跳数,默认 client_max_body_size 1m,>1MB 多模态必然 413。两轮评审:超时从与 DEVIN_TIMEOUT_MS 默认 600s 对齐改成 900s(严格大于应用层,注释写成不变式);100m 收紧到 32m;真上限是 server.js MAX_BODY_SIZE=10MB,nginx 只需 ≥10m,15–25MB 过不去是应用层挡的。描述写清只修 Connect,Cascade 仍 JSON.stringify。responses.test.js 40/40;Linux CI 6/6(run 34790142853)。合并时按实测把 4 个覆盖 responses.test.js 的突变基线各 +2(47→49 / 44→46 / 57→59 / 42→44)。"
+    },
+    {
+      "login": "Jakevin",
+      "githubId": 4224127,
+      "pr": 266,
+      "weight": "A",
+      "weightLabel": "swe-2 进 Connect 目录 + gpt-5.6 Devin Local 显式 opt-in,两轮把默认放行拆掉",
+      "mergedAt": "2026-09-14",
+      "title": "feat(models,devin-acp): add swe-2 + route Devin Local-only models through ACP",
+      "summary": "SWE-2 medium/high/max 按 docs.devin.ai credit 6/9/12 进 MODELS 和 Connect 快照;Cascade/LS 无 UID 所以标 special_agent(与 swe-1.6 同族)。gpt-5.6 luna/sol/terra 仅在 DEVIN_CLI_ENABLED=1 时走 Devin Local。初版把 api_server_url 改成无 server 就发公共端点、正则劫持 gpt-5.60、DEVIN_PERMISSION_MODE=auto 兜底、clientInfo 默认冒充 windsurf,全量还多红 1 条。两轮改到位:authenticate 没有 server 就不声明;swe-2 走 special_agent 短路而不是死代码分支;DEVIN_CONNECT=1 赢过 CLI;只发 --model 不再写 DEVIN_MODEL;正则锚定 SKU;默认回 WindsurfAPI,冒充改成 DEVIN_ACP_CLIENT_NAME opt-in。N1 把 SELECTOR_MAP 补齐 swe-2-0/swe2/swe-2.0-{medium,high,max},Connect 面不再 400/静默降到 swe-1-6-slow。FREE_TIER/FREE_REACHABLE 仍是 swe-1-6-slow,没写 swe-1-7。实测:N1 十个名字 mapped:true;gpt-5.60 不走 devin_local_only;点名 5 个文件 374/374;Linux CI 6/6(run 34801058584)。未到 S 是因为本机没有 Devin CLI/live 账号,devin acp --model 对这些 key 的真实接受度和 Connect 面上 swe-2 可达性未验证;方言保持 openai_json_xml,没有 live tool-call 原文就不写 kimi_k2。"
     }
   ]
 }
