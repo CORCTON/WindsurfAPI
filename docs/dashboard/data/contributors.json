@@ -540,6 +540,26 @@
       "mergedAt": "2026-09-14",
       "title": "fix(devin-connect): merge consecutive same-role text turns before wire encoding",
       "summary": "客户端把一个回合按 part 拆存时,历史里出现连续同 role 纯文本;原样编码后 wire 上连续同源 ChatMessage,run 长度 ≥ 3 时上游 invalid_argument。#267 把这件事和 uncaptured 的 repeated-#6 绑在一起,零测试,被回绝当前形态;作者按评审把 mergedMessages 那半单独提到本 PR,并补四条 wire 级断言(正向塌缩 / tool_calls·tool_call_id·reasoning 不合并 / system 对相邻透明 / 不改调用方数组)。只合并 user/assistant 纯文本,带 tool_calls / tool_call_id / reasoning / 非 text content 的条目明确排除,生成新对象不改调用方数组(重试/failover 会复用同一 messages)。实测:devin-connect.test.js 185/185;对抗 9/9(image_url 数组不合并、CJK+ZWJ 码点保留、空+文本不被 empty-drop 吃掉、mixed text+image 不吞后续文本);Linux CI 6/6(run 34799913540)。无突变规格钉住这段循环,守卫就是这四条 wire 断言。未到 S 是因为 run≥3 的机制是评审钉的,本 PR 是被邀请的那一半实现,且没有 mutation spec。"
+    },
+    {
+      "login": "justhil",
+      "githubId": 138752349,
+      "pr": 261,
+      "weight": "A",
+      "weightLabel": "并行 tool_calls 与结果交错 · native 历史不再打成连续同源",
+      "mergedAt": "2026-09-13",
+      "title": "fix(tools): interleave parallel tool calls with results to prevent upstream internal error",
+      "summary": "nativeStructured 路径上,一条 assistant 带多个 tool_calls 再跟多条 tool 结果,编码成连续 ASSISTANT-source,run≥3 时上游 UPSTREAM_INTERNAL。修在消息层:interleaveParallelToolMessages 把并行调用拆成交替的单调用序列。Rostopher 用真实 58KB 请求体二分回放(未打补丁 529 / 打补丁 200)。维护方补了承重测试,钉住 native 接缝的 wire 形状(text+2/4/2/4 而不是 2/2/4/4)。函数只在 tool_calls.length>1 时动作,幂等,不污染 session 指纹。未到 S 是因为作者原测试只覆盖 JS 形状,wire 级断言是合并时维护方补的。"
+    },
+    {
+      "login": "justhil",
+      "githubId": 138752349,
+      "pr": 265,
+      "weight": "S",
+      "weightLabel": "Responses 多模态工具输出 + nginx 1m 真缺陷,两轮改到实测边界",
+      "mergedAt": "2026-09-14",
+      "title": "fix(responses): normalize multimodal content in tool call output items",
+      "summary": "function_call_output / custom_tool_call_output 的数组 output 原先 stringifyMaybe 成扁平文本,Connect 路径上 data-URL 图进不了 #10 images。normalizeMessageContent 让带 type 的 content block 走既有 H-1 归一化,无 type 的数组回退 stringifyMaybe。下游核过:devin-connect 对 role:tool 调 extractInlineImages,默认 tag 10,图真的进通道。配套 nginx.conf:compose 里 :ro 挂载且 nginx 是唯一前置跳数,默认 client_max_body_size 1m,>1MB 多模态必然 413。两轮评审:超时从与 DEVIN_TIMEOUT_MS 默认 600s 对齐改成 900s(严格大于应用层,注释写成不变式);100m 收紧到 32m;真上限是 server.js MAX_BODY_SIZE=10MB,nginx 只需 ≥10m,15–25MB 过不去是应用层挡的。描述写清只修 Connect,Cascade 仍 JSON.stringify。responses.test.js 40/40;Linux CI 6/6(run 34790142853)。合并时按实测把 4 个覆盖 responses.test.js 的突变基线各 +2(47→49 / 44→46 / 57→59 / 42→44)。"
     }
   ]
 }
