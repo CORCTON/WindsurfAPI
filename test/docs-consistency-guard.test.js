@@ -591,11 +591,13 @@ describe('docs: reader-facing auth defaults match fail-closed code', () => {
     /leave empty for no password/i,
     /留空就不验证/,
     /留空不设密码/,
+    /留空\s*=\s*不[验证驗證]/,
+    /留空\s*=\s*後台免密碼/,
   ];
 
-  it('README and .env.example do not claim empty API_KEY is open access', () => {
+  it('README, .env.example and Pages landing do not claim empty API_KEY is open access', () => {
     const hits = [];
-    for (const rel_ of ['.env.example', 'README.md', 'README.en.md']) {
+    for (const rel_ of ['.env.example', 'README.md', 'README.en.md', join('docs', 'index.html')]) {
       const body = read(join(ROOT, rel_));
       for (const re of FORBIDDEN) {
         if (re.test(body)) hits.push(`${rel_} matches ${re}`);
