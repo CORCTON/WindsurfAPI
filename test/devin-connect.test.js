@@ -331,6 +331,49 @@ describe('buildGetChatMessageRequest', () => {
     assert.equal(getField(parseFields(chats[3].value), 3, 2).value.toString('utf8'), 'a4', 'a4 stays its own turn');
   });
 
+  it('does not merge a tool_calls assistant into the following same-role text', () => {
+    // The previous test's tool_calls neighbour is role:tool, so deleting the
+    // tool_calls half of isMergeableText would still go green. This pair is
+    // same-role: if that guard vanished, 'pre' and 'post' would collapse and
+    // the #6 would ride a merged text turn.
+    const proto = buildGetChatMessageRequest({
+      token: TOKEN,
+      model: 'm',
+      nativeToolCall: true,
+      messages: [
+        { role: 'assistant', content: 'pre', tool_calls: [{ id: 'call_1', function: { name: 'bash', arguments: '{}' } }] },
+        { role: 'assistant', content: 'post' },
+      ],
+    });
+    const chats = getAllFields(parseFields(proto), 3).filter((f) => f.wireType === 2);
+    const sources = chats.map((c) => getField(parseFields(c.value), 2, 0).value);
+    // Encoder emits leading text, then a separate #6 frame per tool_call.
+    // If isMergeableText dropped the tool_calls check, 'pre' and 'post' would
+    // collapse first and the wire would be text='pre\n\npost' plus #6 (2 frames).
+    assert.deepEqual(sources, [
+      __testing.SOURCE.ASSISTANT, __testing.SOURCE.ASSISTANT, __testing.SOURCE.ASSISTANT,
+    ]);
+    assert.equal(getField(parseFields(chats[0].value), 3, 2).value.toString('utf8'), 'pre');
+    assert.ok(getField(parseFields(chats[1].value), 6, 2), 'tool_calls stay on their own #6 frame');
+    assert.equal(getField(parseFields(chats[2].value), 3, 2).value.toString('utf8'), 'post');
+  });
+
+  it('does not merge consecutive image_url user turns', () => {
+    const proto = buildGetChatMessageRequest({
+      token: TOKEN,
+      model: 'm',
+      env: { DEVIN_CONNECT_IMAGE_TAG: '10' },
+      messages: [
+        { role: 'user', content: [{ type: 'image_url', image_url: { url: `data:image/png;base64,${RED_DOT}` } }] },
+        { role: 'user', content: [{ type: 'image_url', image_url: { url: `data:image/png;base64,${RED_DOT}` } }] },
+      ],
+    });
+    const chats = getAllFields(parseFields(proto), 3).filter((f) => f.wireType === 2);
+    assert.equal(chats.length, 2, 'two image turns stay two ChatMessages');
+    assert.equal(getAllFields(parseFields(chats[0].value), 10).length, 1);
+    assert.equal(getAllFields(parseFields(chats[1].value), 10).length, 1);
+  });
+
   it('looks past system turns when judging same-source adjacency', () => {
     const proto = buildGetChatMessageRequest({
       token: TOKEN,

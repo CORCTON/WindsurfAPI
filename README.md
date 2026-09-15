@@ -4,7 +4,7 @@
 
 # WindsurfAPI · DevinAPI
 
-> 把 Windsurf / Devin 的 100+ AI 模型（Claude、GPT、Gemini、DeepSeek、Kimi、GLM、SWE…）变成 OpenAI / Anthropic / Gemini 三套标准 API。零 npm 运行时依赖。
+> 把 Windsurf / Devin 的 100+ AI 模型（Claude、GPT、Gemini、DeepSeek、Kimi、GLM、SWE…）变成 OpenAI Chat / Responses / Anthropic / Gemini 四套标准 API。零 npm 运行时依赖。
 
 > **历史账本** · 把 1311 次提交、191 个版本、72 个 PR、179 个 issue 摊开给你看：时间线主账 + 贡献者分析 + Git 树三形态（竖/横/环）+ 自伤与返工全记录 —— [**打开可视化账本**](https://dwgx.github.io/WindsurfAPI/HISTORY-LEDGER-VIZ.html)（纯原生渲染，零依赖）
 
@@ -29,7 +29,7 @@
 
 ---
 
-把 [Windsurf](https://windsurf.com)（原 Codeium，现 Devin Desktop）的 AI 模型变成**三套标准 API 同时兼容**：
+把 [Windsurf](https://windsurf.com)（原 Codeium，现 Devin Desktop）的 AI 模型变成**四套标准 API 同时兼容**：
 
 - `POST /v1/chat/completions` — **OpenAI 兼容** 任何 OpenAI SDK 直接用
 - `POST /v1/completions` — **OpenAI 旧 Completions**（非流式；`prompt` 包成一条 user turn，流式请走 chat）
@@ -37,7 +37,7 @@
 - `POST /v1/messages` — **Anthropic 兼容** Claude Code / Cline / Cursor 直接连
 - `POST /v1beta/models/*` — **Gemini 兼容** 直接对接 Gemini SDK
 
-**100+ 模型**：Claude 4.5/4.6/Opus 4.7/5 · GPT-5/5.1/5.2/5.4/5.5/5.6-Luna 全系 · Gemini 2.5/3.0/3.1 · Grok · Qwen · Kimi K2.x · GLM 4.7/5/5.1/5.2 · MiniMax · SWE 1.5/1.6/1.7 · Arena 等。零 npm 依赖 纯 Node.js。
+**100+ 模型**：Claude 4.5/4.6/Opus 4.7/5 · GPT-5/5.1/5.2/5.4/5.5/5.6-Luna 全系 · Gemini 2.5/3.0/3.1 · Grok · Qwen · Kimi K2.x · GLM 4.7/5/5.1/5.2 · MiniMax · SWE 1.5/1.6/1.7/2 · Arena 等。零 npm 依赖 纯 Node.js。
 
 <sub>关键词：Windsurf 逆向 · Devin 代理 · Claude Code 中转 · Cursor 镜像 · AI 中转 API · OpenAI 兼容接口 · 免费 Claude/GPT/Gemini · 大模型反代 · Codeium 逆向</sub>
 

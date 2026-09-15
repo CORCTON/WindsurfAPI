@@ -29,7 +29,7 @@
 
 ---
 
-Turns [Windsurf](https://windsurf.com) (formerly Codeium, now Devin Desktop)'s AI models into **three standard, compatible APIs**:
+Turns [Windsurf](https://windsurf.com) (formerly Codeium, now Devin Desktop)'s AI models into **four standard, compatible APIs**:
 
 - `POST /v1/chat/completions` — **OpenAI Compatible** for any OpenAI SDK.
 - `POST /v1/completions` — **OpenAI legacy Completions** (non-stream; `prompt` becomes one user turn — stream via chat).
@@ -37,7 +37,7 @@ Turns [Windsurf](https://windsurf.com) (formerly Codeium, now Devin Desktop)'s A
 - `POST /v1/messages` — **Anthropic Compatible** for direct connection with Claude Code / Cline / Cursor.
 - `POST /v1beta/models/*` — **Gemini Compatible** for direct Gemini SDK use.
 
-**100+ Models**: Claude 4.5/4.6/Opus 4.7/5 · GPT-5/5.1/5.2/5.4/5.5/5.6-Luna series · Gemini 2.5/3.0/3.1 · Grok · Qwen · Kimi K2.x · GLM 4.7/5/5.1/5.2 · MiniMax · SWE 1.5/1.6/1.7 · Arena, etc. Zero npm dependencies, pure Node.js.
+**100+ Models**: Claude 4.5/4.6/Opus 4.7/5 · GPT-5/5.1/5.2/5.4/5.5/5.6-Luna series · Gemini 2.5/3.0/3.1 · Grok · Qwen · Kimi K2.x · GLM 4.7/5/5.1/5.2 · MiniMax · SWE 1.5/1.6/1.7/2 · Arena, etc. Zero npm dependencies, pure Node.js.
 
 <sub>Keywords: Windsurf reverse proxy · Devin API · Claude Code proxy · Cursor mirror · free Claude/GPT/Gemini · Codeium API · OpenAI-compatible endpoint · self-hosted LLM gateway</sub>
 
